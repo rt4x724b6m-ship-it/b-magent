@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*$py.class
+
+.qoder/
+
+data/**/*.jsonl
+data/**/*.json
+data/latest_report.json
+!data/gsm8k/
+!data/gsm8k/README.md
+
+baseline/*_report.json
+train/*_report.json
