@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from train.three_agent_private_train import AGENT_NAMES, run_four_agent_voting_on_test
+from train.four_agent_private_train import AGENT_NAMES, run_four_agent_voting_on_test
 
 
 class FixedVoteModel:

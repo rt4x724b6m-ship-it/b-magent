@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from train.three_agent_private_train import export_report, run_four_agent_private_training
+from train.four_agent_private_train import export_report, run_four_agent_private_training
 
 
 class FourAgentPrivateTrainingTestCase(unittest.TestCase):

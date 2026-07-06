@@ -17,7 +17,7 @@ Default schedule:
 Run:
 
 ```bash
-python -m train.three_agent_private_train --dataset-dir data/gsm8k --output train/four_agent_training_report.json
+python -m train.four_agent_private_train --dataset-dir data/gsm8k --output train/four_agent_training_report.json
 ```
 
 The current `MemoryQwenModel` is an offline placeholder. Replace it with a real
