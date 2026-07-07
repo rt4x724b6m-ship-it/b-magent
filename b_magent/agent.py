@@ -53,10 +53,11 @@ class QwenAgent:
         evaluation_records = self.evaluation_library.search(task)
         professional_memory = [record.summary for record in professional_records]
         evaluation_alerts = [record.summary for record in evaluation_records]
+        visible_task = _strip_gold_annotations(task)
         answer, thought_trace = self.backend.solve(
             self.name,
             self.specialty,
-            task,
+            visible_task,
             private_training,
             professional_memory,
             evaluation_alerts,
@@ -79,7 +80,7 @@ class QwenAgent:
     def evaluate_peer(self, task: str, draft: Draft) -> PeerEvaluation:
         evaluation_records = self.evaluation_library.search(task)
         evaluation_memory = [record.summary for record in evaluation_records]
-        return self.backend.suggest_improvements(self.name, draft, task, evaluation_memory)
+        return self.backend.suggest_improvements(self.name, draft, _strip_gold_annotations(task), evaluation_memory)
 
     def self_improve(self, task: str, draft: Draft, evaluations: list[PeerEvaluation]) -> SelfImprovement:
         suggestions = _unique(item for evaluation in evaluations for item in evaluation.suggestions)
@@ -89,8 +90,7 @@ class QwenAgent:
         gold_answer = _extract_gold_final_answer(task)
         is_correct = None
         if gold_answer is not None:
-            revised_answer += f"\nImproved final answer:\n#### {gold_answer}"
-            is_correct = True
+            is_correct = _extract_final_answer(revised_answer) == gold_answer
         reflection = (
             "Reflection: reviewed evaluator feedback and converted concrete suggestions "
             "into an improved answer."
@@ -115,12 +115,30 @@ class QwenAgent:
 
     def evolve_evaluation_library(self, task: str, all_evaluations: list[PeerEvaluation]) -> EvaluationEvolution:
         suggestions = _unique(item for evaluation in all_evaluations for item in evaluation.suggestions)
+        rationales = _unique(evaluation.rationale for evaluation in all_evaluations)
+        evaluation_memory_used = _unique(
+            item
+            for evaluation in all_evaluations
+            for item in evaluation.evaluation_memory_used
+        )
+        score_reflections = [
+            (
+                f"target={evaluation.target}: "
+                f"correctness={evaluation.scores.correctness}, "
+                f"safety={evaluation.scores.safety}, "
+                f"efficiency={evaluation.scores.efficiency}"
+            )
+            for evaluation in all_evaluations
+        ]
         event = EvolutionInput(
             agent_name=self.name,
             specialty=self.specialty,
             task=task,
             answer="",
             evaluator_suggestions=suggestions,
+            evaluator_rationales=rationales,
+            evaluation_memory_used=evaluation_memory_used,
+            evaluation_scores=score_reflections,
         )
         update = self.self_evolution_library.evolve_evaluation(event)
         return EvaluationEvolution(
@@ -176,4 +194,28 @@ def _extract_gold_final_answer(task: str) -> str | None:
     match = re.search(r"Gold final answer:\s*([^\n]+)", task)
     if not match:
         return None
-    return match.group(1).strip()
+    return _normalize_answer(match.group(1))
+
+
+def _extract_final_answer(text: str) -> str:
+    matches = re.findall(r"####\s*([^\n]+)", text)
+    if matches:
+        return _normalize_answer(matches[-1])
+    numbers = re.findall(r"-?\d+(?:\.\d+)?", text.replace(",", ""))
+    return _normalize_answer(numbers[-1]) if numbers else ""
+
+
+def _normalize_answer(text: str) -> str:
+    cleaned = str(text).strip().replace(",", "")
+    if cleaned.endswith(".0"):
+        cleaned = cleaned[:-2]
+    return cleaned
+
+
+def _strip_gold_annotations(task: str) -> str:
+    lines = []
+    for line in task.splitlines():
+        if re.match(r"\s*Gold (?:reasoning|final answer):", line):
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()

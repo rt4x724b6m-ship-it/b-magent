@@ -69,6 +69,29 @@ class LoraEvolutionTestCase(unittest.TestCase):
         self.assertIn("correctness=0.90", example.input)
         self.assertEqual(example.output, "improved answer")
 
+    def test_lora_example_hides_gold_answer_from_training_input(self) -> None:
+        draft = Draft(
+            agent_name="qwen_agent_1",
+            specialty="通用智能体",
+            answer="draft #### 1",
+            thought_trace=[],
+            private_training_used=[],
+            professional_memory_used=[],
+            evaluation_alerts_used=[],
+        )
+        improvement = SelfImprovement("qwen_agent_1", ["fix"], "corrected #### 2", [])
+
+        example = build_lora_example(
+            "Question: q\nGold reasoning: hidden\nGold final answer: 2",
+            draft,
+            [PeerEvaluation("qwen_agent_3", "qwen_agent_1", ["fix"], "r", [])],
+            improvement,
+        )
+
+        self.assertNotIn("Gold reasoning", example.input)
+        self.assertNotIn("Gold final answer", example.input)
+        self.assertIn("Question: q", example.input)
+
     def test_manager_accumulates_per_agent_datasets_and_trains_at_threshold(self) -> None:
         with tempfile.TemporaryDirectory(prefix="b_magent_lora_test_") as temp:
             trainer = FakeLoraTrainer()

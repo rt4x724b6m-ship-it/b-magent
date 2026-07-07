@@ -17,6 +17,7 @@ from train.four_agent_private_train import (
     AGENT_NAMES,
     format_voting_prediction_detail,
     print_voting_prediction_detail,
+    reset_b_magent_training_state,
     run_four_agent_voting_on_test,
 )
 
@@ -53,10 +54,12 @@ class KnowledgeLibraryVoteModel:
         agent_name: str,
         engine: LocalQwenEngine,
         data_dir: Path,
+        lora_output_dir: Path,
         memory_limit: int = 3,
     ) -> None:
         self.agent_name = agent_name
         self.engine = engine
+        self.lora_output_dir = lora_output_dir
         self.professional_library = EvolutionLibrary(
             data_dir / agent_name / "professional_library.jsonl",
             "professional",
@@ -75,8 +78,7 @@ class KnowledgeLibraryVoteModel:
         evaluation_records = self.evaluation_library.search(question, limit=self.memory_limit)
         prompt = (
             f"Agent: {self.agent_name}\n"
-            "Use only this agent's self-evolution knowledge libraries as extra context. "
-            "Do not load or assume any LoRA adapter.\n\n"
+            "Use this agent's self-evolution knowledge libraries as extra context.\n\n"
             "Professional library memories:\n"
             f"{_format_library_records(professional_records)}\n\n"
             "Evaluation library checks:\n"
@@ -85,7 +87,11 @@ class KnowledgeLibraryVoteModel:
             f"{question}\n\n"
             f"Output constraint:\n{NUMERIC_ANSWER_INSTRUCTION}"
         )
-        return self.engine.generate(prompt)
+        return self.engine.generate(prompt, adapter_path=self.adapter_path)
+
+    @property
+    def adapter_path(self) -> Path:
+        return self.lora_output_dir / self.agent_name / "adapter"
 
 
 def _format_library_records(records: list[object]) -> str:
@@ -103,6 +109,50 @@ def _format_library_records(records: list[object]) -> str:
 
 
 class FourAgentVotingTestCase(unittest.TestCase):
+    def test_b_magent_reset_preserves_evaluation_libraries_by_default(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_reset_test_"))
+        try:
+            data_dir = temp_dir / "data"
+            for agent_name in AGENT_NAMES:
+                agent_dir = data_dir / agent_name
+                agent_dir.mkdir(parents=True)
+                (agent_dir / "professional_library.jsonl").write_text("professional\n", encoding="utf-8")
+                (agent_dir / "evaluation_library.jsonl").write_text("evaluation\n", encoding="utf-8")
+                (agent_dir / "private_data.jsonl").write_text("private\n", encoding="utf-8")
+
+            reset_b_magent_training_state(data_dir, lora_output_dir=None)
+
+            for agent_name in AGENT_NAMES:
+                agent_dir = data_dir / agent_name
+                self.assertFalse((agent_dir / "professional_library.jsonl").exists())
+                self.assertFalse((agent_dir / "private_data.jsonl").exists())
+                self.assertEqual(
+                    (agent_dir / "evaluation_library.jsonl").read_text(encoding="utf-8"),
+                    "evaluation\n",
+                )
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_b_magent_reset_can_clear_evaluation_libraries_explicitly(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_reset_eval_test_"))
+        try:
+            data_dir = temp_dir / "data"
+            for agent_name in AGENT_NAMES:
+                agent_dir = data_dir / agent_name
+                agent_dir.mkdir(parents=True)
+                (agent_dir / "evaluation_library.jsonl").write_text("evaluation\n", encoding="utf-8")
+
+            reset_b_magent_training_state(
+                data_dir,
+                lora_output_dir=None,
+                reset_evaluation_libraries=True,
+            )
+
+            for agent_name in AGENT_NAMES:
+                self.assertFalse((data_dir / agent_name / "evaluation_library.jsonl").exists())
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def test_four_agents_vote_final_answer_on_test_dataset(self) -> None:
         temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_vote_test_"))
         try:
@@ -226,11 +276,12 @@ class FourAgentVotingTestCase(unittest.TestCase):
 
 
 class KnowledgeLibraryFourAgentVotingIntegrationTestCase(unittest.TestCase):
-    def test_four_agents_vote_with_knowledge_libraries_on_first_100_test_questions(self) -> None:
+    def test_four_agents_vote_with_lora_tuned_models_on_first_100_test_questions(self) -> None:
         project_root = Path(__file__).resolve().parent.parent
         dataset_dir = project_root / "data" / "gsm8k"
         model_path = project_root / DEFAULT_QWEN_MODEL
         data_dir = project_root / "data"
+        lora_output_dir = data_dir / "lora_adapters"
 
         if not (dataset_dir / "test.jsonl").exists():
             self.skipTest(f"missing GSM8K test split: {dataset_dir / 'test.jsonl'}")
@@ -247,6 +298,13 @@ class KnowledgeLibraryFourAgentVotingIntegrationTestCase(unittest.TestCase):
         ]
         if missing_libraries:
             self.skipTest(f"missing knowledge libraries for: {', '.join(missing_libraries)}")
+        missing_adapters = [
+            agent_name
+            for agent_name in AGENT_NAMES
+            if not (lora_output_dir / agent_name / "adapter" / "adapter_config.json").exists()
+        ]
+        if missing_adapters:
+            self.skipTest(f"missing LoRA adapters for: {', '.join(missing_adapters)}")
 
         engine = LocalQwenEngine(model_name_or_path=model_path)
         models = {
@@ -254,6 +312,7 @@ class KnowledgeLibraryFourAgentVotingIntegrationTestCase(unittest.TestCase):
                 agent_name=agent_name,
                 engine=engine,
                 data_dir=data_dir,
+                lora_output_dir=lora_output_dir,
             )
             for agent_name in AGENT_NAMES
         }
@@ -263,7 +322,7 @@ class KnowledgeLibraryFourAgentVotingIntegrationTestCase(unittest.TestCase):
             limit=STANDARD_TEST_LIMIT,
             on_prediction=print_voting_prediction_detail,
         )
-        output_file = project_root / "train" / "four_agent_knowledge_voting_100_report.json"
+        output_file = project_root / "train" / "four_agent_lora_voting_100_report.json"
         output_file.parent.mkdir(parents=True, exist_ok=True)
         output_file.write_text(
             json.dumps(report.to_dict(), ensure_ascii=False, indent=2),

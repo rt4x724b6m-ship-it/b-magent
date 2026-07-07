@@ -27,7 +27,7 @@ is evenly split into `data/qwen_agent_*/private_data.jsonl`. Every row is used
 once; when the total is not divisible by four, earlier agents receive one extra
 row. The training report includes `private_dataset_counts`.
 
-The default CLI run uses 100 training rounds. Use `--rounds 0` to auto-compute
+The default CLI run uses 200 training rounds. Use `--rounds 0` to auto-compute
 enough rounds to cover the split private data. Each round has two task agents,
 so 800 private examples with `--private-batch-size 1` becomes 400 rounds.
 Increase `--private-batch-size` to consume more private examples per
@@ -39,7 +39,7 @@ LoRA self-evolution and many-to-many distillation are enabled by default. Use
 experience-library loop:
 
 ```bash
-python -m train.four_agent_private_train --dataset-dir data/gsm8k --rounds 100 --model-path models/Qwen2.5-1.5B-Instruct
+python -m train.four_agent_private_train --dataset-dir data/gsm8k --rounds 200 --model-path models/Qwen2.5-1.5B-Instruct
 ```
 
 The distillation stage keeps every agent's adapter as a teacher and trains each

@@ -16,6 +16,9 @@ class EvolutionInput:
     thought_trace: list[str] = field(default_factory=list)
     peer_suggestions: list[str] = field(default_factory=list)
     evaluator_suggestions: list[str] = field(default_factory=list)
+    evaluator_rationales: list[str] = field(default_factory=list)
+    evaluation_memory_used: list[str] = field(default_factory=list)
+    evaluation_scores: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -75,14 +78,22 @@ class SelfEvolutionLibrary:
     def evolve_evaluation(self, event: EvolutionInput) -> LibraryRecord:
         suggestions = _unique(event.evaluator_suggestions or event.peer_suggestions)
         suggestion_summary = _summarize_list(suggestions, fallback="No evaluator suggestions provided")
+        rationale_summary = _summarize_list(event.evaluator_rationales, fallback="No evaluator rationale provided")
+        memory_summary = _summarize_list(event.evaluation_memory_used, fallback="No prior evaluation memory retrieved")
+        score_summary = _summarize_list(event.evaluation_scores, fallback="No evaluation scores recorded")
         record = LibraryRecord(
             agent_name=event.agent_name,
             library_type="evaluation",
             source_task=event.task,
-            summary=f"{event.specialty} evaluation update from review suggestions",
+            summary=f"{event.specialty} evaluation self-reflection from own reviews",
             detail=(
-                "Future reviews should focus on concrete modifiable issues. "
-                f"round_suggestions={suggestion_summary}"
+                "Reflect on this agent's own peer reviews before updating future review behavior. "
+                f"prior_evaluation_memory={memory_summary} | "
+                f"own_review_suggestions={suggestion_summary} | "
+                f"own_review_rationales={rationale_summary} | "
+                f"own_review_scores={score_summary} | "
+                "future_review_lesson=Compare the new draft against retrieved evaluation memories, "
+                "then give concrete, checkable, and score-consistent feedback."
             ),
             tags=[event.specialty, "self-evolution", "evaluation"],
         )

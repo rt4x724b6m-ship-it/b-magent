@@ -10,7 +10,7 @@ from typing import Protocol
 from .models import Draft, PeerEvaluation, SelfImprovement
 
 
-DEFAULT_LORA_THRESHOLD = 100
+DEFAULT_LORA_THRESHOLD = 10
 
 
 @dataclass(frozen=True)
@@ -154,11 +154,21 @@ class PeftSFTLoraTrainer:
             report_to=[],
             fp16=torch.cuda.is_available(),
         )
+
+        class TrainerAdamW(torch.optim.AdamW):
+            def train(self) -> None:
+                return None
+
+            def eval(self) -> None:
+                return None
+
+        optimizer = TrainerAdamW(model.parameters(), lr=config.learning_rate)
         trainer = Trainer(
             model=model,
             args=training_args,
             train_dataset=tokenized_dataset,
             data_collator=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
+            optimizers=(optimizer, None),
         )
         trainer.train()
         adapter_path.mkdir(parents=True, exist_ok=True)
@@ -340,7 +350,7 @@ def build_lora_example(
         agent_name=draft.agent_name,
         instruction="Solve the task, reflect on evaluator feedback, and produce the improved final answer.",
         input=(
-            f"Task:\n{task}\n\n"
+            f"Task:\n{strip_gold_annotations(task)}\n\n"
             f"Trajectory:\n{trajectory}\n\n"
             f"Evaluation Report:\n{evaluation_report}"
         ),
@@ -459,6 +469,15 @@ def normalize_answer(text: str) -> str:
     if cleaned.endswith(".0"):
         cleaned = cleaned[:-2]
     return cleaned
+
+
+def strip_gold_annotations(task: str) -> str:
+    lines = []
+    for line in task.splitlines():
+        if re.match(r"\s*Gold (?:reasoning|final answer):", line):
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
 
 
 def _format_list(items: list[str]) -> str:

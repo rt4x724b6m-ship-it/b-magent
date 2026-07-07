@@ -1,3 +1,15 @@
+[environment.yml](/home/cxh/b_magent/environment.yml)：完整导出，包含本机路径 prefix
+[environment-portable.yml](/home/cxh/b_magent/environment-portable.yml)：推荐使用，已去掉本机路径
+[environment-from-history.yml](/home/cxh/b_magent/environment-from-history.yml)：只包含 conda 显式安装历史，较干净但可能不够完整
+[conda-explicit.txt](/home/cxh/b_magent/conda-explicit.txt)：精确复刻 conda 包 URL，适合同系统 Linux 机器
+换主机后推荐用这个：
+conda env create -f environment-portable.yml
+conda activate cxh
+
+
+
+
+
 # b_magent
 
 `b_magent` is a local Python demo for Qwen-based multi-agent workflows.
@@ -67,7 +79,7 @@ At startup this mode evenly splits the prepared `data/gsm8k/train.jsonl`
 training set into each agent's private file under
 `data/qwen_agent_*/private_data.jsonl`. If the row count is not divisible by
 four, the remainder is assigned one row at a time from `qwen_agent_1` onward.
-The default CLI run uses 100 training rounds. Use `--rounds 0` to auto-cover the
+The default CLI run uses 200 training rounds. Use `--rounds 0` to auto-cover the
 split dataset: each round trains two participating agents, so the automatic
 round count is derived from the number of private examples and
 `--private-batch-size`. Each participating agent loads only that small private
@@ -84,7 +96,7 @@ python -m train.four_agent_private_train --mode b-magent --backend local-qwen --
 Default LoRA/distillation run:
 
 ```bash
-python -m train.four_agent_private_train --mode b-magent --backend local-qwen --model-path models/Qwen2.5-1.5B-Instruct --dataset-dir data/gsm8k --rounds 100
+python -m train.four_agent_private_train --mode b-magent --backend local-qwen --model-path models/Qwen2.5-1.5B-Instruct --dataset-dir data/gsm8k --rounds 200
 ```
 
 Per-agent adapters are written under `data/lora_adapters/qwen_agent_*/adapter`.

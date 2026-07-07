@@ -60,7 +60,7 @@ class LocalQwenEngine:
     def generate(self, prompt: str, adapter_path: str | Path | None = None) -> str:
         self._load()
         model = self._model
-        if adapter_path is not None and Path(adapter_path).exists():
+        if adapter_path is not None and _is_lora_adapter_ready(Path(adapter_path)):
             model = self._load_adapter_model(Path(adapter_path))
         messages = []
         if self.system_prompt:
@@ -186,10 +186,10 @@ class LocalQwenAgentModel:
         if self.lora_output_dir is None:
             return None
         distilled_adapter_path = self.lora_output_dir / self.agent_name / "distilled_adapter"
-        if self.prefer_distilled_adapter and distilled_adapter_path.exists():
+        if self.prefer_distilled_adapter and _is_lora_adapter_ready(distilled_adapter_path):
             return distilled_adapter_path
         adapter_path = self.lora_output_dir / self.agent_name / "adapter"
-        return adapter_path if adapter_path.exists() else None
+        return adapter_path if _is_lora_adapter_ready(adapter_path) else None
 
 
 class LocalQwenEvolutionBackend:
@@ -274,16 +274,20 @@ class LocalQwenEvolutionBackend:
         if self.lora_output_dir is None:
             return None
         distilled_adapter_path = self.lora_output_dir / agent_name / "distilled_adapter"
-        if self.prefer_distilled_adapter and distilled_adapter_path.exists():
+        if self.prefer_distilled_adapter and _is_lora_adapter_ready(distilled_adapter_path):
             return distilled_adapter_path
         adapter_path = self.lora_output_dir / agent_name / "adapter"
-        return adapter_path if adapter_path.exists() else None
+        return adapter_path if _is_lora_adapter_ready(adapter_path) else None
 
 
 def _format_context(items: list[str]) -> str:
     if not items:
         return "(none)"
     return "\n".join(f"- {item}" for item in items)
+
+
+def _is_lora_adapter_ready(adapter_path: Path) -> bool:
+    return (adapter_path / "adapter_config.json").exists()
 
 
 def _parse_suggestions(text: str) -> list[str]:

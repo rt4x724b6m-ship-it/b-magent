@@ -1,7 +1,12 @@
+
+
+#有蒸馏和lora开关
+#lora训练阈值是10次
 from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -518,6 +523,24 @@ def write_even_agent_private_datasets(
     return counts
 
 
+def reset_b_magent_training_state(
+    data_dir: Path,
+    lora_output_dir: Path | None = Path("data/lora_adapters"),
+    agent_names: tuple[str, ...] = AGENT_NAMES,
+    reset_evaluation_libraries: bool = False,
+) -> None:
+    """Remove generated per-agent training state before a fresh b_magent run."""
+    for agent_name in agent_names:
+        agent_dir = data_dir / agent_name
+        for file_name in ("professional_library.jsonl", "private_data.jsonl"):
+            (agent_dir / file_name).unlink(missing_ok=True)
+        if reset_evaluation_libraries:
+            (agent_dir / "evaluation_library.jsonl").unlink(missing_ok=True)
+
+        if lora_output_dir is not None:
+            shutil.rmtree(lora_output_dir / agent_name, ignore_errors=True)
+
+
 def make_cyclic_batch(samples: list[GSM8KSample], batch_index: int, batch_size: int) -> list[GSM8KSample]:
     if not samples:
         return []
@@ -600,7 +623,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--rounds",
         type=int,
-        default=100,
+        default=200,
         help="Training rounds. Use 0 to auto-cover the evenly split private training data.",
     )
     parser.add_argument(
@@ -654,8 +677,8 @@ def parse_args() -> argparse.Namespace:
         "--enable-distillation",
         dest="enable_distillation",
         action="store_true",
-        default=False,
-        help="After per-agent LoRA updates, periodically distill trained agent adapters into private distilled adapters. Disabled by default.",
+        default=True,
+        help="After per-agent LoRA updates, periodically distill trained agent adapters into private distilled adapters. Enabled by default.",
     )
     parser.add_argument(
         "--disable-distillation",

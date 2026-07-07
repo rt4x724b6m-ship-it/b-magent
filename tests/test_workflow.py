@@ -11,11 +11,67 @@ from _project_path import add_project_root_to_sys_path
 add_project_root_to_sys_path()
 
 from b_magent.datasets import GSM8KDataset
+from b_magent.models import Draft, PeerEvaluation
 from b_magent.seed import seed_agent_libraries
 from b_magent.workflow import MultiAgentWorkflow, build_default_agents
 
 
 class WorkflowTestCase(unittest.TestCase):
+    def test_gold_answer_is_hidden_from_solver_and_evaluator_prompts(self) -> None:
+        class RecordingBackend:
+            def __init__(self) -> None:
+                self.solve_tasks: list[str] = []
+                self.review_tasks: list[str] = []
+
+            def solve(self, agent_name, specialty, task, private_training, professional_memory, evaluation_alerts):
+                self.solve_tasks.append(task)
+                return "answer #### 1", []
+
+            def suggest_improvements(self, evaluator_name, target_draft, task, evaluation_memory):
+                self.review_tasks.append(task)
+                return PeerEvaluation(evaluator_name, target_draft.agent_name, ["check"], "r", [])
+
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_gold_prompt_test_"))
+        try:
+            backend = RecordingBackend()
+            agents = build_default_agents(temp_dir, backend=backend)
+            workflow = MultiAgentWorkflow(agents, random_seed=7)
+
+            workflow.run("Question: q\nGold reasoning: hidden\nGold final answer: 2")
+
+            self.assertTrue(backend.solve_tasks)
+            self.assertTrue(backend.review_tasks)
+            self.assertTrue(all("Gold final answer" not in task for task in backend.solve_tasks))
+            self.assertTrue(all("Gold reasoning" not in task for task in backend.review_tasks))
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_self_improvement_scores_revised_answer_without_leaking_gold(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_correctness_test_"))
+        try:
+            agent = build_default_agents(temp_dir)[0]
+            draft = Draft("qwen_agent_1", "方案规划", "wrong calculation #### 1", [], [], [], [])
+            review = PeerEvaluation("qwen_agent_3", "qwen_agent_1", ["check arithmetic"], "r", [])
+
+            improvement = agent.self_improve("Task\nGold final answer: 2", draft, [review])
+
+            self.assertFalse(improvement.is_correct)
+            self.assertNotIn("#### 2", improvement.revised_answer)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_self_improvement_normalizes_integer_decimal_correctness(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_decimal_correctness_test_"))
+        try:
+            agent = build_default_agents(temp_dir)[0]
+            draft = Draft("qwen_agent_1", "方案规划", "calculation #### 2.0", [], [], [], [])
+
+            improvement = agent.self_improve("Task\nGold final answer: 2", draft, [])
+
+            self.assertTrue(improvement.is_correct)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def test_two_random_trainers_and_two_evaluators_evolve_separate_libraries(self) -> None:
         temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_test_"))
         try:
@@ -43,6 +99,7 @@ class WorkflowTestCase(unittest.TestCase):
                 self.assertIn(review.evaluator, report.evaluators)
                 self.assertIn(review.target, report.participants)
                 self.assertTrue(review.suggestions)
+                self.assertTrue(review.evaluation_memory_used)
                 self.assertFalse(hasattr(review, "score"))
 
             for improvement in report.self_improvements:
@@ -53,6 +110,10 @@ class WorkflowTestCase(unittest.TestCase):
                 self.assertIn(evolution.agent_name, report.evaluators)
                 self.assertTrue(evolution.evaluation_updates)
                 self.assertEqual(len(evolution.synthesized_suggestions), 4)
+                detail = evolution.evaluation_updates[0].detail
+                self.assertIn("prior_evaluation_memory=", detail)
+                self.assertIn("own_review_rationales=", detail)
+                self.assertIn("own_review_scores=", detail)
 
             output_file = temp_dir / "data" / "report.json"
             workflow.export_report(report, output_file)

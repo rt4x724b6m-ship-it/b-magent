@@ -186,6 +186,13 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+    def test_cli_can_disable_distillation_while_keeping_lora(self) -> None:
+        with patch("sys.argv", ["four_agent_private_train.py", "--disable-distillation"]):
+            args = parse_args()
+
+        self.assertTrue(args.enable_lora)
+        self.assertFalse(args.enable_distillation)
+
     def test_b_magent_training_evenly_splits_prepared_train_dataset_to_agents(self) -> None:
         temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_even_private_test_"))
         try:
@@ -275,13 +282,13 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
         self.assertEqual(len(schedule), 5)
         self.assertTrue(all(len(set(pair)) == 2 for pair in schedule))
 
-    def test_cli_defaults_enable_lora_disable_distillation_and_100_rounds(self) -> None:
+    def test_cli_defaults_enable_lora_distillation_and_200_rounds(self) -> None:
         with patch("sys.argv", ["four_agent_private_train.py"]):
             args = parse_args()
 
-        self.assertEqual(args.rounds, 100)
+        self.assertEqual(args.rounds, 200)
         self.assertTrue(args.enable_lora)
-        self.assertFalse(args.enable_distillation)
+        self.assertTrue(args.enable_distillation)
 
     def test_cli_disabling_lora_also_disables_distillation(self) -> None:
         with patch("sys.argv", ["four_agent_private_train.py", "--disable-lora"]):

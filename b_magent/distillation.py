@@ -244,12 +244,22 @@ class PeftManyToManyDistillationTrainer:
             report_to=[],
             fp16=torch.cuda.is_available(),
         )
+
+        class TrainerAdamW(torch.optim.AdamW):
+            def train(self) -> None:
+                return None
+
+            def eval(self) -> None:
+                return None
+
+        optimizer = TrainerAdamW(student.parameters(), lr=config.learning_rate)
         trainer = DistillationTrainerImpl(
             model=student,
             args=training_args,
             train_dataset=tokenized_dataset,
             data_collator=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
             tokenizer=tokenizer,
+            optimizers=(optimizer, None),
         )
         trainer.train()
         adapter_path.mkdir(parents=True, exist_ok=True)

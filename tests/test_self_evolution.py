@@ -24,6 +24,9 @@ class SelfEvolutionLibraryTestCase(unittest.TestCase):
                 thought_trace=["identify unknown", "translate sentence to equation"],
                 peer_suggestions=["state boundary conditions", "verify arithmetic"],
                 evaluator_suggestions=["check final numeric answer", "avoid vague feedback"],
+                evaluator_rationales=["The reviewed answer skipped the final numeric check."],
+                evaluation_memory_used=["Always verify the final numeric answer before suggesting style changes."],
+                evaluation_scores=["target=qwen_agent_2: correctness=0.8, safety=1.0, efficiency=0.7"],
             )
             library = SelfEvolutionLibrary(temp_dir, event.agent_name)
             result = library.evolve_from_round(event)
@@ -38,6 +41,9 @@ class SelfEvolutionLibraryTestCase(unittest.TestCase):
             self.assertIsNotNone(result.evaluation_record)
             self.assertEqual(result.professional_record.library_type, "professional")
             self.assertEqual(result.evaluation_record.library_type, "evaluation")
+            self.assertIn("prior_evaluation_memory=", result.evaluation_record.detail)
+            self.assertIn("own_review_rationales=", result.evaluation_record.detail)
+            self.assertIn("correctness=0.8", result.evaluation_record.detail)
 
             professional_records = library.search_professional("boundary")
             evaluation_records = library.search_evaluation("numeric")
