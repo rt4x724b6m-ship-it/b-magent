@@ -17,8 +17,8 @@ class SelfEvolutionLibraryTestCase(unittest.TestCase):
         temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_evolution_test_"))
         try:
             event = EvolutionInput(
-                agent_name="qwen_planner",
-                specialty="planning",
+                agent_name="qwen_agent_1",
+                specialty="general-agent",
                 task="solve GSM8K word problem",
                 answer="Break the word problem into variables and equations.",
                 thought_trace=["identify unknown", "translate sentence to equation"],
@@ -28,8 +28,8 @@ class SelfEvolutionLibraryTestCase(unittest.TestCase):
             library = SelfEvolutionLibrary(temp_dir, event.agent_name)
             result = library.evolve_from_round(event)
 
-            professional_file = temp_dir / "qwen_planner" / "professional_library.jsonl"
-            evaluation_file = temp_dir / "qwen_planner" / "evaluation_library.jsonl"
+            professional_file = temp_dir / "qwen_agent_1" / "professional_library.jsonl"
+            evaluation_file = temp_dir / "qwen_agent_1" / "evaluation_library.jsonl"
             self.assertTrue(professional_file.exists())
             self.assertTrue(evaluation_file.exists())
             self.assertNotEqual(professional_file, evaluation_file)
@@ -53,20 +53,20 @@ class SelfEvolutionLibraryTestCase(unittest.TestCase):
         try:
             events = [
                 EvolutionInput(
-                    agent_name="qwen_planner",
-                    specialty="planning",
+                    agent_name="qwen_agent_1",
+                    specialty="general-agent",
                     task="task",
                     answer="answer",
-                    peer_suggestions=["improve plan"],
-                    evaluator_suggestions=["review plan clarity"],
+                    peer_suggestions=["improve answer structure"],
+                    evaluator_suggestions=["evaluate answer clarity"],
                 ),
                 EvolutionInput(
-                    agent_name="qwen_verifier",
-                    specialty="verification",
+                    agent_name="qwen_agent_4",
+                    specialty="general-agent",
                     task="task",
                     answer="answer",
                     peer_suggestions=["improve checks"],
-                    evaluator_suggestions=["review calculation"],
+                    evaluator_suggestions=["evaluate calculation"],
                 ),
             ]
             results = evolve_all_agents(temp_dir, events)

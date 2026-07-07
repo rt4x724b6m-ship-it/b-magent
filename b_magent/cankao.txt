@@ -1,0 +1,241 @@
+如果你的论文重点是"智能体自主能力演化"而不是持续学习算法，实际上只使用 LoRA 作为唯一的参数更新方式会更简洁，也更容易突出创新点。
+
+建议把整个框架简化成下面这样：
+
+                   用户任务
+                       │
+                       ▼
+               Task Agent（执行任务）
+                       │
+        保存 Trajectory（推理、工具调用、结果）
+                       │
+                       ▼
+              Evaluator Pool（评价）
+       （Correctness、Safety、Efficiency）
+                       │
+             生成 Evaluation Report
+                       │
+                       ▼
+             Task Agent 自我反思
+    （Trajectory + Evaluation Report）
+                       │
+      生成 Reflection 与 Improved Answer
+                       │
+                       ▼
+          自动构建 LoRA 训练数据集
+                       │
+             Dataset ≥ Threshold？
+                  │          │
+                 否          是
+                  │          ▼
+                  │     LoRA Fine-tuning
+                  │          │
+                  │          ▼
+                  └────► 更新 LoRA Adapter
+                              │
+                              ▼
+                      下一个任务继续执行
+整个系统实际上只有一个优化目标
+
+因为只有 LoRA 被训练，所以损失函数也可以统一写成：
+
+L=L
+LoRA
+	​
+
+
+LoRA 参数更新为
+
+W=W
+0
+	​
+
++ΔW
+
+其中
+
+ΔW=BA
+W
+0
+	​
+
+：冻结的大模型参数
+A∈R
+r×d
+B∈R
+k×r
+r≪d,k
+
+训练时仅更新 A,B。
+
+LoRA 的训练损失
+
+如果反思阶段生成了最终正确答案 y
+∗
+，则直接采用标准监督学习损失即可：
+
+L
+LoRA
+	​
+
+=−
+t=1
+∑
+T
+	​
+
+logP
+θ+Δθ
+	​
+
+(y
+t
+∗
+	​
+
+∣x,y
+<t
+	​
+
+)
+
+其中：
+
+输入：任务描述
+标签：Agent 反思后的最终答案
+更新参数：LoRA Adapter
+Backbone：完全冻结
+
+这是目前最主流、实现最简单的方案。
+
+每个模块职责
+① Task Agent
+
+负责完成任务：
+
+y=f
+θ+Δθ
+	​
+
+(x)
+
+输出：
+
+推理过程
+Tool Calling
+最终答案
+
+保存为 Trajectory。
+
+② Evaluator
+
+多个评价器负责评分，例如：
+
+R=(r
+c
+	​
+
+,r
+s
+	​
+
+,r
+e
+	​
+
+)
+
+分别表示：
+
+Correctness
+Safety
+Efficiency
+
+同时输出自然语言评价：
+
+SQL 缺少 WHERE 条件。
+
+③ Self Reflection
+
+同一个 Agent 输入：
+
+原任务
+Trajectory
+Evaluation Report
+
+输出：
+
+错误分析
+改进方案
+最终正确答案
+
+例如：
+
+Reflection:
+遗漏了空值判断。
+
+Improved Answer:
+SELECT ...
+WHERE age IS NOT NULL;
+④ Dataset Builder
+
+直接生成：
+
+Instruction
+
+Input
+
+Output
+
+例如：
+
+Instruction:
+生成SQL
+
+Input:
+查询18岁以上用户
+
+Output:
+SELECT ...
+
+不断累计。
+
+⑤ LoRA Fine-tuning
+
+当数据达到阈值：
+
+例如：
+
+100 条
+
+或者：
+
+500 条
+
+开始微调：
+
+Base Model
+     │
+冻结参数
+     │
+LoRA Adapter
+     │
+训练
+     │
+更新Adapter
+为什么这种方案更合理？
+
+如果你的目标是让 Agent 在执行任务过程中逐渐提升能力，其实没有必要同时引入 DPO、RL、Continual Learning 等多种优化方式。
+
+仅使用 LoRA 有几个优势：
+
+结构简单：整个系统只有一个可训练模块（LoRA Adapter），框架清晰。
+训练稳定：采用成熟的 SFT 交叉熵损失即可，无需设计复杂的奖励函数或偏好优化。
+参数高效：冻结基础模型，仅更新少量 LoRA 参数，训练成本低，适合在线或周期性增量学习。
+论文表达更聚焦：创新点集中在"Agent 如何自主生成训练数据并触发自我进化"，而不是复杂的训练算法。
+
+因此，整个系统可以统一描述为：
+
+Task Execution → Multi-Agent Evaluation → Self-Reflection → Automatic Dataset Construction → LoRA Fine-tuning → Updated Agent
+
+这样的框架既符合当前 Agent 自进化(Self-Evolving Agent)研究的思路，又避免了引入过多训练策略，使论文重点放在自主学习闭环而不是训练技巧上。

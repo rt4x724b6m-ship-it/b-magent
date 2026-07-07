@@ -48,7 +48,7 @@ class GSM8KDataset:
             return []
 
         samples: list[GSM8KSample] = []
-        for line in path.read_text(encoding="utf-8").splitlines():
+        for line in path.read_text(encoding="utf-8").split("\n"):
             if not line.strip():
                 continue
             payload = json.loads(line)

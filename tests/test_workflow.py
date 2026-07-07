@@ -16,36 +16,43 @@ from b_magent.workflow import MultiAgentWorkflow, build_default_agents
 
 
 class WorkflowTestCase(unittest.TestCase):
-    def test_self_evolution_randomly_splits_roles_and_writes_libraries(self) -> None:
+    def test_two_random_trainers_and_two_evaluators_evolve_separate_libraries(self) -> None:
         temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_test_"))
         try:
             agents = build_default_agents(temp_dir)
             seed_agent_libraries(agents)
             workflow = MultiAgentWorkflow(agents, random_seed=7)
 
-            task = "three-agent self-evolution with private training and evaluator suggestions"
+            task = "four-agent self-evolution with private training and evaluator suggestions"
             report = workflow.run(task)
-            self.assertGreater(len(report.participants), 0)
-            self.assertGreater(len(report.evaluators), 0)
-            self.assertTrue(set(report.participants).isdisjoint(report.evaluators))
-            self.assertEqual(len(report.drafts), len(report.participants))
-            self.assertEqual(len(report.self_improvements), len(report.participants))
-            self.assertEqual(len(report.evaluation_evolutions), len(report.evaluators))
-            self.assertEqual(len(report.peer_reviews), len(report.participants) * len(report.evaluators))
+            expected_agents = ["qwen_agent_1", "qwen_agent_2", "qwen_agent_3", "qwen_agent_4"]
+            self.assertEqual(len(report.participants), 2)
+            self.assertEqual(len(report.evaluators), 2)
+            self.assertEqual(sorted(report.participants + report.evaluators), expected_agents)
+            self.assertEqual(set(report.participants).isdisjoint(report.evaluators), True)
+            self.assertEqual(len(report.drafts), 2)
+            self.assertEqual(len(report.self_improvements), 2)
+            self.assertEqual(len(report.evaluation_evolutions), 2)
+            self.assertEqual(len(report.peer_reviews), 4)
 
             for draft in report.drafts:
                 self.assertTrue(draft.private_training_used)
                 self.assertTrue(draft.thought_trace)
 
             for review in report.peer_reviews:
+                self.assertIn(review.evaluator, report.evaluators)
+                self.assertIn(review.target, report.participants)
                 self.assertTrue(review.suggestions)
                 self.assertFalse(hasattr(review, "score"))
 
             for improvement in report.self_improvements:
+                self.assertIn(improvement.agent_name, report.participants)
                 self.assertTrue(improvement.professional_updates)
 
             for evolution in report.evaluation_evolutions:
+                self.assertIn(evolution.agent_name, report.evaluators)
                 self.assertTrue(evolution.evaluation_updates)
+                self.assertEqual(len(evolution.synthesized_suggestions), 4)
 
             output_file = temp_dir / "data" / "report.json"
             workflow.export_report(report, output_file)
@@ -53,7 +60,7 @@ class WorkflowTestCase(unittest.TestCase):
             self.assertEqual(payload["task"], task)
             self.assertNotIn("score", payload["peer_reviews"][0])
 
-            for agent_name in ("qwen_planner", "qwen_executor", "qwen_reviewer"):
+            for agent_name in expected_agents:
                 professional_file = temp_dir / "data" / agent_name / "professional_library.jsonl"
                 evaluation_file = temp_dir / "data" / agent_name / "evaluation_library.jsonl"
                 self.assertTrue(professional_file.exists())

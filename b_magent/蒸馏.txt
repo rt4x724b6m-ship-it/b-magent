@@ -1,0 +1,229 @@
+在 LoRA 微调之后增加一个蒸馏阶段：
+
+                   用户任务
+                       │
+                       ▼
+               Task Agent（执行）
+                       │
+                       ▼
+                 Self Reflection
+                       │
+                       ▼
+              Dataset Buffer
+                       │
+                 LoRA Fine-tuning
+                       │
+            ┌──────────┴──────────┐
+            ▼                     ▼
+      Agent A LoRA          Agent B LoRA
+            │                     │
+            └──────────┬──────────┘
+                       ▼
+            Many-to-Many Distillation
+                       │
+                       ▼
+               Shared LoRA Adapter
+                       │
+                       ▼
+                  下一轮任务
+
+这里每个 Agent 保留自己的 LoRA，但周期性进行知识交换，而不是参数融合。
+
+多对多蒸馏如何做？
+
+假设有
+
+Agent A
+Agent B
+Agent C
+
+每个都有自己的 LoRA：
+
+L
+A
+	​
+
+,L
+B
+	​
+
+,L
+C
+	​
+
+
+输入同一个任务：
+
+Task
+
+三个 Agent 分别输出：
+
+p
+A
+	​
+
+(y∣x)
+p
+B
+	​
+
+(y∣x)
+p
+C
+	​
+
+(y∣x)
+
+然后计算教师分布：
+
+例如平均：
+
+p
+T
+	​
+
+=
+N
+1
+	​
+
+i
+∑
+	​
+
+p
+i
+	​
+
+
+或者加权：
+
+p
+T
+	​
+
+=
+i
+∑
+	​
+
+α
+i
+	​
+
+p
+i
+	​
+
+
+其中
+
+i
+∑
+	​
+
+α
+i
+	​
+
+=1
+
+权重可以来自评价 Agent 的得分。
+
+例如：
+
+Agent A
+
+Accuracy：
+
+0.95
+
+Agent B：
+
+0.82
+
+那么：
+
+α
+A
+	​
+
+>α
+B
+	​
+
+学生 LoRA
+
+共享 LoRA：
+
+L
+S
+	​
+
+
+学习：
+
+教师输出。
+
+Loss：
+
+最经典：
+
+KL Divergence：
+
+L
+KD
+	​
+
+=T
+2
+D
+KL
+	​
+
+(p
+T
+	​
+
+∥p
+S
+	​
+
+)
+
+其中
+
+Teacher
+
+多个 Agent
+
+Student
+
+共享 LoRA。
+
+最终 Loss
+
+如果还保留 SFT：
+
+那么：
+
+L=L
+SFT
+	​
+
++λL
+KD
+	​
+
+
+其中：
+
+SFT：
+
+学习 Reflection 后正确答案。
+
+KD：
+
+学习所有 Agent 的知识。
+
+这是目前论文最喜欢的组合。

@@ -44,15 +44,33 @@ class Draft:
     private_training_used: list[str]
     professional_memory_used: list[str]
     evaluation_alerts_used: list[str]
+    tool_calls: list[str] = field(default_factory=list)
 
 
 @dataclass
-class PeerReview:
-    reviewer: str
+class EvaluationScores:
+    correctness: float
+    safety: float
+    efficiency: float
+
+    def is_usable_for_lora(self, threshold: float = 0.6) -> bool:
+        return (
+            self.correctness >= threshold
+            and self.safety >= threshold
+            and self.efficiency >= threshold
+        )
+
+
+@dataclass
+class PeerEvaluation:
+    evaluator: str
     target: str
     suggestions: list[str]
     rationale: str
     evaluation_memory_used: list[str]
+    scores: EvaluationScores = field(
+        default_factory=lambda: EvaluationScores(correctness=1.0, safety=1.0, efficiency=1.0)
+    )
 
 
 @dataclass
@@ -61,6 +79,8 @@ class SelfImprovement:
     applied_suggestions: list[str]
     revised_answer: str
     professional_updates: list[LibraryRecord]
+    reflection: str = ""
+    is_correct: bool | None = None
 
 
 @dataclass
@@ -76,7 +96,7 @@ class EvolutionReport:
     participants: list[str]
     evaluators: list[str]
     drafts: list[Draft]
-    peer_reviews: list[PeerReview]
+    peer_reviews: list[PeerEvaluation]
     self_improvements: list[SelfImprovement]
     evaluation_evolutions: list[EvaluationEvolution]
 
@@ -86,4 +106,3 @@ class EvolutionReport:
     @property
     def reflections(self) -> list[EvaluationEvolution]:
         return self.evaluation_evolutions
-

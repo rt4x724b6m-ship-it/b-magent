@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .models import Draft, PeerReview
+from .models import Draft, EvaluationScores, PeerEvaluation
 
 
 class DemoQwenBackend:
@@ -33,11 +33,11 @@ class DemoQwenBackend:
 
     def suggest_improvements(
         self,
-        reviewer_name: str,
+        evaluator_name: str,
         target_draft: Draft,
         task: str,
         evaluation_memory: list[str],
-    ) -> PeerReview:
+    ) -> PeerEvaluation:
         suggestions = [
             "补充输入、输出和边界条件",
             "把关键步骤改成可复查的编号清单",
@@ -46,14 +46,14 @@ class DemoQwenBackend:
         if target_draft.thought_trace:
             suggestions.append("将思考轨迹中的假设转成可验证检查项")
         rationale = (
-            f"{reviewer_name} 根据任务、答案和思考轨迹给出可修改建议；"
+            f"{evaluator_name} 根据任务、答案和思考轨迹给出可修改建议；"
             f"参考评价库: {'; '.join(evaluation_memory) or '暂无'}。"
         )
-        return PeerReview(
-            reviewer=reviewer_name,
+        return PeerEvaluation(
+            evaluator=evaluator_name,
             target=target_draft.agent_name,
             suggestions=suggestions,
             rationale=rationale,
             evaluation_memory_used=evaluation_memory,
+            scores=EvaluationScores(correctness=0.8, safety=1.0, efficiency=0.8),
         )
-

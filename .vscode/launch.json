@@ -1,0 +1,34 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Run qwen_gsm8k.py (quick placeholder)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/baseline/qwen_gsm8k.py",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "args": [
+                "--echo-placeholder",
+                "--limit",
+                "5",
+                "--output",
+                "baseline/qwen_gsm8k_report.json"
+            ]
+        },
+        {
+            "name": "Run qwen_gsm8k.py (local Qwen)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/baseline/qwen_gsm8k.py",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "args": [
+                "--model-path",
+                "${workspaceFolder}/models/Qwen2.5-1.5B-Instruct",
+                "--output",
+                "baseline/qwen_gsm8k_report.json"
+            ]
+        }
+    ]
+}

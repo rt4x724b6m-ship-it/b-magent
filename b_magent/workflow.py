@@ -3,42 +3,55 @@ from __future__ import annotations
 import json
 import random
 from pathlib import Path
+from typing import Any
 
 from .agent import QwenAgent
 from .backend import DemoQwenBackend
-from .models import Draft, EvolutionReport, PeerReview
+from .models import Draft, EvolutionReport, PeerEvaluation
 
 
-def build_default_agents(base_dir: Path | None = None) -> list[QwenAgent]:
+def build_default_agents(base_dir: Path | None = None, backend: Any | None = None) -> list[QwenAgent]:
     root = base_dir or Path(__file__).resolve().parent.parent
     data_dir = root / "data"
-    backend = DemoQwenBackend()
+    backend = backend or DemoQwenBackend()
     return [
-        QwenAgent("qwen_planner", "方案规划", data_dir, backend),
-        QwenAgent("qwen_executor", "执行落地", data_dir, backend),
-        QwenAgent("qwen_reviewer", "质量评审", data_dir, backend),
+        QwenAgent("qwen_agent_1", "通用智能体", data_dir, backend),
+        QwenAgent("qwen_agent_2", "通用智能体", data_dir, backend),
+        QwenAgent("qwen_agent_3", "通用智能体", data_dir, backend),
+        QwenAgent("qwen_agent_4", "通用智能体", data_dir, backend),
     ]
 
 
 class MultiAgentWorkflow:
-    def __init__(self, agents: list[QwenAgent], random_seed: int | None = None) -> None:
-        if len(agents) < 2:
-            raise ValueError("at least two agents are required")
+    def __init__(
+        self,
+        agents: list[QwenAgent],
+        random_seed: int | None = None,
+        private_batch_size: int | None = None,
+    ) -> None:
+        if len(agents) != 4:
+            raise ValueError("b_magent training requires exactly four agents")
         self.agents = agents
-        self.random = random.Random(random_seed)
+        self.random_seed = random_seed
+        self._rng = random.Random(random_seed)
+        self.private_batch_size = private_batch_size
 
-    def run(self, task: str) -> EvolutionReport:
-        participants, evaluators = self._split_roles()
+    def run(self, task: str, participant_names: list[str] | None = None) -> EvolutionReport:
+        participants = self._select_participants(participant_names)
+        participant_names = {agent.name for agent in participants}
+        evaluators = [agent for agent in self.agents if agent.name not in participant_names]
 
         drafts: list[Draft] = []
         for agent in participants:
-            private_training = agent.train_private_data(task)
+            private_training = agent.train_private_data(task, batch_size=self.private_batch_size)
             drafts.append(agent.solve_task(task, private_training))
 
-        peer_reviews: list[PeerReview] = []
+        peer_reviews: list[PeerEvaluation] = []
         for evaluator in evaluators:
             for draft in drafts:
-                peer_reviews.append(evaluator.review_peer(task, draft))
+                if evaluator.name == draft.agent_name:
+                    continue
+                peer_reviews.append(evaluator.evaluate_peer(task, draft))
 
         self_improvements = []
         for participant in participants:
@@ -47,7 +60,10 @@ class MultiAgentWorkflow:
             self_improvements.append(participant.self_improve(task, draft, reviews_for_agent))
 
         evaluation_evolutions = [
-            evaluator.evolve_evaluation_library(task, peer_reviews)
+            evaluator.evolve_evaluation_library(
+                task,
+                [review for review in peer_reviews if review.evaluator == evaluator.name],
+            )
             for evaluator in evaluators
         ]
 
@@ -61,18 +77,22 @@ class MultiAgentWorkflow:
             evaluation_evolutions=evaluation_evolutions,
         )
 
+    def _select_participants(self, participant_names: list[str] | None) -> list[QwenAgent]:
+        if participant_names is None:
+            return self._rng.sample(self.agents, 2)
+        if len(participant_names) != 2:
+            raise ValueError("each workflow round requires exactly two participant names")
+        agents_by_name = {agent.name: agent for agent in self.agents}
+        missing = [name for name in participant_names if name not in agents_by_name]
+        if missing:
+            raise ValueError(f"unknown participant agents: {', '.join(missing)}")
+        if len(set(participant_names)) != 2:
+            raise ValueError("participant names must be distinct")
+        return [agents_by_name[name] for name in participant_names]
+
     def export_report(self, report: EvolutionReport, output_file: Path) -> None:
         output_file.parent.mkdir(parents=True, exist_ok=True)
         output_file.write_text(
             json.dumps(report.to_dict(), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-
-    def _split_roles(self) -> tuple[list[QwenAgent], list[QwenAgent]]:
-        shuffled = list(self.agents)
-        self.random.shuffle(shuffled)
-        split_at = self.random.randint(1, len(shuffled) - 1)
-        participants = shuffled[:split_at]
-        evaluators = shuffled[split_at:]
-        return participants, evaluators
-

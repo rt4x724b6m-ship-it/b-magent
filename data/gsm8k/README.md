@@ -1,11 +1,12 @@
 # GSM8K local data
 
-Place GSM8K files here when you are ready to run with local data.
+This directory contains the official GSM8K train/test split from
+`openai/gsm8k` (`main` configuration).
 
 Expected files:
 
-- `train.jsonl`
-- `test.jsonl`
+- `train.jsonl` with 7,473 samples
+- `test.jsonl` with 1,319 samples
 - optional `raw.jsonl` if you want the framework to split one local file
 
 Expected row format:

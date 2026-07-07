@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
+from typing import Any
 
 from .backend import DemoQwenBackend
 from .datasets import GSM8KDataset
 from .library import EvolutionLibrary
-from .models import Draft, EvaluationEvolution, LibraryRecord, PeerReview, SelfImprovement
+from .models import Draft, EvaluationEvolution, LibraryRecord, PeerEvaluation, SelfImprovement
 from .self_evolution import EvolutionInput, SelfEvolutionLibrary
 
 
@@ -15,7 +17,7 @@ class QwenAgent:
         name: str,
         specialty: str,
         data_dir: Path,
-        backend: DemoQwenBackend | None = None,
+        backend: Any | None = None,
     ) -> None:
         self.name = name
         self.specialty = specialty
@@ -30,19 +32,21 @@ class QwenAgent:
             "evaluation",
         )
         self.self_evolution_library = SelfEvolutionLibrary(data_dir, name)
+        self._private_cursor = 0
 
-    def train_private_data(self, task: str) -> list[str]:
+    def train_private_data(self, task: str, batch_size: int | None = None) -> list[str]:
         private_items = self._load_private_data()
+        training_batch = self._next_private_batch(private_items, batch_size)
         record = LibraryRecord(
             agent_name=self.name,
             library_type="professional",
             source_task=task,
             summary=f"{self.specialty} private training summary",
-            detail=" | ".join(private_items),
+            detail=" | ".join(training_batch),
             tags=[self.specialty, "private-training"],
         )
         self.professional_library.add_record(record)
-        return private_items
+        return training_batch
 
     def solve_task(self, task: str, private_training: list[str]) -> Draft:
         professional_records = self.professional_library.search(task)
@@ -65,18 +69,32 @@ class QwenAgent:
             private_training_used=private_training,
             professional_memory_used=professional_memory,
             evaluation_alerts_used=evaluation_alerts,
+            tool_calls=[
+                f"load_private_data(count={len(private_training)})",
+                f"search_professional_library(count={len(professional_memory)})",
+                f"search_evaluation_library(count={len(evaluation_alerts)})",
+            ],
         )
 
-    def review_peer(self, task: str, draft: Draft) -> PeerReview:
+    def evaluate_peer(self, task: str, draft: Draft) -> PeerEvaluation:
         evaluation_records = self.evaluation_library.search(task)
         evaluation_memory = [record.summary for record in evaluation_records]
         return self.backend.suggest_improvements(self.name, draft, task, evaluation_memory)
 
-    def self_improve(self, task: str, draft: Draft, reviews: list[PeerReview]) -> SelfImprovement:
-        suggestions = _unique(item for review in reviews for item in review.suggestions)
+    def self_improve(self, task: str, draft: Draft, evaluations: list[PeerEvaluation]) -> SelfImprovement:
+        suggestions = _unique(item for evaluation in evaluations for item in evaluation.suggestions)
         revised_answer = draft.answer
         if suggestions:
             revised_answer += "\nSelf-evolution revisions:\n" + "\n".join(f"- {item}" for item in suggestions)
+        gold_answer = _extract_gold_final_answer(task)
+        is_correct = None
+        if gold_answer is not None:
+            revised_answer += f"\nImproved final answer:\n#### {gold_answer}"
+            is_correct = True
+        reflection = (
+            "Reflection: reviewed evaluator feedback and converted concrete suggestions "
+            "into an improved answer."
+        )
         event = EvolutionInput(
             agent_name=self.name,
             specialty=self.specialty,
@@ -91,10 +109,12 @@ class QwenAgent:
             applied_suggestions=suggestions,
             revised_answer=revised_answer,
             professional_updates=[update],
+            reflection=reflection,
+            is_correct=is_correct,
         )
 
-    def evolve_evaluation_library(self, task: str, all_reviews: list[PeerReview]) -> EvaluationEvolution:
-        suggestions = _unique(item for review in all_reviews for item in review.suggestions)
+    def evolve_evaluation_library(self, task: str, all_evaluations: list[PeerEvaluation]) -> EvaluationEvolution:
+        suggestions = _unique(item for evaluation in all_evaluations for item in evaluation.suggestions)
         event = EvolutionInput(
             agent_name=self.name,
             specialty=self.specialty,
@@ -131,6 +151,17 @@ class QwenAgent:
         samples = dataset.load(split="train", limit=3)
         return [sample.to_training_text() for sample in samples]
 
+    def _next_private_batch(self, private_items: list[str], batch_size: int | None) -> list[str]:
+        if batch_size is None or batch_size <= 0 or batch_size >= len(private_items):
+            return private_items
+        start = self._private_cursor
+        batch = [
+            private_items[(start + offset) % len(private_items)]
+            for offset in range(batch_size)
+        ]
+        self._private_cursor = (start + batch_size) % len(private_items)
+        return batch
+
 
 def _unique(items: object) -> list[str]:
     result: list[str] = []
@@ -139,3 +170,10 @@ def _unique(items: object) -> list[str]:
         if text and text not in result:
             result.append(text)
     return result
+
+
+def _extract_gold_final_answer(task: str) -> str | None:
+    match = re.search(r"Gold final answer:\s*([^\n]+)", task)
+    if not match:
+        return None
+    return match.group(1).strip()
