@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from baseline.qwen_gsm8k import export_report, run_qwen_gsm8k_baseline
+from b_magent.local_qwen import DEFAULT_QWEN_MODEL, LocalQwenAgentModel
+from train.four_agent_private_train import AGENT_NAMES, build_four_local_qwen_agents
 
 
 class FixedQwenModel:
@@ -53,6 +58,20 @@ class QwenGSM8KBaselineTestCase(unittest.TestCase):
             self.assertEqual(payload["accuracy"], 0.5)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_builds_four_qwen25_15b_local_agents(self) -> None:
+        models = build_four_local_qwen_agents()
+
+        self.assertEqual(list(models), list(AGENT_NAMES))
+        self.assertTrue(all(isinstance(model, LocalQwenAgentModel) for model in models.values()))
+        self.assertEqual(
+            {model.engine.model_name_or_path for model in models.values()},
+            {DEFAULT_QWEN_MODEL},
+        )
+        self.assertEqual(
+            {id(model.engine) for model in models.values()},
+            {id(next(iter(models.values())).engine)},
+        )
 
 
 if __name__ == "__main__":

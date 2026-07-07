@@ -6,6 +6,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from _project_path import add_project_root_to_sys_path
+
+add_project_root_to_sys_path()
+
 from train.four_agent_private_train import AGENT_NAMES, run_four_agent_voting_on_test
 
 

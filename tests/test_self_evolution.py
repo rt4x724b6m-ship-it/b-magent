@@ -5,6 +5,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from _project_path import add_project_root_to_sys_path
+
+add_project_root_to_sys_path()
+
 from b_magent.self_evolution import EvolutionInput, SelfEvolutionLibrary, evolve_all_agents
 
 

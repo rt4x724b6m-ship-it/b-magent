@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Protocol
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from baseline.qwen_gsm8k import extract_numeric_answer, normalize_answer
 from b_magent.datasets import GSM8KDataset, GSM8KSample
+from b_magent.local_qwen import DEFAULT_QWEN_MODEL, LocalQwenAgentModel, LocalQwenEngine
 
 
 AGENT_NAMES = ("qwen_planner", "qwen_executor", "qwen_reviewer", "qwen_verifier")
@@ -217,6 +223,23 @@ def run_four_agent_voting_on_test(
     )
 
 
+def build_four_local_qwen_agents(
+    model_name_or_path: str | Path = DEFAULT_QWEN_MODEL,
+    agent_names: tuple[str, ...] = AGENT_NAMES,
+    device_map: str = "auto",
+    torch_dtype: str = "float16",
+) -> dict[str, LocalQwenAgentModel]:
+    engine = LocalQwenEngine(
+        model_name_or_path=model_name_or_path,
+        device_map=device_map,
+        torch_dtype=torch_dtype,
+    )
+    return {
+        agent_name: LocalQwenAgentModel(agent_name=agent_name, engine=engine)
+        for agent_name in agent_names
+    }
+
+
 def majority_vote(votes: list[AgentVote]) -> str:
     counts: dict[str, int] = {}
     for vote in votes:
@@ -271,21 +294,33 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rounds", type=int, default=3)
     parser.add_argument("--batches-per-round", type=int, default=32)
     parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--local-qwen", action="store_true", help="Use local Qwen2.5-1.5B models for all agents.")
+    parser.add_argument("--model-path", default=DEFAULT_QWEN_MODEL, help="Local path or Hugging Face id for Qwen.")
     parser.add_argument("--output", type=Path, default=Path("train/four_agent_training_report.json"))
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    report = run_four_agent_private_training(
-        dataset_dir=args.dataset_dir,
-        rounds=args.rounds,
-        batches_per_round=args.batches_per_round,
-        batch_size=args.batch_size,
-    )
-    export_report(report, args.output)
-    for agent in report.agents:
-        print(f"{agent.agent_name}: accuracy={agent.final_accuracy:.4f}")
+    if args.local_qwen:
+        models = build_four_local_qwen_agents(args.model_path)
+        voting_report = run_four_agent_voting_on_test(args.dataset_dir, models)
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(
+            json.dumps(voting_report.to_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        print(f"four-agent voting accuracy={voting_report.accuracy:.4f}")
+    else:
+        report = run_four_agent_private_training(
+            dataset_dir=args.dataset_dir,
+            rounds=args.rounds,
+            batches_per_round=args.batches_per_round,
+            batch_size=args.batch_size,
+        )
+        export_report(report, args.output)
+        for agent in report.agents:
+            print(f"{agent.agent_name}: accuracy={agent.final_accuracy:.4f}")
     print(f"report: {args.output}")
 
 

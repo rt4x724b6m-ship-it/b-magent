@@ -2,12 +2,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Protocol
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from b_magent.datasets import GSM8KDataset, GSM8KSample
+from b_magent.local_qwen import LocalQwenAgentModel, LocalQwenEngine
+
+
+DEFAULT_LOCAL_QWEN_MODEL = PROJECT_ROOT / "models" / "Qwen2.5-1.5B-Instruct"
 
 
 class QwenModel(Protocol):
@@ -18,12 +27,24 @@ class QwenModel(Protocol):
 class EchoQwenModel:
     """Offline placeholder for the Qwen baseline interface.
 
-    Replace this class with a real Qwen API/client implementation when the
-    environment is ready. The runner and metrics do not depend on that choice.
+    Use --echo-placeholder only for quick plumbing checks without model loading.
     """
 
     def generate(self, question: str) -> str:
         return f"I need to solve this GSM8K problem: {question}\n#### 0"
+
+
+def build_local_qwen_baseline_model(
+    model_name_or_path: str | Path = DEFAULT_LOCAL_QWEN_MODEL,
+    device_map: str = "auto",
+    torch_dtype: str = "float16",
+) -> LocalQwenAgentModel:
+    engine = LocalQwenEngine(
+        model_name_or_path=model_name_or_path,
+        device_map=device_map,
+        torch_dtype=torch_dtype,
+    )
+    return LocalQwenAgentModel(agent_name="qwen_baseline", engine=engine)
 
 
 @dataclass
@@ -116,21 +137,34 @@ def normalize_answer(answer: str) -> str:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run a single-Qwen GSM8K baseline.")
+    parser = argparse.ArgumentParser(description="Run a local Qwen2.5-1.5B GSM8K baseline.")
     parser.add_argument("--dataset-dir", type=Path, default=Path("data/gsm8k"))
     parser.add_argument("--split", default="test")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--output", type=Path, default=Path("baseline/qwen_gsm8k_report.json"))
+    parser.add_argument(
+        "--model-path",
+        type=Path,
+        default=DEFAULT_LOCAL_QWEN_MODEL,
+        help="Local path for Qwen2.5-1.5B.",
+    )
+    parser.add_argument(
+        "--echo-placeholder",
+        action="store_true",
+        help="Use the offline echo placeholder instead of loading Qwen.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    active_model = None if args.echo_placeholder else build_local_qwen_baseline_model(args.model_path)
     report = run_qwen_gsm8k_baseline(
         dataset_dir=args.dataset_dir,
+        model=active_model,
         split=args.split,
         limit=args.limit,
-        model_name="qwen",
+        model_name="echo-qwen-placeholder" if args.echo_placeholder else str(args.model_path),
     )
     export_report(report, args.output)
     print(f"split: {report.split}")

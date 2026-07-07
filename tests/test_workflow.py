@@ -6,6 +6,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from _project_path import add_project_root_to_sys_path
+
+add_project_root_to_sys_path()
+
 from b_magent.datasets import GSM8KDataset
 from b_magent.seed import seed_agent_libraries
 from b_magent.workflow import MultiAgentWorkflow, build_default_agents
