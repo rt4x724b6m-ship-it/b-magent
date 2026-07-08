@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import gc
 from dataclasses import asdict, dataclass, field
 from hashlib import sha256
 from pathlib import Path
@@ -158,7 +159,6 @@ class PeftManyToManyDistillationTrainer:
         student = AutoModelForCausalLM.from_pretrained(
             config.base_model_path,
             torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-            device_map="auto" if torch.cuda.is_available() else None,
             local_files_only=True,
         )
         student.config.use_cache = False
@@ -171,19 +171,22 @@ class PeftManyToManyDistillationTrainer:
         )
         student = get_peft_model(student, peft_config)
 
-        teacher_models = []
-        for teacher in teachers:
+        def load_teacher_model(teacher: TeacherAdapter):  # type: ignore[no-untyped-def]
             model = AutoModelForCausalLM.from_pretrained(
                 config.base_model_path,
-                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-                device_map="auto" if torch.cuda.is_available() else None,
+                torch_dtype=torch.float32,
                 local_files_only=True,
             )
             model = PeftModel.from_pretrained(model, teacher.adapter_path)
             model.eval()
             for parameter in model.parameters():
                 parameter.requires_grad_(False)
-            teacher_models.append((model, teacher.weight))
+            return model
+
+        def release_teacher_model(model) -> None:  # type: ignore[no-untyped-def]
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         dataset = Dataset.from_list(rows)
 
@@ -204,6 +207,12 @@ class PeftManyToManyDistillationTrainer:
 
         tokenized_dataset = dataset.map(tokenize, remove_columns=dataset.column_names)
 
+        def teacher_input_device(teacher_model) -> torch.device:  # type: ignore[no-untyped-def]
+            embeddings = teacher_model.get_input_embeddings()
+            if embeddings is not None:
+                return embeddings.weight.device
+            return next(teacher_model.parameters()).device
+
         class DistillationTrainerImpl(Trainer):
             def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):  # type: ignore[no-untyped-def]
                 labels = inputs.get("labels")
@@ -217,11 +226,19 @@ class PeftManyToManyDistillationTrainer:
                         for key, value in inputs.items()
                         if key in {"input_ids", "attention_mask", "position_ids"}
                     }
-                    for teacher_model, weight in teacher_models:
-                        teacher_outputs = teacher_model(**teacher_inputs)
-                        probs = F.softmax(teacher_outputs.logits / config.temperature, dim=-1) * float(weight)
-                        teacher_probs = probs if teacher_probs is None else teacher_probs + probs
-                        total_weight += float(weight)
+                    for teacher in teachers:
+                        teacher_model = load_teacher_model(teacher)
+                        try:
+                            device = teacher_input_device(teacher_model)
+                            model_inputs = {key: value.to(device) for key, value in teacher_inputs.items()}
+                            teacher_outputs = teacher_model(**model_inputs)
+                            teacher_logits = teacher_outputs.logits.to(outputs.logits.device)
+                            probs = F.softmax(teacher_logits / config.temperature, dim=-1) * float(teacher.weight)
+                            teacher_probs = probs if teacher_probs is None else teacher_probs + probs
+                            total_weight += float(teacher.weight)
+                        finally:
+                            release_teacher_model(teacher_model)
+                            del teacher_model
                     teacher_probs = teacher_probs / max(total_weight, 1e-8)
                 student_log_probs = F.log_softmax(outputs.logits / config.temperature, dim=-1)
                 kd_per_token = F.kl_div(student_log_probs, teacher_probs, reduction="none").sum(dim=-1)
@@ -243,6 +260,7 @@ class PeftManyToManyDistillationTrainer:
             save_strategy="no",
             report_to=[],
             fp16=torch.cuda.is_available(),
+            label_names=["labels"],
         )
 
         class TrainerAdamW(torch.optim.AdamW):
@@ -265,6 +283,12 @@ class PeftManyToManyDistillationTrainer:
         adapter_path.mkdir(parents=True, exist_ok=True)
         student.save_pretrained(adapter_path)
         tokenizer.save_pretrained(adapter_path)
+        del trainer
+        del optimizer
+        del student
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
 class DistillationManager:
@@ -278,14 +302,33 @@ class DistillationManager:
         if len(teachers) < 2:
             return [self.skipped_update(agent_name, "need at least two trained agent LoRA teachers") for agent_name in self.agent_names()]
 
+        agent_names = self.agent_names_with_new_lora_examples(lora_updates)
+        if not agent_names:
+            return []
+
         updates: list[DistillationUpdate] = []
-        for agent_name in self.agent_names():
+        for agent_name in agent_names:
             added = self.refresh_agent_dataset(agent_name)
             if added == 0:
                 updates.append(self.skipped_update(agent_name, "no new private SFT examples for distillation"))
                 continue
             updates.append(self.maybe_train_agent_distillation(agent_name, teachers))
         return updates
+
+    def agent_names_with_new_lora_examples(self, lora_updates: object) -> list[str]:
+        if not isinstance(lora_updates, list):
+            return self.agent_names()
+
+        agent_names: set[str] = set()
+        for update in lora_updates:
+            agent_name = getattr(update, "agent_name", None)
+            if not isinstance(agent_name, str) or not agent_name:
+                continue
+            trained = bool(getattr(update, "trained", False))
+            reason = str(getattr(update, "reason", ""))
+            if trained or reason.startswith("pending dataset below threshold:"):
+                agent_names.add(agent_name)
+        return sorted(agent_names)
 
     def refresh_agent_dataset(self, agent_name: str) -> int:
         state = self.load_state(agent_name)

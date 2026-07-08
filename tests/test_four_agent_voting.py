@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from _project_path import add_project_root_to_sys_path
 
@@ -56,10 +58,12 @@ class KnowledgeLibraryVoteModel:
         data_dir: Path,
         lora_output_dir: Path,
         memory_limit: int = 3,
+        prefer_distilled_adapter: bool = True,
     ) -> None:
         self.agent_name = agent_name
         self.engine = engine
         self.lora_output_dir = lora_output_dir
+        self.prefer_distilled_adapter = prefer_distilled_adapter
         self.professional_library = EvolutionLibrary(
             data_dir / agent_name / "professional_library.jsonl",
             "professional",
@@ -91,6 +95,9 @@ class KnowledgeLibraryVoteModel:
 
     @property
     def adapter_path(self) -> Path:
+        distilled_adapter_path = self.lora_output_dir / self.agent_name / "distilled_adapter"
+        if self.prefer_distilled_adapter and _is_lora_adapter_ready(distilled_adapter_path):
+            return distilled_adapter_path
         return self.lora_output_dir / self.agent_name / "adapter"
 
 
@@ -108,7 +115,37 @@ def _format_library_records(records: list[object]) -> str:
     return "\n".join(lines)
 
 
+def _is_lora_adapter_ready(adapter_path: Path) -> bool:
+    return (adapter_path / "adapter_config.json").exists()
+
+
 class FourAgentVotingTestCase(unittest.TestCase):
+    def test_local_qwen_adapter_cache_passes_path_string_to_peft(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_adapter_cache_test_"))
+        try:
+            adapter_path = temp_dir / "adapter"
+            adapter_path.mkdir()
+            (adapter_path / "adapter_config.json").write_text("{}", encoding="utf-8")
+            (adapter_path / "adapter_model.safetensors").write_text("weights-v1", encoding="utf-8")
+            engine = LocalQwenEngine()
+            engine._model = object()
+            loaded_paths: list[object] = []
+
+            class FakePeftModel:
+                @staticmethod
+                def from_pretrained(model: object, path: object) -> object:
+                    loaded_paths.append(path)
+                    return {"model": model, "path": path}
+
+            with patch.dict("sys.modules", {"peft": type("FakePeftModule", (), {"PeftModel": FakePeftModel})}):
+                first = engine._load_adapter_model(adapter_path)
+                second = engine._load_adapter_model(adapter_path)
+
+            self.assertIs(first, second)
+            self.assertEqual(loaded_paths, [str(adapter_path.resolve())])
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def test_b_magent_reset_preserves_evaluation_libraries_by_default(self) -> None:
         temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_reset_test_"))
         try:
@@ -274,9 +311,40 @@ class FourAgentVotingTestCase(unittest.TestCase):
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+    def test_knowledge_library_vote_model_prefers_distilled_adapter(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_distilled_vote_test_"))
+        try:
+            data_dir = temp_dir / "data"
+            lora_output_dir = temp_dir / "lora_adapters"
+            agent_name = "qwen_agent_1"
+            agent_dir = data_dir / agent_name
+            agent_dir.mkdir(parents=True)
+            (agent_dir / "professional_library.jsonl").write_text("", encoding="utf-8")
+            (agent_dir / "evaluation_library.jsonl").write_text("", encoding="utf-8")
+
+            adapter_dir = lora_output_dir / agent_name / "adapter"
+            distilled_adapter_dir = lora_output_dir / agent_name / "distilled_adapter"
+            adapter_dir.mkdir(parents=True)
+            distilled_adapter_dir.mkdir(parents=True)
+            (adapter_dir / "adapter_config.json").write_text("{}", encoding="utf-8")
+            (distilled_adapter_dir / "adapter_config.json").write_text("{}", encoding="utf-8")
+
+            model = KnowledgeLibraryVoteModel(
+                agent_name=agent_name,
+                engine=LocalQwenEngine(),
+                data_dir=data_dir,
+                lora_output_dir=lora_output_dir,
+            )
+            self.assertEqual(model.adapter_path, distilled_adapter_dir)
+
+            (distilled_adapter_dir / "adapter_config.json").unlink()
+            self.assertEqual(model.adapter_path, adapter_dir)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
 
 class KnowledgeLibraryFourAgentVotingIntegrationTestCase(unittest.TestCase):
-    def test_four_agents_vote_with_lora_tuned_models_on_first_100_test_questions(self) -> None:
+    def test_four_agents_vote_with_distilled_lora_tuned_models_on_first_100_test_questions(self) -> None:
         project_root = Path(__file__).resolve().parent.parent
         dataset_dir = project_root / "data" / "gsm8k"
         model_path = project_root / DEFAULT_QWEN_MODEL
@@ -301,10 +369,10 @@ class KnowledgeLibraryFourAgentVotingIntegrationTestCase(unittest.TestCase):
         missing_adapters = [
             agent_name
             for agent_name in AGENT_NAMES
-            if not (lora_output_dir / agent_name / "adapter" / "adapter_config.json").exists()
+            if not (lora_output_dir / agent_name / "distilled_adapter" / "adapter_config.json").exists()
         ]
         if missing_adapters:
-            self.skipTest(f"missing LoRA adapters for: {', '.join(missing_adapters)}")
+            self.skipTest(f"missing distilled LoRA adapters for: {', '.join(missing_adapters)}")
 
         engine = LocalQwenEngine(model_name_or_path=model_path)
         models = {
@@ -313,6 +381,7 @@ class KnowledgeLibraryFourAgentVotingIntegrationTestCase(unittest.TestCase):
                 engine=engine,
                 data_dir=data_dir,
                 lora_output_dir=lora_output_dir,
+                prefer_distilled_adapter=True,
             )
             for agent_name in AGENT_NAMES
         }
@@ -322,7 +391,7 @@ class KnowledgeLibraryFourAgentVotingIntegrationTestCase(unittest.TestCase):
             limit=STANDARD_TEST_LIMIT,
             on_prediction=print_voting_prediction_detail,
         )
-        output_file = project_root / "train" / "four_agent_lora_voting_100_report.json"
+        output_file = project_root / "train" / "four_agent_distilled_lora_voting_100_report.json"
         output_file.parent.mkdir(parents=True, exist_ok=True)
         output_file.write_text(
             json.dumps(report.to_dict(), ensure_ascii=False, indent=2),

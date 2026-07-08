@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import gc
 import re
 from dataclasses import asdict, dataclass, field
 from hashlib import sha256
@@ -112,7 +113,6 @@ class PeftSFTLoraTrainer:
         model = AutoModelForCausalLM.from_pretrained(
             config.base_model_path,
             torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-            device_map="auto" if torch.cuda.is_available() else None,
             local_files_only=True,
         )
         model.config.use_cache = False
@@ -153,6 +153,7 @@ class PeftSFTLoraTrainer:
             save_strategy="no",
             report_to=[],
             fp16=torch.cuda.is_available(),
+            label_names=["labels"],
         )
 
         class TrainerAdamW(torch.optim.AdamW):
@@ -174,6 +175,12 @@ class PeftSFTLoraTrainer:
         adapter_path.mkdir(parents=True, exist_ok=True)
         model.save_pretrained(adapter_path)
         tokenizer.save_pretrained(adapter_path)
+        del trainer
+        del optimizer
+        del model
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
 class LoraEvolutionManager:

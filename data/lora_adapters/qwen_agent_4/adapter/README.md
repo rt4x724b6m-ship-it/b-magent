@@ -1,5 +1,5 @@
 ---
-base_model: models/Qwen2.5-1.5B-Instruct
+base_model: /root/autodl-tmp/user/cxh/b_magent/models/Qwen2.5-1.5B-Instruct
 library_name: peft
 ---
 

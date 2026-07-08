@@ -16,10 +16,40 @@ from train.four_agent_private_train import (
     STANDARD_PRIVATE_TRAIN_SIZE,
     build_participant_schedule,
     export_report,
+    main,
     parse_args,
     run_b_magent_training_entry,
     run_four_agent_private_training,
 )
+
+
+class ReleasingBackend:
+    def __init__(self) -> None:
+        self.release_calls = 0
+
+    def solve(
+        self,
+        agent_name: str,
+        specialty: str,
+        task: str,
+        private_training: list[str],
+        professional_memory: list[str],
+        evaluation_alerts: list[str],
+    ) -> tuple[str, list[str]]:
+        return "answer #### 0", []
+
+    def suggest_improvements(self, evaluator_name, target_draft, task, evaluation_memory):  # type: ignore[no-untyped-def]
+        from b_magent.models import PeerEvaluation
+
+        return PeerEvaluation(evaluator_name, target_draft.agent_name, ["ok"], "ok", [])
+
+    def release_model_memory(self) -> None:
+        self.release_calls += 1
+
+
+class NoopLoraManager:
+    def update_from_round(self, task, drafts, peer_reviews, self_improvements):  # type: ignore[no-untyped-def]
+        return []
 
 
 class FourAgentPrivateTrainingTestCase(unittest.TestCase):
@@ -268,6 +298,35 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+    def test_b_magent_releases_backend_memory_before_adapter_training(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_release_memory_test_"))
+        try:
+            dataset_dir = temp_dir / "data" / "gsm8k"
+            dataset_dir.mkdir(parents=True)
+            train_rows = [
+                {"question": f"train-{i}", "answer": f"reasoning {i} #### {i}"}
+                for i in range(4)
+            ]
+            (dataset_dir / "train.jsonl").write_text(
+                "\n".join(json.dumps(row) for row in train_rows) + "\n",
+                encoding="utf-8",
+            )
+            backend = ReleasingBackend()
+
+            run_b_magent_training_entry(
+                dataset_dir=dataset_dir,
+                data_dir=temp_dir / "data",
+                rounds=2,
+                private_batch_size=1,
+                random_seed=1,
+                backend=backend,
+                lora_manager=NoopLoraManager(),
+            )
+
+            self.assertEqual(backend.release_calls, 2)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def test_participant_schedule_uses_distinct_agents_per_round(self) -> None:
         schedule = build_participant_schedule(
             {
@@ -287,6 +346,9 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
             args = parse_args()
 
         self.assertEqual(args.rounds, 200)
+        self.assertTrue(args.dataset_dir.is_absolute())
+        self.assertTrue(args.output.is_absolute())
+        self.assertTrue(args.lora_output_dir.is_absolute())
         self.assertTrue(args.enable_lora)
         self.assertTrue(args.enable_distillation)
 
@@ -296,6 +358,54 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
 
         self.assertFalse(args.enable_lora)
         self.assertFalse(args.enable_distillation)
+
+    def test_b_magent_main_resets_training_state_before_training(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_main_reset_test_"))
+        try:
+            output_file = temp_dir / "report.json"
+            lora_output_dir = temp_dir / "lora_adapters"
+            with (
+                patch(
+                    "sys.argv",
+                    [
+                        "four_agent_private_train.py",
+                        "--mode",
+                        "b-magent",
+                        "--backend",
+                        "demo",
+                        "--dataset-dir",
+                        str(temp_dir / "gsm8k"),
+                        "--output",
+                        str(output_file),
+                        "--lora-output-dir",
+                        str(lora_output_dir),
+                    ],
+                ),
+                patch("train.four_agent_private_train.reset_b_magent_training_state") as reset,
+                patch("train.four_agent_private_train.run_b_magent_training_entry") as run_training,
+                patch("train.four_agent_private_train.export_json_report"),
+            ):
+                run_training.return_value.to_dict.return_value = {
+                    "agents": [],
+                    "rounds": 0,
+                    "professional_records": {},
+                    "evaluation_records": {},
+                    "lora_updates": {},
+                    "distillation_enabled": False,
+                    "distilled_adapter_paths": {},
+                    "distillation_updates": {},
+                }
+                run_training.return_value.agents = []
+                run_training.return_value.rounds = 0
+                run_training.return_value.distillation_enabled = False
+
+                main()
+
+            reset.assert_called_once()
+            self.assertTrue(reset.call_args.kwargs["reset_evaluation_libraries"])
+            self.assertEqual(reset.call_args.kwargs["lora_output_dir"], lora_output_dir)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,7 +46,7 @@ class LocalQwenEngine:
         self.system_prompt = system_prompt
         self._tokenizer: Any | None = None
         self._model: Any | None = None
-        self._adapter_models: dict[str, Any] = {}
+        self._adapter_models: dict[tuple[str, int], Any] = {}
 
     @property
     def tokenizer(self) -> Any:
@@ -90,16 +91,33 @@ class LocalQwenEngine:
         return self._tokenizer.batch_decode(completion_ids, skip_special_tokens=True)[0].strip()
 
     def _load_adapter_model(self, adapter_path: Path) -> Any:
-        key = str(adapter_path.resolve())
+        resolved_path = str(adapter_path.resolve())
+        key = (resolved_path, _adapter_fingerprint(adapter_path))
         if key in self._adapter_models:
             return self._adapter_models[key]
+        self._adapter_models = {
+            cached_key: cached_model
+            for cached_key, cached_model in self._adapter_models.items()
+            if cached_key[0] != resolved_path
+        }
         try:
             from peft import PeftModel
         except ImportError as exc:
             raise RuntimeError("Loading LoRA adapters requires peft.") from exc
-        adapter_model = PeftModel.from_pretrained(self._model, key)
+        adapter_model = PeftModel.from_pretrained(self._model, resolved_path)
         self._adapter_models[key] = adapter_model
         return adapter_model
+
+    def unload(self) -> None:
+        self._adapter_models.clear()
+        self._model = None
+        gc.collect()
+        try:
+            import torch
+        except ImportError:
+            return
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     def _resolve_torch_dtype(self) -> Any:
         if self.torch_dtype == "auto":
@@ -279,6 +297,9 @@ class LocalQwenEvolutionBackend:
         adapter_path = self.lora_output_dir / agent_name / "adapter"
         return adapter_path if _is_lora_adapter_ready(adapter_path) else None
 
+    def release_model_memory(self) -> None:
+        self.engine.unload()
+
 
 def _format_context(items: list[str]) -> str:
     if not items:
@@ -288,6 +309,18 @@ def _format_context(items: list[str]) -> str:
 
 def _is_lora_adapter_ready(adapter_path: Path) -> bool:
     return (adapter_path / "adapter_config.json").exists()
+
+
+def _adapter_fingerprint(adapter_path: Path) -> int:
+    metadata_files = [
+        adapter_path / "adapter_config.json",
+        adapter_path / "adapter_model.safetensors",
+        adapter_path / "adapter_model.bin",
+    ]
+    return max(
+        (int(path.stat().st_mtime_ns) for path in metadata_files if path.exists()),
+        default=0,
+    )
 
 
 def _parse_suggestions(text: str) -> list[str]:

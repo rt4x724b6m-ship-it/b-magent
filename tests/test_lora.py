@@ -220,6 +220,70 @@ class LoraEvolutionTestCase(unittest.TestCase):
             self.assertTrue(all(not update.trained for update in duplicate))
             self.assertTrue(all(update.reason == "no new private SFT examples for distillation" for update in duplicate))
 
+    def test_distillation_only_refreshes_agents_with_new_lora_examples(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="b_magent_distill_incremental_test_") as temp:
+            lora_dir = Path(temp) / "lora"
+            for agent_name in ("qwen_agent_1", "qwen_agent_2"):
+                agent_dir = lora_dir / agent_name
+                adapter_dir = agent_dir / "adapter"
+                adapter_dir.mkdir(parents=True)
+                (agent_dir / "sft_dataset.jsonl").write_text(
+                    json.dumps(
+                        {
+                            "agent_name": agent_name,
+                            "instruction": "Improve the answer.",
+                            "input": f"{agent_name} input",
+                            "output": f"{agent_name} output",
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                (agent_dir / "lora_state.json").write_text(
+                    json.dumps(
+                        {
+                            "agent_name": agent_name,
+                            "dataset_path": str(agent_dir / "sft_dataset.jsonl"),
+                            "adapter_path": str(adapter_dir),
+                            "examples": 1,
+                            "pending_examples": 0,
+                            "trained_examples": 1,
+                            "version": 1,
+                            "example_hashes": [],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+
+            trainer = FakeDistillationTrainer()
+            manager = DistillationManager(
+                DistillationConfig(
+                    base_model_path="models/Qwen2.5-1.5B-Instruct",
+                    lora_output_dir=lora_dir,
+                    threshold=1,
+                ),
+                trainer=trainer,
+            )
+            lora_updates = [
+                LoraUpdate(
+                    agent_name="qwen_agent_1",
+                    dataset_path=str(lora_dir / "qwen_agent_1" / "sft_dataset.jsonl"),
+                    adapter_path=str(lora_dir / "qwen_agent_1" / "adapter"),
+                    examples=1,
+                    trained=False,
+                    reason="pending dataset below threshold: 1/2",
+                    pending_examples=1,
+                )
+            ]
+
+            updates = manager.update_from_lora_updates(lora_updates)
+
+            self.assertEqual([update.agent_name for update in updates], ["qwen_agent_1"])
+            self.assertEqual([call[0] for call in trainer.calls], ["qwen_agent_1"])
+            self.assertFalse(manager.dataset_path("qwen_agent_2").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

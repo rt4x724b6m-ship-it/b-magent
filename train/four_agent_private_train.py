@@ -213,6 +213,9 @@ def run_b_magent_training_entry(
         if on_round_start is not None:
             on_round_start(index + 1, effective_rounds, sample.question)
         report = workflow.run(task, participant_names=participant_schedule[index])
+        release_model_memory = getattr(backend, "release_model_memory", None)
+        if callable(release_model_memory) and (lora_manager is not None or distillation_manager is not None):
+            release_model_memory()
         lora_updates = []
         if lora_manager is not None:
             lora_updates = lora_manager.update_from_round(
@@ -691,9 +694,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--distillation-kd-weight", type=float, default=0.5)
     parser.add_argument("--distillation-sft-weight", type=float, default=1.0)
     args = parser.parse_args()
+    args.dataset_dir = resolve_project_path(args.dataset_dir)
+    args.output = resolve_project_path(args.output)
+    args.lora_output_dir = resolve_project_path(args.lora_output_dir)
+    args.model_path = str(resolve_project_path(Path(args.model_path)))
     if not args.enable_lora:
         args.enable_distillation = False
     return args
+
+
+def resolve_project_path(path: Path) -> Path:
+    if path.is_absolute():
+        return path
+    return PROJECT_ROOT / path
 
 
 def build_b_magent_backend(args: argparse.Namespace) -> object | None:
@@ -768,6 +781,13 @@ def main() -> None:
     if mode == "b-magent":
         print(f"backend: {args.backend}", flush=True)
         print(f"model: {args.model_path}", flush=True)
+        reset_b_magent_training_state(
+            PROJECT_ROOT / "data",
+            lora_output_dir=args.lora_output_dir,
+            reset_evaluation_libraries=True,
+        )
+        args.output.unlink(missing_ok=True)
+        print("已清空之前的训练存储", flush=True)
         print("开始训练", flush=True)
         report = run_b_magent_training_entry(
             dataset_dir=args.dataset_dir,
