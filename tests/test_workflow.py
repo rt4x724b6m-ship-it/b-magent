@@ -13,10 +13,34 @@ add_project_root_to_sys_path()
 from b_magent.datasets import GSM8KDataset
 from b_magent.models import Draft, PeerEvaluation
 from b_magent.seed import seed_agent_libraries
+from b_magent.trajectory import mask_draft_for_evaluation
 from b_magent.workflow import MultiAgentWorkflow, build_default_agents
 
 
 class WorkflowTestCase(unittest.TestCase):
+    def test_masked_trajectory_keeps_answer_quality_signals(self) -> None:
+        draft = Draft(
+            "qwen_agent_1",
+            "通用智能体",
+            "1. Compute public result\n2. Check consistency\n#### 42",
+            ["SECRET_RAW_TRACE"],
+            ["SECRET_PRIVATE_SAMPLE"],
+            ["memory one"],
+            ["alert one"],
+        )
+
+        masked = mask_draft_for_evaluation(draft)
+        serialized = json.dumps(masked.__dict__, ensure_ascii=False)
+
+        self.assertIn("insight_solution_structure", serialized)
+        self.assertIn("Numbered steps: 2", serialized)
+        self.assertIn("Final marker present: True", serialized)
+        self.assertIn("federated_answer_summary", masked.answer)
+        self.assertIn("final_answer: 42", masked.answer)
+        self.assertNotIn("Compute public result", masked.answer)
+        self.assertNotIn("SECRET_RAW_TRACE", serialized)
+        self.assertNotIn("SECRET_PRIVATE_SAMPLE", serialized)
+
     def test_gold_answer_is_hidden_from_solver_and_evaluator_prompts(self) -> None:
         class RecordingBackend:
             def __init__(self) -> None:
@@ -43,6 +67,83 @@ class WorkflowTestCase(unittest.TestCase):
             self.assertTrue(backend.review_tasks)
             self.assertTrue(all("Gold final answer" not in task for task in backend.solve_tasks))
             self.assertTrue(all("Gold reasoning" not in task for task in backend.review_tasks))
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_peer_evaluation_receives_fot_trajectory_instead_of_private_data(self) -> None:
+        class RecordingBackend:
+            def __init__(self) -> None:
+                self.review_drafts: list[Draft] = []
+
+            def solve(self, agent_name, specialty, task, private_training, professional_memory, evaluation_alerts):
+                return "answer #### 1", ["raw private-derived trace detail"]
+
+            def suggest_improvements(self, evaluator_name, target_draft, task, evaluation_memory):
+                self.review_drafts.append(target_draft)
+                return PeerEvaluation(evaluator_name, target_draft.agent_name, ["check"], "r", [])
+
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_mask_eval_test_"))
+        try:
+            backend = RecordingBackend()
+            agents = build_default_agents(temp_dir, backend=backend)
+            private_file = temp_dir / "data" / "qwen_agent_1" / "private_data.jsonl"
+            private_file.parent.mkdir(parents=True, exist_ok=True)
+            private_file.write_text("SECRET_PRIVATE_SAMPLE\n", encoding="utf-8")
+            workflow = MultiAgentWorkflow(agents, random_seed=7)
+
+            workflow.run("Question: q", participant_names=["qwen_agent_1", "qwen_agent_2"])
+
+            self.assertTrue(backend.review_drafts)
+            for review_draft in backend.review_drafts:
+                serialized = json.dumps(review_draft.__dict__, ensure_ascii=False)
+                self.assertEqual(review_draft.private_training_used, [])
+                self.assertIn("federated_answer_summary", review_draft.answer)
+                self.assertNotIn("answer #### 1", review_draft.answer)
+                self.assertTrue(any(item.startswith("insight_") for item in review_draft.thought_trace))
+                self.assertNotIn("SECRET_PRIVATE_SAMPLE", serialized)
+                self.assertNotIn("raw private-derived trace detail", serialized)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_evaluation_evolution_summarizes_target_results_without_raw_answer_text(self) -> None:
+        class RecordingBackend:
+            def solve(self, agent_name, specialty, task, private_training, professional_memory, evaluation_alerts):
+                return (
+                    "PRIVATE_DERIVED_REASONING_SENTENCE\n"
+                    "1. public step\n"
+                    "#### 17",
+                    ["SECRET_RAW_THOUGHT_TRACE"],
+                )
+
+            def suggest_improvements(self, evaluator_name, target_draft, task, evaluation_memory):
+                serialized = json.dumps(target_draft.__dict__, ensure_ascii=False)
+                assert "SECRET_RAW_THOUGHT_TRACE" not in serialized
+                assert "SECRET_PRIVATE_SAMPLE" not in serialized
+                assert "PRIVATE_DERIVED_REASONING_SENTENCE" not in serialized
+                assert "federated_answer_summary" in target_draft.answer
+                return PeerEvaluation(evaluator_name, target_draft.agent_name, ["add verification"], "r", [])
+
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_eval_evolve_mask_test_"))
+        try:
+            backend = RecordingBackend()
+            agents = build_default_agents(temp_dir, backend=backend)
+            private_file = temp_dir / "data" / "qwen_agent_1" / "private_data.jsonl"
+            private_file.parent.mkdir(parents=True, exist_ok=True)
+            private_file.write_text("SECRET_PRIVATE_SAMPLE\n", encoding="utf-8")
+            workflow = MultiAgentWorkflow(agents, random_seed=7)
+
+            report = workflow.run("Question: q", participant_names=["qwen_agent_1", "qwen_agent_2"])
+
+            evaluation_details = "\n".join(
+                record.detail
+                for evolution in report.evaluation_evolutions
+                for record in evolution.evaluation_updates
+            )
+            self.assertIn("revised_answer_summary=", evaluation_details)
+            self.assertIn("final_answer=17", evaluation_details)
+            self.assertNotIn("PRIVATE_DERIVED_REASONING_SENTENCE", evaluation_details)
+            self.assertNotIn("SECRET_RAW_THOUGHT_TRACE", evaluation_details)
+            self.assertNotIn("SECRET_PRIVATE_SAMPLE", evaluation_details)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -113,7 +214,9 @@ class WorkflowTestCase(unittest.TestCase):
                 detail = evolution.evaluation_updates[0].detail
                 self.assertIn("prior_evaluation_memory=", detail)
                 self.assertIn("own_review_rationales=", detail)
-                self.assertIn("own_review_scores=", detail)
+                self.assertIn("review_scores_peer_comparisons_and_target_results=", detail)
+                self.assertIn("target=", detail)
+                self.assertIn("revised_answer_summary=", detail)
 
             output_file = temp_dir / "data" / "report.json"
             workflow.export_report(report, output_file)
@@ -126,6 +229,43 @@ class WorkflowTestCase(unittest.TestCase):
                 evaluation_file = temp_dir / "data" / agent_name / "evaluation_library.jsonl"
                 self.assertTrue(professional_file.exists())
                 self.assertTrue(evaluation_file.exists())
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_evolved_library_summaries_are_reused_next_round(self) -> None:
+        class RecordingBackend:
+            def __init__(self) -> None:
+                self.solve_memories: list[list[str]] = []
+                self.review_memories: list[list[str]] = []
+
+            def solve(self, agent_name, specialty, task, private_training, professional_memory, evaluation_alerts):
+                self.solve_memories.append(professional_memory)
+                return "1. solve\n#### 3", ["public trace"]
+
+            def suggest_improvements(self, evaluator_name, target_draft, task, evaluation_memory):
+                self.review_memories.append(evaluation_memory)
+                return PeerEvaluation(
+                    evaluator_name,
+                    target_draft.agent_name,
+                    ["verify final numeric answer"],
+                    "r",
+                    evaluation_memory,
+                )
+
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_reuse_evolved_test_"))
+        try:
+            backend = RecordingBackend()
+            agents = build_default_agents(temp_dir, backend=backend)
+            workflow = MultiAgentWorkflow(agents, random_seed=7)
+
+            workflow.run("solve numeric task", participant_names=["qwen_agent_1", "qwen_agent_2"])
+            workflow.run("solve numeric task", participant_names=["qwen_agent_1", "qwen_agent_2"])
+
+            flattened_solve_memories = "\n".join(item for batch in backend.solve_memories for item in batch)
+            flattened_review_memories = "\n".join(item for batch in backend.review_memories for item in batch)
+            self.assertIn("solving lesson", flattened_solve_memories)
+            self.assertIn("review lesson", flattened_review_memories)
+            self.assertIn("verify final numeric answer", flattened_review_memories)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 

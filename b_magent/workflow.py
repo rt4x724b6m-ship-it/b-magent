@@ -63,6 +63,8 @@ class MultiAgentWorkflow:
             evaluator.evolve_evaluation_library(
                 task,
                 [review for review in peer_reviews if review.evaluator == evaluator.name],
+                peer_reviews,
+                self_improvements,
             )
             for evaluator in evaluators
         ]

@@ -1,7 +1,6 @@
 
-
-#有蒸馏和lora开关
-#lora训练阈值是10次
+# 有 LoRA 开关；合格样本进入每个智能体自己的精选 SFT 数据集后，
+# 立即触发该智能体的 LoRA 微调。
 from __future__ import annotations
 
 import argparse
@@ -18,12 +17,6 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from baseline.qwen_gsm8k import STANDARD_TEST_LIMIT, extract_numeric_answer, normalize_answer
 from b_magent.datasets import GSM8KDataset, GSM8KSample
-from b_magent.distillation import (
-    DEFAULT_DISTILLATION_THRESHOLD,
-    DistillationConfig,
-    DistillationManager,
-    DistillationUpdate,
-)
 from b_magent.local_qwen import (
     DEFAULT_QWEN_MODEL,
     LocalQwenAgentModel,
@@ -144,7 +137,6 @@ class BMagentTrainingRound:
     self_improvements: int
     evaluation_evolutions: int
     lora_updates: list[LoraUpdate] = field(default_factory=list)
-    distillation_updates: list[DistillationUpdate] = field(default_factory=list)
 
 
 @dataclass
@@ -160,9 +152,6 @@ class BMagentTrainingReport:
     evaluation_records: dict[str, int]
     lora_enabled: bool = False
     lora_updates: dict[str, int] = field(default_factory=dict)
-    distillation_enabled: bool = False
-    distillation_updates: dict[str, int] = field(default_factory=dict)
-    distilled_adapter_paths: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -176,7 +165,6 @@ def run_b_magent_training_entry(
     random_seed: int | None = None,
     backend: object | None = None,
     lora_manager: LoraEvolutionManager | None = None,
-    distillation_manager: DistillationManager | None = None,
     on_round_start: Callable[[int, int, str], None] | None = None,
     on_round_end: Callable[[int, int, BMagentTrainingRound], None] | None = None,
 ) -> BMagentTrainingReport:
@@ -214,7 +202,7 @@ def run_b_magent_training_entry(
             on_round_start(index + 1, effective_rounds, sample.question)
         report = workflow.run(task, participant_names=participant_schedule[index])
         release_model_memory = getattr(backend, "release_model_memory", None)
-        if callable(release_model_memory) and (lora_manager is not None or distillation_manager is not None):
+        if callable(release_model_memory) and lora_manager is not None:
             release_model_memory()
         lora_updates = []
         if lora_manager is not None:
@@ -224,9 +212,6 @@ def run_b_magent_training_entry(
                 peer_reviews=report.peer_reviews,
                 self_improvements=report.self_improvements,
             )
-        distillation_updates = []
-        if distillation_manager is not None:
-            distillation_updates = distillation_manager.update_from_lora_updates(lora_updates)
         round_report = BMagentTrainingRound(
             round_index=index + 1,
             task=task,
@@ -237,7 +222,6 @@ def run_b_magent_training_entry(
             self_improvements=len(report.self_improvements),
             evaluation_evolutions=len(report.evaluation_evolutions),
             lora_updates=lora_updates,
-            distillation_updates=distillation_updates,
         )
         training_rounds.append(round_report)
         if on_round_end is not None:
@@ -269,20 +253,6 @@ def run_b_magent_training_entry(
             )
             for agent in agents
         },
-        distillation_enabled=distillation_manager is not None,
-        distillation_updates={
-            agent.name: sum(
-                1
-                for round_report in training_rounds
-                for update in round_report.distillation_updates
-                if update.agent_name == agent.name and update.trained
-            )
-            for agent in agents
-        },
-        distilled_adapter_paths={
-            agent.name: str(distillation_manager.adapter_path(agent.name))
-            for agent in agents
-        } if distillation_manager is not None else {},
     )
 
 
@@ -408,7 +378,6 @@ def build_four_local_qwen_agents(
     device_map: str = "auto",
     torch_dtype: str = "float16",
     lora_output_dir: str | Path | None = None,
-    prefer_distilled_adapter: bool = True,
 ) -> dict[str, LocalQwenAgentModel]:
     engine = LocalQwenEngine(
         model_name_or_path=model_name_or_path,
@@ -420,7 +389,6 @@ def build_four_local_qwen_agents(
             agent_name=agent_name,
             engine=engine,
             lora_output_dir=lora_output_dir,
-            prefer_distilled_adapter=prefer_distilled_adapter,
         )
         for agent_name in agent_names
     }
@@ -652,7 +620,7 @@ def parse_args() -> argparse.Namespace:
         dest="enable_lora",
         action="store_true",
         default=True,
-        help="Build per-agent SFT datasets from self-reflection and train LoRA adapters when the threshold is reached. Enabled by default.",
+        help="Build per-agent curated SFT datasets from self-reflection and train LoRA adapters whenever an example is accepted. Enabled by default.",
     )
     parser.add_argument(
         "--disable-lora",
@@ -666,7 +634,12 @@ def parse_args() -> argparse.Namespace:
         default=Path("data/lora_adapters"),
         help="Directory for per-agent LoRA SFT datasets and adapters.",
     )
-    parser.add_argument("--lora-threshold", type=int, default=DEFAULT_LORA_THRESHOLD)
+    parser.add_argument(
+        "--lora-threshold",
+        type=int,
+        default=DEFAULT_LORA_THRESHOLD,
+        help="Deprecated compatibility option; LoRA now trains whenever an accepted curated SFT example exists.",
+    )
     parser.add_argument("--lora-max-seq-length", type=int, default=1024)
     parser.add_argument("--lora-epochs", type=float, default=1.0)
     parser.add_argument("--lora-learning-rate", type=float, default=2e-4)
@@ -676,30 +649,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Allow LoRA SFT examples even when a gold final answer is present and the reflected answer does not match it.",
     )
-    parser.add_argument(
-        "--enable-distillation",
-        dest="enable_distillation",
-        action="store_true",
-        default=True,
-        help="After per-agent LoRA updates, periodically distill trained agent adapters into private distilled adapters. Enabled by default.",
-    )
-    parser.add_argument(
-        "--disable-distillation",
-        dest="enable_distillation",
-        action="store_false",
-        help="Disable many-to-many LoRA distillation.",
-    )
-    parser.add_argument("--distillation-threshold", type=int, default=DEFAULT_DISTILLATION_THRESHOLD)
-    parser.add_argument("--distillation-temperature", type=float, default=2.0)
-    parser.add_argument("--distillation-kd-weight", type=float, default=0.5)
-    parser.add_argument("--distillation-sft-weight", type=float, default=1.0)
     args = parser.parse_args()
     args.dataset_dir = resolve_project_path(args.dataset_dir)
     args.output = resolve_project_path(args.output)
     args.lora_output_dir = resolve_project_path(args.lora_output_dir)
     args.model_path = str(resolve_project_path(Path(args.model_path)))
-    if not args.enable_lora:
-        args.enable_distillation = False
     return args
 
 
@@ -716,7 +670,6 @@ def build_b_magent_backend(args: argparse.Namespace) -> object | None:
     return LocalQwenEvolutionBackend(
         engine,
         lora_output_dir=args.lora_output_dir if args.enable_lora else None,
-        prefer_distilled_adapter=args.enable_distillation,
     )
 
 
@@ -734,31 +687,6 @@ def build_lora_manager(args: argparse.Namespace) -> LoraEvolutionManager | None:
         learning_rate=args.lora_learning_rate,
     )
     return LoraEvolutionManager(config)
-
-
-def build_distillation_manager(args: argparse.Namespace) -> DistillationManager | None:
-    if not args.enable_distillation:
-        return None
-    if not args.enable_lora:
-        raise ValueError("--enable-distillation requires --enable-lora")
-    lora_config = LoraTrainingConfig(
-        base_model_path=str(args.model_path),
-        output_dir=args.lora_output_dir,
-        threshold=args.lora_threshold,
-        require_correct_answer=not args.allow_uncorrect_lora_labels,
-        min_evaluation_score=args.lora_min_evaluation_score,
-        max_seq_length=args.lora_max_seq_length,
-        num_train_epochs=args.lora_epochs,
-        learning_rate=args.lora_learning_rate,
-    )
-    config = DistillationConfig.from_lora_config(
-        lora_config,
-        threshold=args.distillation_threshold,
-        temperature=args.distillation_temperature,
-        kd_weight=args.distillation_kd_weight,
-        sft_weight=args.distillation_sft_weight,
-    )
-    return DistillationManager(config)
 
 
 def print_training_round_start(round_index: int, rounds: int, question: str) -> None:
@@ -797,7 +725,6 @@ def main() -> None:
             random_seed=args.seed,
             backend=build_b_magent_backend(args),
             lora_manager=build_lora_manager(args),
-            distillation_manager=build_distillation_manager(args),
             on_round_start=print_training_round_start,
             on_round_end=print_training_round_end,
         )
@@ -812,17 +739,10 @@ def main() -> None:
                 f"evaluation_records={evaluation_count} "
                 f"lora_updates={report.lora_updates.get(agent_name, 0)}"
             )
-        if report.distillation_enabled:
-            for agent_name, adapter_path in report.distilled_adapter_paths.items():
-                print(
-                    f"{agent_name}: distillation_updates={report.distillation_updates.get(agent_name, 0)} "
-                    f"distilled_adapter={adapter_path}"
-                )
     elif mode == "local-qwen-vote":
         models = build_four_local_qwen_agents(
             args.model_path,
             lora_output_dir=args.lora_output_dir,
-            prefer_distilled_adapter=args.enable_distillation,
         )
         voting_report = run_four_agent_voting_on_test(
             args.dataset_dir,

@@ -34,19 +34,17 @@ Increase `--private-batch-size` to consume more private examples per
 participating agent per round without loading the full private split into one
 prompt.
 
-LoRA self-evolution and many-to-many distillation are enabled by default. Use
-`--disable-lora --disable-distillation` when you only want the JSONL
-experience-library loop:
+LoRA self-evolution is enabled by default. Accepted examples are accumulated
+in each agent's curated SFT dataset and trigger LoRA training as soon as the
+curated dataset has an accepted example. Use `--disable-lora` when you only want the
+JSONL experience-library loop:
 
 ```bash
 python -m train.four_agent_private_train --dataset-dir data/gsm8k --rounds 200 --model-path models/Qwen2.5-1.5B-Instruct
 ```
 
-The distillation stage keeps every agent's adapter as a teacher and trains each
-agent's own `data/lora_adapters/qwen_agent_*/distilled_adapter` with SFT plus
-KL-divergence to the weighted average teacher distribution. Teacher weights are
-normalized from each agent's trained LoRA example count. No common adapter is
-stored.
+The distillation module still exists in `b_magent.distillation`, but this
+training entry currently drives the experience-library and LoRA loops directly.
 
 By default `--mode b-magent` uses `--backend local-qwen`, so each solve and
 evaluation step calls the configured Qwen model. For a fast logic-only smoke

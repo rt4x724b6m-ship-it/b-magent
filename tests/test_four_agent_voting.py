@@ -58,12 +58,10 @@ class KnowledgeLibraryVoteModel:
         data_dir: Path,
         lora_output_dir: Path,
         memory_limit: int = 3,
-        prefer_distilled_adapter: bool = True,
     ) -> None:
         self.agent_name = agent_name
         self.engine = engine
         self.lora_output_dir = lora_output_dir
-        self.prefer_distilled_adapter = prefer_distilled_adapter
         self.professional_library = EvolutionLibrary(
             data_dir / agent_name / "professional_library.jsonl",
             "professional",
@@ -95,9 +93,6 @@ class KnowledgeLibraryVoteModel:
 
     @property
     def adapter_path(self) -> Path:
-        distilled_adapter_path = self.lora_output_dir / self.agent_name / "distilled_adapter"
-        if self.prefer_distilled_adapter and _is_lora_adapter_ready(distilled_adapter_path):
-            return distilled_adapter_path
         return self.lora_output_dir / self.agent_name / "adapter"
 
 
@@ -311,8 +306,8 @@ class FourAgentVotingTestCase(unittest.TestCase):
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
-    def test_knowledge_library_vote_model_prefers_distilled_adapter(self) -> None:
-        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_distilled_vote_test_"))
+    def test_knowledge_library_vote_model_uses_agent_adapter(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_adapter_vote_test_"))
         try:
             data_dir = temp_dir / "data"
             lora_output_dir = temp_dir / "lora_adapters"
@@ -323,11 +318,8 @@ class FourAgentVotingTestCase(unittest.TestCase):
             (agent_dir / "evaluation_library.jsonl").write_text("", encoding="utf-8")
 
             adapter_dir = lora_output_dir / agent_name / "adapter"
-            distilled_adapter_dir = lora_output_dir / agent_name / "distilled_adapter"
             adapter_dir.mkdir(parents=True)
-            distilled_adapter_dir.mkdir(parents=True)
             (adapter_dir / "adapter_config.json").write_text("{}", encoding="utf-8")
-            (distilled_adapter_dir / "adapter_config.json").write_text("{}", encoding="utf-8")
 
             model = KnowledgeLibraryVoteModel(
                 agent_name=agent_name,
@@ -335,9 +327,6 @@ class FourAgentVotingTestCase(unittest.TestCase):
                 data_dir=data_dir,
                 lora_output_dir=lora_output_dir,
             )
-            self.assertEqual(model.adapter_path, distilled_adapter_dir)
-
-            (distilled_adapter_dir / "adapter_config.json").unlink()
             self.assertEqual(model.adapter_path, adapter_dir)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -369,10 +358,10 @@ class KnowledgeLibraryFourAgentVotingIntegrationTestCase(unittest.TestCase):
         missing_adapters = [
             agent_name
             for agent_name in AGENT_NAMES
-            if not (lora_output_dir / agent_name / "distilled_adapter" / "adapter_config.json").exists()
+            if not (lora_output_dir / agent_name / "adapter" / "adapter_config.json").exists()
         ]
         if missing_adapters:
-            self.skipTest(f"missing distilled LoRA adapters for: {', '.join(missing_adapters)}")
+            self.skipTest(f"missing LoRA adapters for: {', '.join(missing_adapters)}")
 
         engine = LocalQwenEngine(model_name_or_path=model_path)
         models = {
@@ -381,7 +370,6 @@ class KnowledgeLibraryFourAgentVotingIntegrationTestCase(unittest.TestCase):
                 engine=engine,
                 data_dir=data_dir,
                 lora_output_dir=lora_output_dir,
-                prefer_distilled_adapter=True,
             )
             for agent_name in AGENT_NAMES
         }

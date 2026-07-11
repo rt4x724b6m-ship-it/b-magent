@@ -19,6 +19,7 @@ class EvolutionInput:
     evaluator_rationales: list[str] = field(default_factory=list)
     evaluation_memory_used: list[str] = field(default_factory=list)
     evaluation_scores: list[str] = field(default_factory=list)
+    is_correct: bool | None = None
 
 
 @dataclass
@@ -61,17 +62,19 @@ class SelfEvolutionLibrary:
         suggestions = _unique(event.peer_suggestions)
         thought_summary = _summarize_list(event.thought_trace, fallback="No thought trace provided")
         suggestion_summary = _summarize_list(suggestions, fallback="No peer suggestions provided")
+        professional_lesson = _build_professional_lesson(event, suggestions)
         record = LibraryRecord(
             agent_name=event.agent_name,
             library_type="professional",
             source_task=event.task,
-            summary=f"{event.specialty} professional update from self-evolution round",
+            summary=professional_lesson,
             detail=(
                 f"answer_snapshot={_shorten(event.answer)} | "
                 f"thought_trace={thought_summary} | "
-                f"peer_suggestions={suggestion_summary}"
+                f"peer_suggestions={suggestion_summary} | "
+                f"future_solving_lesson={professional_lesson}"
             ),
-            tags=[event.specialty, "self-evolution", "professional"],
+            tags=[event.specialty, "self-evolution", "professional", *_keyword_tags(event.task, suggestions)],
         )
         return self.professional.add_record(record)
 
@@ -81,21 +84,23 @@ class SelfEvolutionLibrary:
         rationale_summary = _summarize_list(event.evaluator_rationales, fallback="No evaluator rationale provided")
         memory_summary = _summarize_list(event.evaluation_memory_used, fallback="No prior evaluation memory retrieved")
         score_summary = _summarize_list(event.evaluation_scores, fallback="No evaluation scores recorded")
+        evaluation_lesson = _build_evaluation_lesson(event, suggestions)
         record = LibraryRecord(
             agent_name=event.agent_name,
             library_type="evaluation",
             source_task=event.task,
-            summary=f"{event.specialty} evaluation self-reflection from own reviews",
+            summary=evaluation_lesson,
             detail=(
-                "Reflect on this agent's own peer reviews before updating future review behavior. "
+                "Reflect on this agent's own peer reviews after the reviewed agents receive feedback, "
+                "compare peer evaluator judgments, and inspect the resulting self-improvements before "
+                "updating future review behavior. "
                 f"prior_evaluation_memory={memory_summary} | "
                 f"own_review_suggestions={suggestion_summary} | "
                 f"own_review_rationales={rationale_summary} | "
-                f"own_review_scores={score_summary} | "
-                "future_review_lesson=Compare the new draft against retrieved evaluation memories, "
-                "then give concrete, checkable, and score-consistent feedback."
+                f"review_scores_peer_comparisons_and_target_results={score_summary} | "
+                f"future_review_lesson={evaluation_lesson}"
             ),
-            tags=[event.specialty, "self-evolution", "evaluation"],
+            tags=[event.specialty, "self-evolution", "evaluation", *_keyword_tags(event.task, suggestions)],
         )
         return self.evaluation.add_record(record)
 
@@ -138,3 +143,55 @@ def _shorten(text: str, limit: int = 240) -> str:
     if len(cleaned) <= limit:
         return cleaned
     return cleaned[: limit - 3] + "..."
+
+
+def _build_professional_lesson(event: EvolutionInput, suggestions: list[str]) -> str:
+    top_suggestion = _shorten(suggestions[0], limit=90) if suggestions else "make the answer concrete and checkable"
+    task_hint = _task_hint(event.task)
+    outcome = _outcome_label(event.is_correct)
+    return (
+        f"{event.specialty} {outcome} solving lesson for {task_hint}: "
+        f"before finalizing, {top_suggestion}; keep steps explicit and verify the final answer."
+    )
+
+
+def _build_evaluation_lesson(event: EvolutionInput, suggestions: list[str]) -> str:
+    top_check = _shorten(suggestions[0], limit=90) if suggestions else "check correctness, safety, efficiency, and missing evidence"
+    task_hint = _task_hint(event.task)
+    outcome = _outcome_label(event.is_correct)
+    return (
+        f"{event.specialty} {outcome} review lesson for {task_hint}: "
+        f"evaluate observable answer structure, final-answer consistency, and {top_check}; "
+        "give concrete fixes tied to scores."
+    )
+
+
+def _outcome_label(is_correct: bool | None) -> str:
+    if is_correct is True:
+        return "success"
+    if is_correct is False:
+        return "error"
+    return "uncertain"
+
+
+def _task_hint(task: str) -> str:
+    cleaned = " ".join(str(task).split())
+    if not cleaned:
+        return "future similar tasks"
+    return _shorten(cleaned, limit=80)
+
+
+def _keyword_tags(task: str, suggestions: list[str]) -> list[str]:
+    text = " ".join([task, *suggestions]).lower()
+    candidates = {
+        "arithmetic": ("arithmetic", "numeric", "calculation", "math", "算", "数字"),
+        "final-answer": ("final", "answer", "####", "答案"),
+        "verification": ("verify", "check", "验证", "检查", "自检"),
+        "boundary": ("boundary", "edge", "condition", "边界", "条件"),
+        "structure": ("step", "structure", "清单", "步骤", "编号"),
+    }
+    tags: list[str] = []
+    for tag, needles in candidates.items():
+        if any(needle in text for needle in needles):
+            tags.append(tag)
+    return tags

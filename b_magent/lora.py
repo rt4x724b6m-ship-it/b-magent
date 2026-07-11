@@ -217,7 +217,7 @@ class LoraEvolutionManager:
             if not accepted:
                 updates.append(self.skipped_update(draft.agent_name, reason))
                 continue
-            updates.append(self.maybe_train_agent(draft.agent_name))
+            updates.append(self.train_agent_on_curated_dataset(draft.agent_name))
         return updates
 
     def add_example_if_usable(
@@ -248,28 +248,17 @@ class LoraEvolutionManager:
         self.save_state(state)
         return True, "accepted"
 
-    def maybe_train_agent(self, agent_name: str) -> LoraUpdate:
-        dataset_path = self.dataset_path(agent_name)
+    def train_agent_on_curated_dataset(self, agent_name: str) -> LoraUpdate:
+        selected_dataset_path = self.dataset_path(agent_name)
+        dataset_path = self.current_dataset_path(agent_name)
         adapter_path = self.adapter_path(agent_name)
+        copy_lora_dataset(selected_dataset_path, dataset_path)
         state = self.load_state(agent_name)
         examples = count_jsonl_rows(dataset_path)
-        state.examples = examples
-        if state.pending_examples < self.config.threshold:
-            self.save_state(state)
-            return LoraUpdate(
-                agent_name=agent_name,
-                dataset_path=str(dataset_path),
-                adapter_path=str(adapter_path),
-                examples=examples,
-                trained=False,
-                reason=f"pending dataset below threshold: {state.pending_examples}/{self.config.threshold}",
-                version=state.version,
-                pending_examples=state.pending_examples,
-            )
 
         self.trainer.train(agent_name, dataset_path, adapter_path, self.config)
         state.version += 1
-        state.trained_examples = examples
+        state.trained_examples = state.examples
         state.pending_examples = 0
         self.save_state(state)
         update = LoraUpdate(
@@ -299,6 +288,9 @@ class LoraEvolutionManager:
 
     def dataset_path(self, agent_name: str) -> Path:
         return self.config.output_dir / agent_name / "sft_dataset.jsonl"
+
+    def current_dataset_path(self, agent_name: str) -> Path:
+        return self.config.output_dir / agent_name / "current_sft_dataset.jsonl"
 
     def adapter_path(self, agent_name: str) -> Path:
         return self.config.output_dir / agent_name / "adapter"
@@ -405,6 +397,16 @@ def append_lora_example(dataset_path: Path, example: LoraSFTExample) -> None:
     dataset_path.parent.mkdir(parents=True, exist_ok=True)
     with dataset_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(example.to_dict(), ensure_ascii=False) + "\n")
+
+
+def write_lora_example(dataset_path: Path, example: LoraSFTExample) -> None:
+    dataset_path.parent.mkdir(parents=True, exist_ok=True)
+    dataset_path.write_text(json.dumps(example.to_dict(), ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def copy_lora_dataset(source_path: Path, target_path: Path) -> None:
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.write_text(source_path.read_text(encoding="utf-8"), encoding="utf-8")
 
 
 def count_jsonl_rows(path: Path) -> int:

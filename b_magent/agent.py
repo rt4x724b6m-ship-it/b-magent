@@ -9,6 +9,7 @@ from .datasets import GSM8KDataset
 from .library import EvolutionLibrary
 from .models import Draft, EvaluationEvolution, LibraryRecord, PeerEvaluation, SelfImprovement
 from .self_evolution import EvolutionInput, SelfEvolutionLibrary
+from .trajectory import extract_answer_features, mask_draft_for_evaluation
 
 
 class QwenAgent:
@@ -80,7 +81,8 @@ class QwenAgent:
     def evaluate_peer(self, task: str, draft: Draft) -> PeerEvaluation:
         evaluation_records = self.evaluation_library.search(task)
         evaluation_memory = [record.summary for record in evaluation_records]
-        return self.backend.suggest_improvements(self.name, draft, _strip_gold_annotations(task), evaluation_memory)
+        masked_draft = mask_draft_for_evaluation(draft)
+        return self.backend.suggest_improvements(self.name, masked_draft, _strip_gold_annotations(task), evaluation_memory)
 
     def self_improve(self, task: str, draft: Draft, evaluations: list[PeerEvaluation]) -> SelfImprovement:
         suggestions = _unique(item for evaluation in evaluations for item in evaluation.suggestions)
@@ -102,6 +104,7 @@ class QwenAgent:
             answer=draft.answer,
             thought_trace=draft.thought_trace,
             peer_suggestions=suggestions,
+            is_correct=is_correct,
         )
         update = self.self_evolution_library.evolve_professional(event)
         return SelfImprovement(
@@ -113,12 +116,21 @@ class QwenAgent:
             is_correct=is_correct,
         )
 
-    def evolve_evaluation_library(self, task: str, all_evaluations: list[PeerEvaluation]) -> EvaluationEvolution:
-        suggestions = _unique(item for evaluation in all_evaluations for item in evaluation.suggestions)
-        rationales = _unique(evaluation.rationale for evaluation in all_evaluations)
+    def evolve_evaluation_library(
+        self,
+        task: str,
+        own_evaluations: list[PeerEvaluation],
+        all_evaluations: list[PeerEvaluation] | None = None,
+        self_improvements: list[SelfImprovement] | None = None,
+    ) -> EvaluationEvolution:
+        all_evaluations = all_evaluations or own_evaluations
+        self_improvements = self_improvements or []
+        target_improvements = {item.agent_name: item for item in self_improvements}
+        suggestions = _unique(item for evaluation in own_evaluations for item in evaluation.suggestions)
+        rationales = _unique(evaluation.rationale for evaluation in own_evaluations)
         evaluation_memory_used = _unique(
             item
-            for evaluation in all_evaluations
+            for evaluation in own_evaluations
             for item in evaluation.evaluation_memory_used
         )
         score_reflections = [
@@ -128,7 +140,26 @@ class QwenAgent:
                 f"safety={evaluation.scores.safety}, "
                 f"efficiency={evaluation.scores.efficiency}"
             )
+            for evaluation in own_evaluations
+        ]
+        peer_comparisons = [
+            (
+                f"target={evaluation.target}, evaluator={evaluation.evaluator}: "
+                f"suggestions={'; '.join(evaluation.suggestions)}, rationale={evaluation.rationale}"
+            )
+            for own_review in own_evaluations
             for evaluation in all_evaluations
+            if evaluation.target == own_review.target and evaluation.evaluator != self.name
+        ]
+        target_results = [
+            (
+                f"target={own_review.target}: "
+                f"revised_answer_summary={_summarize_answer_for_evaluation(target_improvements[own_review.target].revised_answer)}, "
+                f"is_correct={target_improvements[own_review.target].is_correct}, "
+                f"applied_suggestions={'; '.join(target_improvements[own_review.target].applied_suggestions)}"
+            )
+            for own_review in own_evaluations
+            if own_review.target in target_improvements
         ]
         event = EvolutionInput(
             agent_name=self.name,
@@ -138,7 +169,7 @@ class QwenAgent:
             evaluator_suggestions=suggestions,
             evaluator_rationales=rationales,
             evaluation_memory_used=evaluation_memory_used,
-            evaluation_scores=score_reflections,
+            evaluation_scores=score_reflections + peer_comparisons + target_results,
         )
         update = self.self_evolution_library.evolve_evaluation(event)
         return EvaluationEvolution(
@@ -219,3 +250,19 @@ def _strip_gold_annotations(task: str) -> str:
             continue
         lines.append(line)
     return "\n".join(lines).strip()
+
+
+def _summarize_answer_for_evaluation(answer: str) -> str:
+    features = extract_answer_features(answer)
+    final_answer = _extract_final_answer(answer)
+    final_answer_text = final_answer if final_answer else "missing"
+    missing = features["missing_quality_signals"]
+    missing_text = ", ".join(missing) if isinstance(missing, list) and missing else "none"
+    return (
+        f"final_answer={final_answer_text}; "
+        f"numbered_steps={features['numbered_steps']}; "
+        f"bullet_items={features['bullet_items']}; "
+        f"calculation_signals={features['calculation_signals']}; "
+        f"final_marker_present={features['has_final_marker']}; "
+        f"missing_quality_signals={missing_text}"
+    )

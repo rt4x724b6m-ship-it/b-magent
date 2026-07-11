@@ -111,7 +111,6 @@ data/latest_report.json
   -> participants update professional library
   -> evaluators update evaluation library
   -> optional LoRA update
-  -> optional distillation update
 ```
 
 ### 3. 智能体内部逻辑
@@ -186,8 +185,7 @@ python -m train.four_agent_private_train \
   --backend demo \
   --dataset-dir data/gsm8k \
   --rounds 1 \
-  --disable-lora \
-  --disable-distillation
+  --disable-lora
 ```
 
 只运行经验库自进化，不做 LoRA 和蒸馏：
@@ -198,8 +196,7 @@ python -m train.four_agent_private_train \
   --backend local-qwen \
   --model-path models/Qwen2.5-1.5B-Instruct \
   --dataset-dir data/gsm8k \
-  --disable-lora \
-  --disable-distillation
+  --disable-lora
 ```
 
 `run_b_magent_training_entry()` 的完整训练逻辑：
@@ -212,8 +209,7 @@ python -m train.four_agent_private_train \
 6. 每轮用 `format_gsm8k_training_task()` 构造带 gold 信息的训练任务
 7. 调用 `MultiAgentWorkflow.run()` 完成四智能体自进化
 8. 如果启用 LoRA，调用 `LoraEvolutionManager.update_from_round()`
-9. 如果启用蒸馏，调用 `DistillationManager.update_from_lora_updates()`
-10. 汇总为 `BMagentTrainingReport` 并通过 `export_json_report()` 写出
+9. 汇总为 `BMagentTrainingReport` 并通过 `export_json_report()` 写出
 
 ### 参数含义
 
@@ -225,9 +221,7 @@ python -m train.four_agent_private_train \
 - `--rounds`：训练轮数，传 `0` 时自动覆盖平均拆分后的私有训练数据
 - `--private-batch-size`：每轮参与者读取多少条私有样本
 - `--enable-lora` / `--disable-lora`：开启或关闭 LoRA
-- `--enable-distillation` / `--disable-distillation`：开启或关闭多教师蒸馏
-- `--lora-threshold`：每个智能体累计多少条可用 SFT 样本后触发 LoRA 训练，默认 `10`
-- `--distillation-threshold`：每个智能体累计多少条蒸馏样本后触发蒸馏训练，默认 `2`
+- `--lora-threshold`：兼容旧命令的保留参数；现在只要智能体有精选 SFT 数据集样本就触发 LoRA 训练
 
 ## 后端模型逻辑
 
@@ -254,14 +248,13 @@ python -m train.four_agent_private_train \
 - `LocalQwenEngine.unload()`：释放模型和 CUDA 缓存
 - `LocalQwenEvolutionBackend.solve()`：把任务、私有样本和经验库组织成 prompt，调用本地 Qwen 解题
 - `LocalQwenEvolutionBackend.suggest_improvements()`：让本地 Qwen 给出 3 到 5 条评价建议和分数
-- `LocalQwenEvolutionBackend.release_model_memory()`：LoRA 或蒸馏训练前释放推理模型显存
-- `LocalQwenAgentModel.generate()`：投票评测时每个智能体生成自己的答案，优先使用 distilled adapter
+- `LocalQwenEvolutionBackend.release_model_memory()`：LoRA 训练前释放推理模型显存
+- `LocalQwenAgentModel.generate()`：投票评测时每个智能体生成自己的答案，优先使用该智能体的 LoRA adapter
 
 LoRA adapter 选择顺序：
 
-1. 如果 `prefer_distilled_adapter=True` 且 `distilled_adapter` 可用，优先使用 `data/lora_adapters/<agent>/distilled_adapter`
-2. 否则使用 `data/lora_adapters/<agent>/adapter`
-3. 如果都不存在，就使用原始 base model
+1. 如果 `data/lora_adapters/<agent>/adapter` 可用，使用该智能体自己的 LoRA adapter
+2. 如果不存在，就使用原始 base model
 
 ## LoRA 自进化逻辑
 
@@ -271,6 +264,7 @@ LoRA 逻辑在 [b_magent/lora.py](/home/cxh/b_magent/b_magent/lora.py)。
 
 ```text
 data/lora_adapters/qwen_agent_*/sft_dataset.jsonl
+data/lora_adapters/qwen_agent_*/current_sft_dataset.jsonl
 data/lora_adapters/qwen_agent_*/lora_state.json
 data/lora_adapters/qwen_agent_*/adapter/
 ```
@@ -288,12 +282,13 @@ data/lora_adapters/qwen_agent_*/adapter/
 
 - `LoraEvolutionManager.update_from_round()`：从一轮 `Draft`、`PeerEvaluation`、`SelfImprovement` 中生成 LoRA 样本
 - `add_example_if_usable()`：检查样本是否可用，包括是否有评价、评分是否达标、gold answer 是否正确、是否重复
-- `maybe_train_agent()`：如果 pending 样本数量达到阈值，就调用 trainer 训练 adapter
+- `train_agent_on_curated_dataset()`：只要有精选 SFT 数据集样本，就用精选 SFT 数据集训练 adapter
 - `build_lora_example()`：把任务、轨迹、评价报告和改进答案转换成 SFT 样本
 - `format_trajectory()`：格式化智能体推理轨迹和工具调用
 - `format_evaluation_report()`：格式化评价者评分、建议和理由
 - `format_lora_prompt()`：把 SFT 样本拼成训练 prompt
-- `append_lora_example()`：追加写入 `sft_dataset.jsonl`
+- `append_lora_example()`：追加写入精选数据集 `sft_dataset.jsonl`
+- `copy_lora_dataset()`：把精选数据集复制为本轮训练用的 `current_sft_dataset.jsonl`
 - `hash_lora_example()`：对样本做哈希去重
 - `is_improved_answer_correct()`：当任务含 gold answer 时，检查改进答案是否正确
 - `write_lora_metadata()`：训练完成后写 adapter 元数据
@@ -468,7 +463,7 @@ python scripts/check_setup.py
 2. 先跑不加载模型的逻辑测试：
 
 ```bash
-python -m train.four_agent_private_train --mode b-magent --backend demo --dataset-dir data/gsm8k --rounds 1 --disable-lora --disable-distillation
+python -m train.four_agent_private_train --mode b-magent --backend demo --dataset-dir data/gsm8k --rounds 1 --disable-lora
 ```
 
 3. 再跑本地 Qwen 自进化训练：

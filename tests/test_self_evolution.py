@@ -41,9 +41,15 @@ class SelfEvolutionLibraryTestCase(unittest.TestCase):
             self.assertIsNotNone(result.evaluation_record)
             self.assertEqual(result.professional_record.library_type, "professional")
             self.assertEqual(result.evaluation_record.library_type, "evaluation")
+            self.assertIn("solving lesson", result.professional_record.summary)
+            self.assertIn("review lesson", result.evaluation_record.summary)
+            self.assertIn("verify", result.professional_record.summary)
+            self.assertIn("numeric answer", result.evaluation_record.summary)
             self.assertIn("prior_evaluation_memory=", result.evaluation_record.detail)
             self.assertIn("own_review_rationales=", result.evaluation_record.detail)
             self.assertIn("correctness=0.8", result.evaluation_record.detail)
+            self.assertIn("future_solving_lesson=", result.professional_record.detail)
+            self.assertIn("future_review_lesson=", result.evaluation_record.detail)
 
             professional_records = library.search_professional("boundary")
             evaluation_records = library.search_evaluation("numeric")
@@ -80,6 +86,29 @@ class SelfEvolutionLibraryTestCase(unittest.TestCase):
             for event in events:
                 self.assertTrue((temp_dir / event.agent_name / "professional_library.jsonl").exists())
                 self.assertTrue((temp_dir / event.agent_name / "evaluation_library.jsonl").exists())
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_wrong_answers_still_create_error_lessons_for_experience_library(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_error_lesson_test_"))
+        try:
+            event = EvolutionInput(
+                agent_name="qwen_agent_1",
+                specialty="general-agent",
+                task="solve numeric word problem",
+                answer="wrong reasoning #### 1",
+                thought_trace=["missed final check"],
+                peer_suggestions=["verify final numeric answer before submitting"],
+                is_correct=False,
+            )
+            library = SelfEvolutionLibrary(temp_dir, event.agent_name)
+            record = library.evolve_professional(event)
+
+            self.assertIn("error solving lesson", record.summary)
+            self.assertIn("verify final numeric answer", record.summary)
+            self.assertIn("future_solving_lesson=", record.detail)
+            retrieved = library.search_professional("numeric verify")
+            self.assertEqual(retrieved[0].summary, record.summary)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 

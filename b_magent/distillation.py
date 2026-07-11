@@ -143,7 +143,7 @@ class PeftManyToManyDistillationTrainer:
         except ImportError as exc:
             raise RuntimeError(
                 "Distillation requires peft plus torch, datasets, and transformers. "
-                "Install the project requirements to enable --enable-distillation."
+                "Install the project requirements to enable distillation training."
             ) from exc
 
         rows = _read_jsonl(dataset_path)
@@ -326,7 +326,12 @@ class DistillationManager:
                 continue
             trained = bool(getattr(update, "trained", False))
             reason = str(getattr(update, "reason", ""))
-            if trained or reason.startswith("pending dataset below threshold:"):
+            if (
+                trained
+                or reason == "accepted into curated SFT dataset"
+                or reason.startswith("pending dataset below threshold:")
+                or "waiting for LoRA threshold" in reason
+            ):
                 agent_names.add(agent_name)
         return sorted(agent_names)
 

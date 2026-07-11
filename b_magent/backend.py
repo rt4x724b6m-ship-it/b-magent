@@ -46,7 +46,7 @@ class DemoQwenBackend:
         if target_draft.thought_trace:
             suggestions.append("将思考轨迹中的假设转成可验证检查项")
         rationale = (
-            f"{evaluator_name} 根据任务、答案和思考轨迹给出可修改建议；"
+            f"{evaluator_name} 根据任务、联邦抽象答案摘要和脱敏轨迹给出可修改建议；"
             f"参考评价库: {'; '.join(evaluation_memory) or '暂无'}。"
         )
         return PeerEvaluation(

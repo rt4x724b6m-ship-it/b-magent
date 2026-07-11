@@ -32,6 +32,12 @@ class FakeDistillationTrainer:
         adapter_path.mkdir(parents=True, exist_ok=True)
 
 
+def count_jsonl_rows_for_test(path: Path) -> int:
+    if not path.exists():
+        return 0
+    return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+
+
 class LoraEvolutionTestCase(unittest.TestCase):
     def test_builds_reflection_sft_example_from_trajectory_and_evaluations(self) -> None:
         draft = Draft(
@@ -92,7 +98,7 @@ class LoraEvolutionTestCase(unittest.TestCase):
         self.assertNotIn("Gold final answer", example.input)
         self.assertIn("Question: q", example.input)
 
-    def test_manager_accumulates_per_agent_datasets_and_trains_at_threshold(self) -> None:
+    def test_manager_accumulates_per_agent_datasets_and_trains_when_curated_examples_exist(self) -> None:
         with tempfile.TemporaryDirectory(prefix="b_magent_lora_test_") as temp:
             trainer = FakeLoraTrainer()
             manager = LoraEvolutionManager(
@@ -171,6 +177,53 @@ class LoraEvolutionTestCase(unittest.TestCase):
             self.assertTrue(first_updates[0].trained)
             self.assertEqual(duplicate_updates[0].reason, "duplicate SFT example")
             self.assertEqual(len(trainer.calls), 1)
+
+    def test_lora_trains_when_curated_dataset_has_example_even_below_threshold(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="b_magent_lora_curated_dataset_test_") as temp:
+            trainer = FakeLoraTrainer()
+            manager = LoraEvolutionManager(
+                LoraTrainingConfig(
+                    base_model_path="models/Qwen2.5-1.5B-Instruct",
+                    output_dir=Path(temp) / "lora",
+                    threshold=2,
+                ),
+                trainer=trainer,
+            )
+            reviews = [
+                PeerEvaluation(
+                    "qwen_agent_3",
+                    "qwen_agent_1",
+                    ["verify final answer"],
+                    "r",
+                    [],
+                    EvaluationScores(correctness=1.0, safety=1.0, efficiency=1.0),
+                )
+            ]
+            first = manager.update_from_round(
+                "Task A\nGold final answer: 2",
+                [Draft("qwen_agent_1", "通用智能体", "draft #### 1", ["t1"], [], [], [])],
+                reviews,
+                [SelfImprovement("qwen_agent_1", ["fix"], "correct #### 2", [])],
+            )
+            self.assertTrue(first[0].trained)
+            self.assertEqual(first[0].pending_examples, 0)
+            self.assertEqual(first[0].reason, "")
+            self.assertEqual(len(trainer.calls), 1)
+            self.assertEqual(count_jsonl_rows_for_test(manager.dataset_path("qwen_agent_1")), 1)
+
+            second = manager.update_from_round(
+                "Task B\nGold final answer: 3",
+                [Draft("qwen_agent_1", "通用智能体", "draft #### 1", ["t2"], [], [], [])],
+                reviews,
+                [SelfImprovement("qwen_agent_1", ["fix"], "correct #### 3", [])],
+            )
+
+            self.assertTrue(second[0].trained)
+            self.assertEqual(second[0].examples, 2)
+            self.assertEqual(second[0].pending_examples, 0)
+            self.assertEqual(len(trainer.calls), 2)
+            trained_rows = Path(second[0].dataset_path).read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(trained_rows), 2)
 
     def test_distills_trained_agent_loras_into_private_agent_adapters(self) -> None:
         with tempfile.TemporaryDirectory(prefix="b_magent_distill_test_") as temp:

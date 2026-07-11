@@ -171,12 +171,10 @@ class LocalQwenAgentModel:
         agent_name: str,
         engine: LocalQwenEngine,
         lora_output_dir: str | Path | None = None,
-        prefer_distilled_adapter: bool = True,
     ) -> None:
         self.agent_name = agent_name
         self.engine = engine
         self.lora_output_dir = Path(lora_output_dir) if lora_output_dir is not None else None
-        self.prefer_distilled_adapter = prefer_distilled_adapter
         self.training_examples: list[str] = []
 
     def train_batch(self, batch: object) -> None:
@@ -203,9 +201,6 @@ class LocalQwenAgentModel:
     def _adapter_path(self) -> Path | None:
         if self.lora_output_dir is None:
             return None
-        distilled_adapter_path = self.lora_output_dir / self.agent_name / "distilled_adapter"
-        if self.prefer_distilled_adapter and _is_lora_adapter_ready(distilled_adapter_path):
-            return distilled_adapter_path
         adapter_path = self.lora_output_dir / self.agent_name / "adapter"
         return adapter_path if _is_lora_adapter_ready(adapter_path) else None
 
@@ -217,11 +212,9 @@ class LocalQwenEvolutionBackend:
         self,
         engine: LocalQwenEngine,
         lora_output_dir: str | Path | None = None,
-        prefer_distilled_adapter: bool = False,
     ) -> None:
         self.engine = engine
         self.lora_output_dir = Path(lora_output_dir) if lora_output_dir is not None else None
-        self.prefer_distilled_adapter = prefer_distilled_adapter
 
     def solve(
         self,
@@ -266,7 +259,7 @@ class LocalQwenEvolutionBackend:
             f"Target agent: {target_draft.agent_name}\n"
             "Task:\n"
             f"{task}\n\n"
-            "Target answer:\n"
+            "Target federated answer summary:\n"
             f"{target_draft.answer}\n\n"
             "Target trace:\n"
             f"{_format_context(target_draft.thought_trace)}\n\n"
@@ -291,9 +284,6 @@ class LocalQwenEvolutionBackend:
     def _adapter_path(self, agent_name: str) -> Path | None:
         if self.lora_output_dir is None:
             return None
-        distilled_adapter_path = self.lora_output_dir / agent_name / "distilled_adapter"
-        if self.prefer_distilled_adapter and _is_lora_adapter_ready(distilled_adapter_path):
-            return distilled_adapter_path
         adapter_path = self.lora_output_dir / agent_name / "adapter"
         return adapter_path if _is_lora_adapter_ready(adapter_path) else None
 
