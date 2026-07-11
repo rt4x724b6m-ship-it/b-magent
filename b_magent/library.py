@@ -44,4 +44,3 @@ class EvolutionLibrary:
         ranked = sorted(records, key=rank, reverse=True)
         matched = [record for record in ranked if rank(record)[0] > 0]
         return (matched or ranked)[:limit]
-

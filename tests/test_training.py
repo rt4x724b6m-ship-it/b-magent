@@ -13,6 +13,7 @@ add_project_root_to_sys_path()
 
 from baseline.qwen_gsm8k import STANDARD_TEST_LIMIT
 from train.four_agent_private_train import (
+    AGENT_NAMES,
     STANDARD_PRIVATE_TRAIN_SIZE,
     build_participant_schedule,
     export_report,
@@ -294,6 +295,43 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
                 for agent_name in round_report.participants:
                     trained_slots[agent_name] = trained_slots.get(agent_name, 0) + 1
             self.assertEqual(trained_slots, report.private_dataset_counts)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_b_magent_downlinks_global_experience_before_next_round(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_global_downlink_test_"))
+        try:
+            dataset_dir = temp_dir / "data" / "gsm8k"
+            dataset_dir.mkdir(parents=True)
+            train_rows = [
+                {"question": f"train-{i}", "answer": f"reasoning {i} #### {i}"}
+                for i in range(4)
+            ]
+            (dataset_dir / "train.jsonl").write_text(
+                "\n".join(json.dumps(row) for row in train_rows) + "\n",
+                encoding="utf-8",
+            )
+
+            report = run_b_magent_training_entry(
+                dataset_dir=dataset_dir,
+                data_dir=temp_dir / "data",
+                rounds=2,
+                private_batch_size=1,
+                random_seed=1,
+                backend=None,
+            )
+
+            self.assertEqual(report.training_rounds[0].global_downlinks, 0)
+            self.assertEqual(report.training_rounds[0].global_uploads, 1)
+            self.assertEqual(report.training_rounds[1].global_downlinks, 4)
+            self.assertEqual(report.training_rounds[1].global_uploads, 1)
+            self.assertTrue((temp_dir / "data" / "qwen_server_agent" / "global_evaluation_library.jsonl").exists())
+            for agent_name in AGENT_NAMES:
+                evaluation_text = (temp_dir / "data" / agent_name / "evaluation_library.jsonl").read_text(
+                    encoding="utf-8"
+                )
+                self.assertIn("global-downlink", evaluation_text)
+                self.assertIn("source_global_experience_id=qwen_server_agent:", evaluation_text)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 

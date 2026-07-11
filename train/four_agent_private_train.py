@@ -24,6 +24,7 @@ from b_magent.local_qwen import (
     LocalQwenEvolutionBackend,
 )
 from b_magent.lora import DEFAULT_LORA_THRESHOLD, LoraEvolutionManager, LoraTrainingConfig, LoraUpdate
+from b_magent.models import LibraryRecord
 from b_magent.seed import seed_agent_libraries
 from b_magent.workflow import MultiAgentWorkflow, build_default_agents
 
@@ -136,6 +137,8 @@ class BMagentTrainingRound:
     peer_reviews: int
     self_improvements: int
     evaluation_evolutions: int
+    global_downlinks: int = 0
+    global_uploads: int = 0
     lora_updates: list[LoraUpdate] = field(default_factory=list)
 
 
@@ -200,7 +203,13 @@ def run_b_magent_training_entry(
         task = format_gsm8k_training_task(sample)
         if on_round_start is not None:
             on_round_start(index + 1, effective_rounds, sample.question)
+        global_downlinks = downlink_global_evaluation_experience(
+            task,
+            agents,
+            workflow.server_agent,
+        )
         report = workflow.run(task, participant_names=participant_schedule[index])
+        global_uploads = len(report.global_experience.global_updates) if report.global_experience else 0
         release_model_memory = getattr(backend, "release_model_memory", None)
         if callable(release_model_memory) and lora_manager is not None:
             release_model_memory()
@@ -221,6 +230,8 @@ def run_b_magent_training_entry(
             peer_reviews=len(report.peer_reviews),
             self_improvements=len(report.self_improvements),
             evaluation_evolutions=len(report.evaluation_evolutions),
+            global_downlinks=global_downlinks,
+            global_uploads=global_uploads,
             lora_updates=lora_updates,
         )
         training_rounds.append(round_report)
@@ -254,6 +265,62 @@ def run_b_magent_training_entry(
             for agent in agents
         },
     )
+
+
+def downlink_global_evaluation_experience(
+    task: str,
+    agents: list[object],
+    server_agent: object,
+    limit: int = 3,
+) -> int:
+    """Distribute server-side global review lessons to client evaluation libraries."""
+    global_library = getattr(server_agent, "global_library", None)
+    search = getattr(global_library, "search", None)
+    if not callable(search):
+        return 0
+    global_records = search(task, limit=limit)
+    if not global_records:
+        return 0
+
+    downlinks = 0
+    for agent in agents:
+        evaluation_library = getattr(agent, "evaluation_library", None)
+        add_record = getattr(evaluation_library, "add_record", None)
+        all_records = getattr(evaluation_library, "all_records", None)
+        if not callable(add_record) or not callable(all_records):
+            continue
+        existing_source_ids = {
+            _extract_global_source_id(record.detail)
+            for record in all_records()
+            if "source_global_experience_id=" in record.detail
+        }
+        for global_record in global_records:
+            source_id = _global_record_source_id(global_record)
+            if source_id in existing_source_ids:
+                continue
+            add_record(
+                LibraryRecord(
+                    agent_name=agent.name,
+                    library_type="evaluation",
+                    source_task=task,
+                    summary=f"全局评价经验下发: {global_record.summary}",
+                    detail=(
+                        "Server-downlinked global evaluation experience for this round. "
+                        f"source_global_experience_id={source_id} | "
+                        f"source_server={global_record.agent_name} | "
+                        f"source_detail={global_record.detail}"
+                    ),
+                    tags=[
+                        "global-downlink",
+                        "server-agent",
+                        "evaluation",
+                        *global_record.tags,
+                    ],
+                )
+            )
+            existing_source_ids.add(source_id)
+            downlinks += 1
+    return downlinks
 
 
 def run_four_agent_private_training(
@@ -510,6 +577,7 @@ def reset_b_magent_training_state(
 
         if lora_output_dir is not None:
             shutil.rmtree(lora_output_dir / agent_name, ignore_errors=True)
+    (data_dir / "qwen_server_agent" / "global_evaluation_library.jsonl").unlink(missing_ok=True)
 
 
 def make_cyclic_batch(samples: list[GSM8KSample], batch_index: int, batch_size: int) -> list[GSM8KSample]:
@@ -545,6 +613,18 @@ def export_json_report(report: object, output_file: Path) -> None:
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+def _global_record_source_id(record: LibraryRecord) -> str:
+    return f"{record.agent_name}:{record.created_at}"
+
+
+def _extract_global_source_id(detail: str) -> str:
+    marker = "source_global_experience_id="
+    if marker not in detail:
+        return ""
+    source_id = detail.split(marker, 1)[1]
+    return source_id.split(" | ", 1)[0].strip()
 
 
 def format_gsm8k_training_task(sample: GSM8KSample) -> str:
@@ -698,7 +778,8 @@ def print_training_round_end(round_index: int, rounds: int, report: BMagentTrain
     print(
         f"[{round_index}/{rounds}] 完成: drafts={report.drafts} "
         f"evaluations={report.peer_reviews} professional_evolutions={report.self_improvements} "
-        f"evaluation_evolutions={report.evaluation_evolutions}",
+        f"evaluation_evolutions={report.evaluation_evolutions} "
+        f"global_downlinks={report.global_downlinks} global_uploads={report.global_uploads}",
         flush=True,
     )
 

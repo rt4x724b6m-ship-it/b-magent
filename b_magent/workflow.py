@@ -8,6 +8,7 @@ from typing import Any
 from .agent import QwenAgent
 from .backend import DemoQwenBackend
 from .models import Draft, EvolutionReport, PeerEvaluation
+from s_server import ServerAgent
 
 
 def build_default_agents(base_dir: Path | None = None, backend: Any | None = None) -> list[QwenAgent]:
@@ -22,16 +23,26 @@ def build_default_agents(base_dir: Path | None = None, backend: Any | None = Non
     ]
 
 
+def build_default_server_agent(base_dir: Path | None = None, backend: Any | None = None) -> ServerAgent:
+    root = base_dir or Path(__file__).resolve().parent.parent
+    data_dir = root / "data"
+    return ServerAgent("qwen_server_agent", data_dir, backend or DemoQwenBackend())
+
+
 class MultiAgentWorkflow:
     def __init__(
         self,
         agents: list[QwenAgent],
+        server_agent: ServerAgent | None = None,
         random_seed: int | None = None,
         private_batch_size: int | None = None,
     ) -> None:
         if len(agents) != 4:
             raise ValueError("b_magent training requires exactly four agents")
         self.agents = agents
+        backend = agents[0].backend if agents else DemoQwenBackend()
+        data_dir = agents[0].data_dir if agents else Path(__file__).resolve().parent.parent / "data"
+        self.server_agent = server_agent or ServerAgent("qwen_server_agent", data_dir, backend)
         self.random_seed = random_seed
         self._rng = random.Random(random_seed)
         self.private_batch_size = private_batch_size
@@ -68,6 +79,12 @@ class MultiAgentWorkflow:
             )
             for evaluator in evaluators
         ]
+        global_experience = self.server_agent.aggregate_evaluation_experience(
+            task,
+            peer_reviews,
+            evaluation_evolutions,
+            evaluators,
+        )
 
         return EvolutionReport(
             task=task,
@@ -77,6 +94,7 @@ class MultiAgentWorkflow:
             peer_reviews=peer_reviews,
             self_improvements=self_improvements,
             evaluation_evolutions=evaluation_evolutions,
+            global_experience=global_experience,
         )
 
     def _select_participants(self, participant_names: list[str] | None) -> list[QwenAgent]:

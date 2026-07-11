@@ -59,6 +59,7 @@ class WorkflowTestCase(unittest.TestCase):
         try:
             backend = RecordingBackend()
             agents = build_default_agents(temp_dir, backend=backend)
+            seed_agent_libraries(agents)
             workflow = MultiAgentWorkflow(agents, random_seed=7)
 
             workflow.run("Question: q\nGold reasoning: hidden\nGold final answer: 2")
@@ -240,6 +241,14 @@ class WorkflowTestCase(unittest.TestCase):
             self.assertEqual(len(report.self_improvements), 2)
             self.assertEqual(len(report.evaluation_evolutions), 2)
             self.assertEqual(len(report.peer_reviews), 4)
+            self.assertIsNotNone(report.global_experience)
+            assert report.global_experience is not None
+            self.assertEqual(report.global_experience.server_name, "qwen_server_agent")
+            self.assertEqual(sorted(report.global_experience.source_evaluators), sorted(report.evaluators))
+            self.assertEqual(report.global_experience.source_update_count, 2)
+            self.assertTrue(report.global_experience.global_updates)
+            global_detail = report.global_experience.global_updates[0].detail
+            self.assertIn("uploaded_consensus_evaluation_experience=", global_detail)
 
             for draft in report.drafts:
                 self.assertTrue(draft.private_training_used)
@@ -272,12 +281,106 @@ class WorkflowTestCase(unittest.TestCase):
             payload = json.loads(output_file.read_text(encoding="utf-8"))
             self.assertEqual(payload["task"], task)
             self.assertNotIn("score", payload["peer_reviews"][0])
+            self.assertIn("global_experience", payload)
+            self.assertEqual(payload["global_experience"]["server_name"], "qwen_server_agent")
 
             for agent_name in expected_agents:
                 professional_file = temp_dir / "data" / agent_name / "professional_library.jsonl"
                 evaluation_file = temp_dir / "data" / agent_name / "evaluation_library.jsonl"
                 self.assertTrue(professional_file.exists())
                 self.assertTrue(evaluation_file.exists())
+            self.assertTrue((temp_dir / "data" / "qwen_server_agent" / "global_evaluation_library.jsonl").exists())
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_server_agent_uses_same_backend_for_global_aggregation(self) -> None:
+        class RecordingBackend:
+            def __init__(self) -> None:
+                self.global_calls: list[dict[str, object]] = []
+
+            def solve(self, agent_name, specialty, task, private_training, professional_memory, evaluation_alerts):
+                return "1. solve\n#### 3", ["public trace"]
+
+            def suggest_improvements(self, evaluator_name, target_draft, task, evaluation_memory):
+                return PeerEvaluation(
+                    evaluator_name,
+                    target_draft.agent_name,
+                    ["verify final numeric answer"],
+                    "r",
+                    evaluation_memory,
+                )
+
+            def aggregate_global_experience(
+                self,
+                server_name,
+                task,
+                peer_reviews,
+                evaluation_evolutions,
+                consensus_evaluation_records,
+                prior_global_memory,
+            ):
+                self.global_calls.append(
+                    {
+                        "server_name": server_name,
+                        "peer_review_count": len(peer_reviews),
+                        "evolution_count": len(evaluation_evolutions),
+                        "consensus_count": len(consensus_evaluation_records),
+                        "prior_global_memory": prior_global_memory,
+                    }
+                )
+                return "global synthesized review lesson"
+
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_server_backend_test_"))
+        try:
+            backend = RecordingBackend()
+            agents = build_default_agents(temp_dir, backend=backend)
+            seed_agent_libraries(agents)
+            workflow = MultiAgentWorkflow(agents, random_seed=7)
+
+            report = workflow.run("solve numeric task", participant_names=["qwen_agent_1", "qwen_agent_2"])
+
+            self.assertEqual(len(backend.global_calls), 1)
+            self.assertEqual(backend.global_calls[0]["server_name"], "qwen_server_agent")
+            self.assertEqual(backend.global_calls[0]["peer_review_count"], 4)
+            self.assertEqual(backend.global_calls[0]["evolution_count"], 2)
+            self.assertGreaterEqual(backend.global_calls[0]["consensus_count"], 1)
+            self.assertIsNotNone(report.global_experience)
+            assert report.global_experience is not None
+            self.assertEqual(report.global_experience.synthesized_experience, "global synthesized review lesson")
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_server_does_not_upload_when_evaluator_suggestions_disagree(self) -> None:
+        class DisagreeingBackend:
+            def solve(self, agent_name, specialty, task, private_training, professional_memory, evaluation_alerts):
+                return "1. solve\n#### 3", ["public trace"]
+
+            def suggest_improvements(self, evaluator_name, target_draft, task, evaluation_memory):
+                if evaluator_name == "qwen_agent_3":
+                    suggestions = ["verify final numeric answer"]
+                else:
+                    suggestions = ["rewrite as legal risk memo"]
+                return PeerEvaluation(evaluator_name, target_draft.agent_name, suggestions, "r", evaluation_memory)
+
+            def aggregate_global_experience(self, *args, **kwargs):
+                raise AssertionError("server should not aggregate globally without evaluator consensus")
+
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_disagree_upload_test_"))
+        try:
+            backend = DisagreeingBackend()
+            agents = build_default_agents(temp_dir, backend=backend)
+            workflow = MultiAgentWorkflow(agents, random_seed=7)
+
+            report = workflow.run("solve numeric task", participant_names=["qwen_agent_1", "qwen_agent_2"])
+
+            self.assertIsNotNone(report.global_experience)
+            assert report.global_experience is not None
+            self.assertEqual(report.global_experience.source_update_count, 0)
+            self.assertEqual(report.global_experience.global_updates, [])
+            self.assertEqual(len(report.evaluation_evolutions), 2)
+            for evolution in report.evaluation_evolutions:
+                self.assertTrue(evolution.evaluation_updates)
+            self.assertFalse((temp_dir / "data" / "qwen_server_agent" / "global_evaluation_library.jsonl").read_text(encoding="utf-8").strip())
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 

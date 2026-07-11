@@ -91,6 +91,15 @@ class EvaluationEvolution:
 
 
 @dataclass
+class GlobalExperience:
+    server_name: str
+    source_evaluators: list[str]
+    source_update_count: int
+    synthesized_experience: str
+    global_updates: list[LibraryRecord]
+
+
+@dataclass
 class EvolutionReport:
     task: str
     participants: list[str]
@@ -99,6 +108,7 @@ class EvolutionReport:
     peer_reviews: list[PeerEvaluation]
     self_improvements: list[SelfImprovement]
     evaluation_evolutions: list[EvaluationEvolution]
+    global_experience: GlobalExperience | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

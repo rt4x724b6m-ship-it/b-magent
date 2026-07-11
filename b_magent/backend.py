@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .models import Draft, EvaluationScores, PeerEvaluation
+from .models import Draft, EvaluationEvolution, EvaluationScores, LibraryRecord, PeerEvaluation
 
 
 class DemoQwenBackend:
@@ -85,3 +85,25 @@ class DemoQwenBackend:
             "professional memory, and evaluation checks."
         )
         return revised_answer, reflection
+
+    def aggregate_global_experience(
+        self,
+        server_name: str,
+        task: str,
+        peer_reviews: list[PeerEvaluation],
+        evaluation_evolutions: list[EvaluationEvolution],
+        consensus_evaluation_records: list[LibraryRecord],
+        prior_global_memory: list[str],
+    ) -> str:
+        suggestions = []
+        for review in peer_reviews:
+            for suggestion in review.suggestions:
+                if suggestion not in suggestions:
+                    suggestions.append(suggestion)
+        top_suggestion = suggestions[0] if suggestions else "检查答案结构、结论一致性和可复查证据"
+        return (
+            f"[{server_name}] 全局评价经验: 面向任务“{task}”，综合 {len(peer_reviews)} 条互评轨迹和 "
+            f"{len(consensus_evaluation_records)} 条共识评价经验；"
+            f"后续评价优先执行“{top_suggestion}”，并交叉比较评价理由、评分和目标智能体的改进结果。"
+            f"历史全局经验命中 {len(prior_global_memory)} 条。"
+        )

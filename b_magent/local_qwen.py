@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .models import Draft, EvaluationScores, PeerEvaluation
+from .models import Draft, EvaluationEvolution, EvaluationScores, LibraryRecord, PeerEvaluation
 
 
 DEFAULT_QWEN_MODEL = "models/Qwen2.5-1.5B-Instruct"
@@ -316,6 +316,58 @@ class LocalQwenEvolutionBackend:
             "retrieved professional memories, and evaluation checks."
         )
         return revised_answer, reflection
+
+    def aggregate_global_experience(
+        self,
+        server_name: str,
+        task: str,
+        peer_reviews: list[PeerEvaluation],
+        evaluation_evolutions: list[EvaluationEvolution],
+        consensus_evaluation_records: list[LibraryRecord],
+        prior_global_memory: list[str],
+    ) -> str:
+        review_context = [
+            (
+                f"evaluator={review.evaluator}; target={review.target}; "
+                f"scores=correctness:{review.scores.correctness}, safety:{review.scores.safety}, "
+                f"efficiency:{review.scores.efficiency}; suggestions={'; '.join(review.suggestions)}; "
+                f"rationale={review.rationale}"
+            )
+            for review in peer_reviews
+        ]
+        evolution_context = [
+            (
+                f"evaluator={evolution.agent_name}; synthesized_suggestions="
+                f"{'; '.join(evolution.synthesized_suggestions)}; updates="
+                f"{'; '.join(record.summary for record in evolution.evaluation_updates)}"
+            )
+            for evolution in evaluation_evolutions
+        ]
+        consensus_experience_context = [
+            (
+                f"agent={record.agent_name}; summary={record.summary}; detail={record.detail}"
+            )
+            for record in consensus_evaluation_records
+        ]
+        prompt = (
+            f"Server agent: {server_name}\n"
+            "Role: aggregate all evaluator-agent review experience for this round into one reusable global lesson.\n"
+            "Task:\n"
+            f"{task}\n\n"
+            "Prior global evaluation memories:\n"
+            f"{_format_context(prior_global_memory)}\n\n"
+            "Peer review trajectories:\n"
+            f"{_format_context(review_context)}\n\n"
+            "Evaluator experience that passed same-target suggestion-consensus gating:\n"
+            f"{_format_context(consensus_experience_context)}\n\n"
+            "Evaluator self-evolved evaluation records:\n"
+            f"{_format_context(evolution_context)}\n\n"
+            "Write one concise global evaluation experience for future rounds. "
+            "Synthesize common failure modes, useful review checks, score/rationale patterns, "
+            "and how future evaluators should inspect federated answer summaries and FoT-style trajectories. "
+            "Do not expose private training data."
+        )
+        return self.engine.generate(prompt)
 
     def _adapter_path(self, agent_name: str) -> Path | None:
         if self.lora_output_dir is None:
