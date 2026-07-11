@@ -161,6 +161,55 @@ class WorkflowTestCase(unittest.TestCase):
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+    def test_self_improvement_regenerates_answer_without_gold_leakage(self) -> None:
+        class RecordingBackend:
+            def __init__(self) -> None:
+                self.improve_tasks: list[str] = []
+                self.improve_suggestions: list[list[str]] = []
+
+            def solve(self, agent_name, specialty, task, private_training, professional_memory, evaluation_alerts):
+                return "draft answer #### 1", []
+
+            def suggest_improvements(self, evaluator_name, target_draft, task, evaluation_memory):
+                return PeerEvaluation(evaluator_name, target_draft.agent_name, ["check arithmetic"], "r", [])
+
+            def improve_answer(
+                self,
+                agent_name,
+                specialty,
+                task,
+                draft,
+                suggestions,
+                professional_memory,
+                evaluation_alerts,
+            ):
+                self.improve_tasks.append(task)
+                self.improve_suggestions.append(suggestions)
+                return "ideal rewritten answer #### 2", "regenerated from feedback"
+
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_regenerate_test_"))
+        try:
+            backend = RecordingBackend()
+            agent = build_default_agents(temp_dir, backend=backend)[0]
+            draft = Draft("qwen_agent_1", "方案规划", "wrong calculation #### 1", [], [], [], [])
+            review = PeerEvaluation("qwen_agent_3", "qwen_agent_1", ["check arithmetic"], "r", [])
+
+            improvement = agent.self_improve(
+                "Question: q\nGold reasoning: hidden\nGold final answer: 2",
+                draft,
+                [review],
+            )
+
+            self.assertEqual(improvement.revised_answer, "ideal rewritten answer #### 2")
+            self.assertEqual(improvement.reflection, "regenerated from feedback")
+            self.assertTrue(improvement.is_correct)
+            self.assertEqual(backend.improve_suggestions, [["check arithmetic"]])
+            self.assertTrue(backend.improve_tasks)
+            self.assertNotIn("Gold final answer", backend.improve_tasks[0])
+            self.assertNotIn("Gold reasoning", backend.improve_tasks[0])
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def test_self_improvement_normalizes_integer_decimal_correctness(self) -> None:
         temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_decimal_correctness_test_"))
         try:

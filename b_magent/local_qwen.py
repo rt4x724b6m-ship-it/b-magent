@@ -281,6 +281,42 @@ class LocalQwenEvolutionBackend:
             scores=scores,
         )
 
+    def improve_answer(
+        self,
+        agent_name: str,
+        specialty: str,
+        task: str,
+        draft: Draft,
+        suggestions: list[str],
+        professional_memory: list[str],
+        evaluation_alerts: list[str],
+    ) -> tuple[str, str]:
+        prompt = (
+            f"Agent: {agent_name}\n"
+            f"Agent type: {specialty}\n"
+            "Task:\n"
+            f"{task}\n\n"
+            "Original answer:\n"
+            f"{draft.answer}\n\n"
+            "Public reasoning trace summary:\n"
+            f"{_format_context(draft.thought_trace)}\n\n"
+            "Evaluator feedback to apply:\n"
+            f"{_format_context(suggestions)}\n\n"
+            "Professional evolution library memories:\n"
+            f"{_format_context(professional_memory)}\n\n"
+            "Evaluation evolution library checks:\n"
+            f"{_format_context(evaluation_alerts)}\n\n"
+            "Rewrite the answer from scratch as the ideal final answer. "
+            "Apply the feedback concretely, remove unsupported claims, include verification, "
+            "and preserve the required final-answer format when the task is numeric."
+        )
+        revised_answer = self.engine.generate(prompt, adapter_path=self._adapter_path(agent_name))
+        reflection = (
+            "Reflection: regenerated an ideal final answer using evaluator feedback, "
+            "retrieved professional memories, and evaluation checks."
+        )
+        return revised_answer, reflection
+
     def _adapter_path(self, agent_name: str) -> Path | None:
         if self.lora_output_dir is None:
             return None

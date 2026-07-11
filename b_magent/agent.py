@@ -86,17 +86,31 @@ class QwenAgent:
 
     def self_improve(self, task: str, draft: Draft, evaluations: list[PeerEvaluation]) -> SelfImprovement:
         suggestions = _unique(item for evaluation in evaluations for item in evaluation.suggestions)
-        revised_answer = draft.answer
-        if suggestions:
-            revised_answer += "\nSelf-evolution revisions:\n" + "\n".join(f"- {item}" for item in suggestions)
+        professional_memory = [record.summary for record in self.professional_library.search(task)]
+        evaluation_alerts = [record.summary for record in self.evaluation_library.search(task)]
+        improve_answer = getattr(self.backend, "improve_answer", None)
+        if callable(improve_answer):
+            revised_answer, reflection = improve_answer(
+                self.name,
+                self.specialty,
+                _strip_gold_annotations(task),
+                draft,
+                suggestions,
+                professional_memory,
+                evaluation_alerts,
+            )
+        else:
+            revised_answer = draft.answer
+            if suggestions:
+                revised_answer += "\nSelf-evolution revisions:\n" + "\n".join(f"- {item}" for item in suggestions)
+            reflection = (
+                "Reflection: reviewed evaluator feedback and converted concrete suggestions "
+                "into an improved answer."
+            )
         gold_answer = _extract_gold_final_answer(task)
         is_correct = None
         if gold_answer is not None:
             is_correct = _extract_final_answer(revised_answer) == gold_answer
-        reflection = (
-            "Reflection: reviewed evaluator feedback and converted concrete suggestions "
-            "into an improved answer."
-        )
         event = EvolutionInput(
             agent_name=self.name,
             specialty=self.specialty,

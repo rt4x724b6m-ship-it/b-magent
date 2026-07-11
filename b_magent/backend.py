@@ -57,3 +57,31 @@ class DemoQwenBackend:
             evaluation_memory_used=evaluation_memory,
             scores=EvaluationScores(correctness=0.8, safety=1.0, efficiency=0.8),
         )
+
+    def improve_answer(
+        self,
+        agent_name: str,
+        specialty: str,
+        task: str,
+        draft: Draft,
+        suggestions: list[str],
+        professional_memory: list[str],
+        evaluation_alerts: list[str],
+    ) -> tuple[str, str]:
+        applied = "\n".join(f"- {item}" for item in suggestions) if suggestions else "- 保持原答案并补充自检"
+        revised_answer = (
+            f"[{agent_name}] 改进后的最终答案\n"
+            f"任务: {task}\n"
+            "1. 重新检查输入、输出和边界条件。\n"
+            "2. 将原始答案中的关键判断整理为可复查步骤。\n"
+            f"3. 已吸收评价建议:\n{applied}\n"
+            f"4. 参考专业经验: {'; '.join(professional_memory) or '暂无'}。\n"
+            f"5. 参考评价约束: {'; '.join(evaluation_alerts) or '暂无'}。\n"
+            "最终结论:\n"
+            f"{draft.answer}"
+        )
+        reflection = (
+            "Reflection: regenerated the answer from the task, original draft, evaluator feedback, "
+            "professional memory, and evaluation checks."
+        )
+        return revised_answer, reflection
