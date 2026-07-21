@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .evaluation_format import format_structured_evaluation
 from .library import EvolutionLibrary
 from .models import LibraryRecord
 
@@ -19,6 +20,7 @@ class EvolutionInput:
     evaluator_rationales: list[str] = field(default_factory=list)
     evaluation_memory_used: list[str] = field(default_factory=list)
     evaluation_scores: list[str] = field(default_factory=list)
+    peer_evaluation_rationales: list[str] = field(default_factory=list)
     is_correct: bool | None = None
 
 
@@ -32,7 +34,8 @@ class EvolutionResult:
 class SelfEvolutionLibrary:
     """Private dual-library evolution store for one agent.
 
-    The professional library stores lessons that improve task solving.
+    The professional library stores evaluator-selected successful solving
+    experience plus reflective lessons from evaluated wrong solutions.
     The evaluation library stores lessons that improve future reviewing.
     Both are JSONL-backed and intentionally separate.
     """
@@ -62,19 +65,34 @@ class SelfEvolutionLibrary:
         suggestions = _unique(event.peer_suggestions)
         thought_summary = _summarize_list(event.thought_trace, fallback="No thought trace provided")
         suggestion_summary = _summarize_list(suggestions, fallback="No peer suggestions provided")
+        rationale_summary = _summarize_list(
+            event.peer_evaluation_rationales,
+            fallback="No peer evaluation rationale provided",
+        )
+        score_summary = _summarize_list(event.evaluation_scores, fallback="No peer evaluation scores recorded")
         professional_lesson = _build_professional_lesson(event, suggestions)
+        experience_kind = _professional_experience_kind(event.is_correct)
         record = LibraryRecord(
             agent_name=event.agent_name,
             library_type="professional",
             source_task=event.task,
             summary=professional_lesson,
             detail=(
+                f"experience_kind={experience_kind} | "
                 f"answer_snapshot={_shorten(event.answer)} | "
                 f"thought_trace={thought_summary} | "
                 f"peer_suggestions={suggestion_summary} | "
+                f"peer_evaluation_rationales={rationale_summary} | "
+                f"peer_evaluation_scores={score_summary} | "
                 f"future_solving_lesson={professional_lesson}"
             ),
-            tags=[event.specialty, "self-evolution", "professional", *_keyword_tags(event.task, suggestions)],
+            tags=[
+                event.specialty,
+                "self-evolution",
+                "professional",
+                experience_kind,
+                *_keyword_tags(event.task, suggestions),
+            ],
         )
         return self.professional.add_record(record)
 
@@ -85,21 +103,25 @@ class SelfEvolutionLibrary:
         memory_summary = _summarize_list(event.evaluation_memory_used, fallback="No prior evaluation memory retrieved")
         score_summary = _summarize_list(event.evaluation_scores, fallback="No evaluation scores recorded")
         evaluation_lesson = _build_evaluation_lesson(event, suggestions)
+        structured_detail = format_structured_evaluation(
+            task=event.task,
+            observed_error=(
+                f"own_review_suggestions={suggestion_summary} | "
+                f"own_review_rationales={rationale_summary}"
+            ),
+            evaluation_decision=(
+                "Reflect on this agent's own peer reviews after the reviewed agents receive feedback; "
+                f"review_scores_peer_comparisons_and_target_results={score_summary}"
+            ),
+            confidence=f"prior_evaluation_memory={memory_summary}",
+            improvement_pattern=f"future_review_lesson={evaluation_lesson}",
+        )
         record = LibraryRecord(
             agent_name=event.agent_name,
             library_type="evaluation",
             source_task=event.task,
             summary=evaluation_lesson,
-            detail=(
-                "Reflect on this agent's own peer reviews after the reviewed agents receive feedback, "
-                "compare peer evaluator judgments, and inspect the resulting self-improvements before "
-                "updating future review behavior. "
-                f"prior_evaluation_memory={memory_summary} | "
-                f"own_review_suggestions={suggestion_summary} | "
-                f"own_review_rationales={rationale_summary} | "
-                f"review_scores_peer_comparisons_and_target_results={score_summary} | "
-                f"future_review_lesson={evaluation_lesson}"
-            ),
+            detail=structured_detail,
             tags=[event.specialty, "self-evolution", "evaluation", *_keyword_tags(event.task, suggestions)],
         )
         return self.evaluation.add_record(record)
@@ -149,8 +171,9 @@ def _build_professional_lesson(event: EvolutionInput, suggestions: list[str]) ->
     top_suggestion = _shorten(suggestions[0], limit=90) if suggestions else "make the answer concrete and checkable"
     task_hint = _task_hint(event.task)
     outcome = _outcome_label(event.is_correct)
+    basis = _professional_basis(event.is_correct)
     return (
-        f"{event.specialty} {outcome} solving lesson for {task_hint}: "
+        f"{event.specialty} {outcome} {basis} solving lesson for {task_hint}: "
         f"before finalizing, {top_suggestion}; keep steps explicit and verify the final answer."
     )
 
@@ -159,10 +182,12 @@ def _build_evaluation_lesson(event: EvolutionInput, suggestions: list[str]) -> s
     top_check = _shorten(suggestions[0], limit=90) if suggestions else "check correctness, safety, efficiency, and missing evidence"
     task_hint = _task_hint(event.task)
     outcome = _outcome_label(event.is_correct)
-    return (
-        f"{event.specialty} {outcome} review lesson for {task_hint}: "
-        f"evaluate observable answer structure, final-answer consistency, and {top_check}; "
-        "give concrete fixes tied to scores."
+    return format_structured_evaluation(
+        task=task_hint,
+        observed_error=f"{event.specialty} evaluator outcome is {outcome}; review may miss {top_check}.",
+        evaluation_decision="Evaluate observable answer structure, final-answer consistency, and evidence sufficiency.",
+        confidence=_summarize_list(event.evaluation_scores, fallback="No evaluation scores recorded"),
+        improvement_pattern=f"review lesson: give concrete fixes tied to scores; prioritize {top_check}.",
     )
 
 
@@ -172,6 +197,22 @@ def _outcome_label(is_correct: bool | None) -> str:
     if is_correct is False:
         return "error"
     return "uncertain"
+
+
+def _professional_basis(is_correct: bool | None) -> str:
+    if is_correct is True:
+        return "curated-by-evaluation"
+    if is_correct is False:
+        return "reflection-from-error"
+    return "evaluated"
+
+
+def _professional_experience_kind(is_correct: bool | None) -> str:
+    if is_correct is True:
+        return "curated-success-experience"
+    if is_correct is False:
+        return "error-reflection-experience"
+    return "evaluated-experience"
 
 
 def _task_hint(task: str) -> str:

@@ -379,7 +379,10 @@ class WorkflowTestCase(unittest.TestCase):
             self.assertEqual(report.global_experience.global_updates, [])
             self.assertEqual(len(report.evaluation_evolutions), 2)
             for evolution in report.evaluation_evolutions:
-                self.assertTrue(evolution.evaluation_updates)
+                self.assertEqual(evolution.evaluation_updates, [])
+            for agent_name in ("qwen_agent_3", "qwen_agent_4"):
+                evaluation_file = temp_dir / "data" / agent_name / "evaluation_library.jsonl"
+                self.assertFalse(evaluation_file.read_text(encoding="utf-8").strip())
             self.assertFalse((temp_dir / "data" / "qwen_server_agent" / "global_evaluation_library.jsonl").read_text(encoding="utf-8").strip())
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)

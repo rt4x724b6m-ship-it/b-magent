@@ -44,10 +44,13 @@ class SelfEvolutionLibraryTestCase(unittest.TestCase):
             self.assertIn("solving lesson", result.professional_record.summary)
             self.assertIn("review lesson", result.evaluation_record.summary)
             self.assertIn("verify", result.professional_record.summary)
+            self.assertIn("evaluated solving lesson", result.professional_record.summary)
+            self.assertIn("evaluated-experience", result.professional_record.tags)
             self.assertIn("numeric answer", result.evaluation_record.summary)
             self.assertIn("prior_evaluation_memory=", result.evaluation_record.detail)
             self.assertIn("own_review_rationales=", result.evaluation_record.detail)
             self.assertIn("correctness=0.8", result.evaluation_record.detail)
+            self.assertIn("peer_evaluation_scores=target=qwen_agent_2: correctness=0.8", result.professional_record.detail)
             self.assertIn("future_solving_lesson=", result.professional_record.detail)
             self.assertIn("future_review_lesson=", result.evaluation_record.detail)
 
@@ -89,6 +92,28 @@ class SelfEvolutionLibraryTestCase(unittest.TestCase):
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+    def test_correct_answers_create_curated_success_experience(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_success_lesson_test_"))
+        try:
+            event = EvolutionInput(
+                agent_name="qwen_agent_1",
+                specialty="general-agent",
+                task="solve numeric word problem",
+                answer="correct reasoning #### 2",
+                peer_suggestions=["keep the explicit arithmetic check"],
+                evaluation_scores=["evaluator=qwen_agent_3: correctness=1.0, safety=1.0, efficiency=0.9"],
+                peer_evaluation_rationales=["The answer is correct and reusable."],
+                is_correct=True,
+            )
+            library = SelfEvolutionLibrary(temp_dir, event.agent_name)
+            record = library.evolve_professional(event)
+
+            self.assertIn("success curated-by-evaluation solving lesson", record.summary)
+            self.assertIn("curated-success-experience", record.tags)
+            self.assertIn("peer_evaluation_rationales=The answer is correct and reusable.", record.detail)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def test_wrong_answers_still_create_error_lessons_for_experience_library(self) -> None:
         temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_error_lesson_test_"))
         try:
@@ -104,8 +129,9 @@ class SelfEvolutionLibraryTestCase(unittest.TestCase):
             library = SelfEvolutionLibrary(temp_dir, event.agent_name)
             record = library.evolve_professional(event)
 
-            self.assertIn("error solving lesson", record.summary)
+            self.assertIn("error reflection-from-error solving lesson", record.summary)
             self.assertIn("verify final numeric answer", record.summary)
+            self.assertIn("error-reflection-experience", record.tags)
             self.assertIn("future_solving_lesson=", record.detail)
             retrieved = library.search_professional("numeric verify")
             self.assertEqual(retrieved[0].summary, record.summary)

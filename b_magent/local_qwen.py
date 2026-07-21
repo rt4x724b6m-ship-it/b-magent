@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .evaluation_format import format_confidence_from_scores, format_structured_evaluation
 from .models import Draft, EvaluationEvolution, EvaluationScores, LibraryRecord, PeerEvaluation
 
 
@@ -267,16 +268,28 @@ class LocalQwenEvolutionBackend:
             f"{_format_context(evaluation_memory)}\n\n"
             "Return 3 to 5 concrete improvement suggestions. Do not assign a score."
             " Also evaluate the answer on correctness, safety, and efficiency using numbers from 0 to 1. "
-            "Prefer JSON with keys suggestions, correctness, safety, efficiency, rationale."
+            "Prefer JSON with keys suggestions, correctness, safety, efficiency, rationale. "
+            "The rationale must use exactly this section order separated by a line containing ↓: "
+            "Task, Observed Error, Evaluation Decision, Confidence, Improvement Pattern."
         )
         raw_response = self.engine.generate(prompt)
         suggestions = _parse_suggestions(raw_response)
         scores = _parse_scores(raw_response)
+        rationale = format_structured_evaluation(
+            task=task,
+            observed_error=_shorten(raw_response, limit=500),
+            evaluation_decision=(
+                f"{evaluator_name} reviewed {target_draft.agent_name} and produced "
+                f"{len(suggestions)} concrete improvement suggestions."
+            ),
+            confidence=format_confidence_from_scores(scores),
+            improvement_pattern=" ; ".join(suggestions),
+        )
         return PeerEvaluation(
             evaluator=evaluator_name,
             target=target_draft.agent_name,
             suggestions=suggestions,
-            rationale=raw_response,
+            rationale=rationale,
             evaluation_memory_used=evaluation_memory,
             scores=scores,
         )
@@ -362,12 +375,24 @@ class LocalQwenEvolutionBackend:
             f"{_format_context(consensus_experience_context)}\n\n"
             "Evaluator self-evolved evaluation records:\n"
             f"{_format_context(evolution_context)}\n\n"
-            "Write one concise global evaluation experience for future rounds. "
+            "Write one concise global evaluation experience for future rounds using exactly this section order "
+            "with a line containing ↓ between sections: Task, Observed Error, Evaluation Decision, Confidence, "
+            "Improvement Pattern. "
             "Synthesize common failure modes, useful review checks, score/rationale patterns, "
             "and how future evaluators should inspect federated answer summaries and FoT-style trajectories. "
             "Do not expose private training data."
         )
-        return self.engine.generate(prompt)
+        raw_response = self.engine.generate(prompt)
+        return format_structured_evaluation(
+            task=task,
+            observed_error=_shorten(raw_response, limit=500),
+            evaluation_decision=(
+                f"{server_name} aggregated {len(peer_reviews)} peer reviews and "
+                f"{len(consensus_evaluation_records)} consensus evaluation records."
+            ),
+            confidence=f"prior_global_memory={len(prior_global_memory)}",
+            improvement_pattern=_shorten(raw_response, limit=500),
+        )
 
     def _adapter_path(self, agent_name: str) -> Path | None:
         if self.lora_output_dir is None:
@@ -383,6 +408,13 @@ def _format_context(items: list[str]) -> str:
     if not items:
         return "(none)"
     return "\n".join(f"- {item}" for item in items)
+
+
+def _shorten(text: str, limit: int = 240) -> str:
+    cleaned = " ".join(str(text).split())
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: limit - 3] + "..."
 
 
 def _is_lora_adapter_ready(adapter_path: Path) -> bool:

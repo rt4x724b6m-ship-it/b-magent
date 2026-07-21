@@ -9,6 +9,7 @@ from .agent import QwenAgent
 from .backend import DemoQwenBackend
 from .models import Draft, EvolutionReport, PeerEvaluation
 from s_server import ServerAgent
+from s_server.server_agent import select_consensus_peer_reviews
 
 
 def build_default_agents(base_dir: Path | None = None, backend: Any | None = None) -> list[QwenAgent]:
@@ -70,11 +71,12 @@ class MultiAgentWorkflow:
             reviews_for_agent = [review for review in peer_reviews if review.target == participant.name]
             self_improvements.append(participant.self_improve(task, draft, reviews_for_agent))
 
+        consensus_reviews = select_consensus_peer_reviews(peer_reviews)
         evaluation_evolutions = [
             evaluator.evolve_evaluation_library(
                 task,
-                [review for review in peer_reviews if review.evaluator == evaluator.name],
-                peer_reviews,
+                [review for review in consensus_reviews if review.evaluator == evaluator.name],
+                consensus_reviews,
                 self_improvements,
             )
             for evaluator in evaluators

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .evaluation_format import format_confidence_from_scores, format_structured_evaluation
 from .models import Draft, EvaluationEvolution, EvaluationScores, LibraryRecord, PeerEvaluation
 
 
@@ -45,9 +46,18 @@ class DemoQwenBackend:
         ]
         if target_draft.thought_trace:
             suggestions.append("将思考轨迹中的假设转成可验证检查项")
-        rationale = (
-            f"{evaluator_name} 根据任务、联邦抽象答案摘要和脱敏轨迹给出可修改建议；"
-            f"参考评价库: {'; '.join(evaluation_memory) or '暂无'}。"
+        scores = EvaluationScores(correctness=0.8, safety=1.0, efficiency=0.8)
+        rationale = format_structured_evaluation(
+            task=task,
+            observed_error=(
+                "目标答案需要补充输入、输出、边界条件，并把脱敏轨迹中的假设转成可验证检查项。"
+            ),
+            evaluation_decision=(
+                f"{evaluator_name} 建议修改 {target_draft.agent_name} 的答案结构和可复查性；"
+                f"参考评价库: {'; '.join(evaluation_memory) or '暂无'}。"
+            ),
+            confidence=format_confidence_from_scores(scores),
+            improvement_pattern=" ; ".join(suggestions),
         )
         return PeerEvaluation(
             evaluator=evaluator_name,
@@ -55,7 +65,7 @@ class DemoQwenBackend:
             suggestions=suggestions,
             rationale=rationale,
             evaluation_memory_used=evaluation_memory,
-            scores=EvaluationScores(correctness=0.8, safety=1.0, efficiency=0.8),
+            scores=scores,
         )
 
     def improve_answer(
@@ -101,9 +111,21 @@ class DemoQwenBackend:
                 if suggestion not in suggestions:
                     suggestions.append(suggestion)
         top_suggestion = suggestions[0] if suggestions else "检查答案结构、结论一致性和可复查证据"
-        return (
-            f"[{server_name}] 全局评价经验: 面向任务“{task}”，综合 {len(peer_reviews)} 条互评轨迹和 "
-            f"{len(consensus_evaluation_records)} 条共识评价经验；"
-            f"后续评价优先执行“{top_suggestion}”，并交叉比较评价理由、评分和目标智能体的改进结果。"
-            f"历史全局经验命中 {len(prior_global_memory)} 条。"
+        confidence = (
+            sum((review.scores.correctness + review.scores.safety + review.scores.efficiency) / 3 for review in peer_reviews)
+            / len(peer_reviews)
+            if peer_reviews
+            else 0.0
+        )
+        return format_structured_evaluation(
+            task=task,
+            observed_error=(
+                f"综合 {len(peer_reviews)} 条互评轨迹和 "
+                f"{len(consensus_evaluation_records)} 条共识评价经验后，主要风险是评价检查点不统一。"
+            ),
+            evaluation_decision=(
+                f"[{server_name}] 聚合为全局评价经验；后续评价需交叉比较评价理由、评分和目标智能体改进结果。"
+            ),
+            confidence=f"{confidence:.2f}; prior_global_memory={len(prior_global_memory)}",
+            improvement_pattern=f"后续评价优先执行: {top_suggestion}",
         )

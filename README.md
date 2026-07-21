@@ -1,6 +1,6 @@
 # b_magent
 
-`b_magent` 是一个本地四智能体自进化实验系统，主要用于 GSM8K 数学题训练、四智能体协作求解、互评、自我反思、LoRA 增量训练和多智能体蒸馏。
+`b_magent` 是一个本地四智能体自进化实验系统，主要用于 GSM8K 数学题训练、四智能体协作求解、互评、自我反思和 LoRA 增量训练。仓库中保留了多智能体蒸馏模块，但当前默认训练入口只直接驱动经验库和 LoRA 更新。
 
 系统默认使用 4 个同构 Qwen 智能体：
 
@@ -100,7 +100,8 @@ data/latest_report.json
 5. 每个评价者调用 `QwenAgent.evaluate_peer()` 评价所有参与者初稿，生成 `PeerEvaluation`
 6. 每个参与者调用 `QwenAgent.self_improve()` 根据评价建议生成改进答案，并写入专业经验库
 7. 每个评价者调用 `QwenAgent.evolve_evaluation_library()` 把本轮评价经验写入评价经验库
-8. 返回 `EvolutionReport`
+8. `qwen_server_agent` 聚合本轮互评经验，写入全局评价经验库
+9. 返回 `EvolutionReport`
 
 每轮结构可以理解为：
 
@@ -110,6 +111,7 @@ data/latest_report.json
   -> 2 evaluators review
   -> participants update professional library
   -> evaluators update evaluation library
+  -> server agent aggregate global evaluation experience
   -> optional LoRA update
 ```
 
@@ -165,7 +167,7 @@ data/qwen_agent_*/private_data.jsonl
 
 ### b-magent 自进化训练
 
-默认模式是 `--mode b-magent`，默认后端是 `local-qwen`，默认启用 LoRA 和蒸馏。
+默认模式是 `--mode b-magent`，默认后端是 `local-qwen`，默认启用 LoRA。每次启动该模式时，脚本会先清理上一轮生成的 agent 专业库、私有数据、评价库、server 全局评价库和 LoRA adapter 目录，再开始新的训练。
 
 ```bash
 python -m train.four_agent_private_train \
@@ -188,7 +190,7 @@ python -m train.four_agent_private_train \
   --disable-lora
 ```
 
-只运行经验库自进化，不做 LoRA 和蒸馏：
+只运行经验库自进化，不做 LoRA：
 
 ```bash
 python -m train.four_agent_private_train \
@@ -207,9 +209,10 @@ python -m train.four_agent_private_train \
 4. 用 `expand_participant_schedule()` 根据 `--rounds` 扩展排班
 5. 用 `build_default_agents()` 创建智能体并初始化经验库
 6. 每轮用 `format_gsm8k_training_task()` 构造带 gold 信息的训练任务
-7. 调用 `MultiAgentWorkflow.run()` 完成四智能体自进化
-8. 如果启用 LoRA，调用 `LoraEvolutionManager.update_from_round()`
-9. 汇总为 `BMagentTrainingReport` 并通过 `export_json_report()` 写出
+7. 训练轮次开始前调用 `downlink_global_evaluation_experience()`，把 server 全局评价经验下发到各 agent 评价库
+8. 调用 `MultiAgentWorkflow.run()` 完成四智能体自进化，并由 `qwen_server_agent` 聚合本轮全局评价经验
+9. 如果启用 LoRA，调用 `LoraEvolutionManager.update_from_round()`
+10. 汇总为 `BMagentTrainingReport` 并通过 `export_json_report()` 写出
 
 ### 参数含义
 
@@ -221,7 +224,32 @@ python -m train.four_agent_private_train \
 - `--rounds`：训练轮数，传 `0` 时自动覆盖平均拆分后的私有训练数据
 - `--private-batch-size`：每轮参与者读取多少条私有样本
 - `--enable-lora` / `--disable-lora`：开启或关闭 LoRA
+- `--lora-output-dir`：每个智能体的 LoRA SFT 数据集和 adapter 输出目录，默认 `data/lora_adapters`
 - `--lora-threshold`：兼容旧命令的保留参数；现在只要智能体有精选 SFT 数据集样本就触发 LoRA 训练
+- `--lora-max-seq-length`：LoRA 训练最大序列长度，默认 `1024`
+- `--lora-epochs`：每次 LoRA SFT 的 epoch 数，默认 `1.0`
+- `--lora-learning-rate`：LoRA 学习率，默认 `2e-4`
+- `--lora-min-evaluation-score`：接受 LoRA 样本所需的最低评价分数，默认 `0.6`
+- `--allow-uncorrect-lora-labels`：当任务包含 gold answer 时，允许错误的自我改进答案进入 LoRA SFT 数据集
+- `--seed`：传给 b-magent workflow 的随机种子
+
+兼容/评测模式参数：
+
+- `--mode placeholder`：运行旧的离线 `MemoryQwenModel` 占位训练器
+- `--mode local-qwen-vote`：使用 4 个本地 Qwen agent 对 test set 做投票评测
+- `--local-qwen`：`--mode local-qwen-vote` 的旧别名
+- `--batches-per-round`、`--batch-size`、`--private-train-size`：仅用于旧 placeholder 模式
+- `--test-limit`：用于 baseline/投票评测的测试样本数量，默认沿用 `STANDARD_TEST_LIMIT`
+
+### Server 全局评价经验
+
+四智能体 workflow 会额外创建一个 server agent：
+
+```text
+data/qwen_server_agent/global_evaluation_library.jsonl
+```
+
+每轮结束时，`qwen_server_agent` 会聚合所有评价者对参与者初稿的互评经验，写入全局评价经验库。下一轮开始前，训练入口会检索与当前任务相关的全局经验，并以 `global-downlink` 记录追加到每个 agent 的 `evaluation_library.jsonl`，避免每个 agent 只在自己的局部评价轨迹里演化。
 
 ## 后端模型逻辑
 
@@ -439,14 +467,21 @@ train/four_agent_trained_voting_100_report.json
 data/qwen_agent_*/private_data.jsonl
 data/qwen_agent_*/professional_library.jsonl
 data/qwen_agent_*/evaluation_library.jsonl
+data/qwen_server_agent/global_evaluation_library.jsonl
 ```
 
-每个智能体的 LoRA 和蒸馏产物：
+每个智能体的 LoRA 产物：
 
 ```text
 data/lora_adapters/qwen_agent_*/sft_dataset.jsonl
+data/lora_adapters/qwen_agent_*/current_sft_dataset.jsonl
 data/lora_adapters/qwen_agent_*/lora_state.json
 data/lora_adapters/qwen_agent_*/adapter/
+```
+
+仓库中的蒸馏模块会使用以下产物路径，但当前 `--mode b-magent` 训练入口不会自动生成它们：
+
+```text
 data/lora_adapters/qwen_agent_*/distillation_dataset.jsonl
 data/lora_adapters/qwen_agent_*/distillation_state.json
 data/lora_adapters/qwen_agent_*/distilled_adapter/

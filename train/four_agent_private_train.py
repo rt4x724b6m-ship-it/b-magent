@@ -1,6 +1,6 @@
 
-# 有 LoRA 开关；合格样本进入每个智能体自己的精选 SFT 数据集后，
-# 立即触发该智能体的 LoRA 微调。
+# LoRA 使用每个智能体自己的精选 SFT 数据集训练。
+# 专业经验库独立维护经他人评价筛选的成功经验，以及错误解法的反思经验。
 from __future__ import annotations
 
 import argparse
@@ -152,6 +152,8 @@ class BMagentTrainingReport:
     private_dataset_counts: dict[str, int]
     training_rounds: list[BMagentTrainingRound]
     professional_records: dict[str, int]
+    curated_success_records: dict[str, int]
+    error_reflection_records: dict[str, int]
     evaluation_records: dict[str, int]
     lora_enabled: bool = False
     lora_updates: dict[str, int] = field(default_factory=dict)
@@ -250,6 +252,22 @@ def run_b_magent_training_entry(
             agent.name: len(agent.professional_library.all_records()) - professional_before[agent.name]
             for agent in agents
         },
+        curated_success_records={
+            agent.name: count_new_records_with_tag(
+                agent.professional_library.all_records(),
+                professional_before[agent.name],
+                "curated-success-experience",
+            )
+            for agent in agents
+        },
+        error_reflection_records={
+            agent.name: count_new_records_with_tag(
+                agent.professional_library.all_records(),
+                professional_before[agent.name],
+                "error-reflection-experience",
+            )
+            for agent in agents
+        },
         evaluation_records={
             agent.name: len(agent.evaluation_library.all_records()) - evaluation_before[agent.name]
             for agent in agents
@@ -265,6 +283,10 @@ def run_b_magent_training_entry(
             for agent in agents
         },
     )
+
+
+def count_new_records_with_tag(records: list[LibraryRecord], start_index: int, tag: str) -> int:
+    return sum(1 for record in records[start_index:] if tag in record.tags)
 
 
 def downlink_global_evaluation_experience(
@@ -817,6 +839,8 @@ def main() -> None:
             evaluation_count = report.evaluation_records[agent_name]
             print(
                 f"{agent_name}: professional_records={professional_count} "
+                f"curated_success_records={report.curated_success_records.get(agent_name, 0)} "
+                f"error_reflection_records={report.error_reflection_records.get(agent_name, 0)} "
                 f"evaluation_records={evaluation_count} "
                 f"lora_updates={report.lora_updates.get(agent_name, 0)}"
             )

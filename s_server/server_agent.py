@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from b_magent.evaluation_format import format_structured_evaluation
 from b_magent.library import EvolutionLibrary
 from b_magent.models import EvaluationEvolution, GlobalExperience, LibraryRecord, PeerEvaluation
 
@@ -32,10 +33,11 @@ class ServerAgent:
         evaluation_evolutions: list[EvaluationEvolution],
         evaluator_agents: list[Any] | None = None,
     ) -> GlobalExperience:
-        consensus_targets = _consensus_targets(peer_reviews)
+        consensus_reviews = select_consensus_peer_reviews(peer_reviews)
+        consensus_targets = _unique(review.target for review in consensus_reviews)
         source_records = _select_consensus_evaluation_updates(
             evaluation_evolutions,
-            consensus_evaluators=_consensus_evaluators(peer_reviews, consensus_targets),
+            consensus_evaluators=_unique(review.evaluator for review in consensus_reviews),
         )
         evaluator_names = _unique([review.evaluator for review in peer_reviews])
         if not consensus_targets or not source_records:
@@ -115,11 +117,20 @@ def _fallback_global_experience(
     evaluator_lessons = _unique(record.summary for record in source_records)
     top_check = suggestions[0] if suggestions else "检查可观察答案结构、最终答案一致性和证据充分性"
     task_hint = " ".join(str(task).split())[:80] or "future tasks"
-    return (
-        f"Global review lesson for {task_hint}: aggregate evaluator trajectories before future reviews; "
-        f"prioritize {top_check}; compare evaluator rationales, target corrections, score patterns, "
-        f"and reusable review lessons from {len(evaluator_lessons)} evaluator updates. "
-        f"Prior global memory count: {len(prior_global_memory)}."
+    return format_structured_evaluation(
+        task=task_hint,
+        observed_error=(
+            "Evaluator trajectories show reusable review risks around answer structure, final answer consistency, "
+            "and evidence sufficiency."
+        ),
+        evaluation_decision=(
+            "Upload a global review lesson only after two evaluators give similar suggestions for the same trained agent."
+        ),
+        confidence=f"evaluator_updates={len(evaluator_lessons)}; prior_global_memory={len(prior_global_memory)}",
+        improvement_pattern=(
+            f"Aggregate evaluator trajectories before future reviews; prioritize {top_check}; compare evaluator "
+            "rationales, target corrections, score patterns, and reusable review lessons."
+        ),
     )
 
 
@@ -152,39 +163,47 @@ def _build_global_detail(
         )
         for record in source_records
     ]
-    return (
-        "Aggregate evaluator-side review trajectories only when two evaluators give similar suggestions "
-        "for the same trained agent; otherwise keep evaluator experience private. "
-        f"consensus_targets={_summarize(consensus_targets)} | "
-        f"prior_global_memory={_summarize(prior_global_memory)} | "
-        f"peer_review_trajectories={_summarize(review_summaries)} | "
-        f"uploaded_consensus_evaluation_experience={_summarize(uploaded_record_summaries)} | "
-        f"evaluator_evolved_experience={_summarize(evolution_summaries)} | "
-        f"global_future_review_lesson={synthesized}"
+    return format_structured_evaluation(
+        task=f"consensus_targets={_summarize(consensus_targets)}",
+        observed_error=(
+            f"peer_review_trajectories={_summarize(review_summaries)} | "
+            f"evaluator_evolved_experience={_summarize(evolution_summaries)}"
+        ),
+        evaluation_decision=(
+            "Aggregate evaluator-side review trajectories only when two evaluators give similar suggestions "
+            "for the same trained agent; otherwise keep evaluator experience private. "
+            f"uploaded_consensus_evaluation_experience={_summarize(uploaded_record_summaries)}"
+        ),
+        confidence=f"prior_global_memory={_summarize(prior_global_memory)}",
+        improvement_pattern=synthesized,
     )
 
 
-def _consensus_targets(peer_reviews: list[PeerEvaluation], threshold: float = 0.35) -> list[str]:
+def select_consensus_peer_reviews(peer_reviews: list[PeerEvaluation], threshold: float = 0.35) -> list[PeerEvaluation]:
+    """Return only evaluator reviews that agree with another evaluator on the same target."""
     by_target: dict[str, list[PeerEvaluation]] = {}
     for review in peer_reviews:
         by_target.setdefault(review.target, []).append(review)
-    targets: list[str] = []
-    for target, reviews in by_target.items():
-        if len({review.evaluator for review in reviews}) < 2:
+    consensus_reviews: list[PeerEvaluation] = []
+    for reviews in by_target.values():
+        distinct_reviews = _first_review_per_evaluator(reviews)
+        if len(distinct_reviews) < 2:
             continue
-        first, second = reviews[:2]
+        first, second = distinct_reviews[:2]
         if _suggestion_similarity(first.suggestions, second.suggestions) >= threshold:
-            targets.append(target)
-    return targets
+            consensus_reviews.extend([first, second])
+    return consensus_reviews
 
 
-def _consensus_evaluators(peer_reviews: list[PeerEvaluation], consensus_targets: list[str]) -> set[str]:
-    targets = set(consensus_targets)
-    return {
-        review.evaluator
-        for review in peer_reviews
-        if review.target in targets
-    }
+def _first_review_per_evaluator(reviews: list[PeerEvaluation]) -> list[PeerEvaluation]:
+    seen: set[str] = set()
+    distinct: list[PeerEvaluation] = []
+    for review in reviews:
+        if review.evaluator in seen:
+            continue
+        seen.add(review.evaluator)
+        distinct.append(review)
+    return distinct
 
 
 def _suggestion_similarity(left: list[str], right: list[str]) -> float:
@@ -204,11 +223,12 @@ def _suggestion_tokens(items: list[str]) -> set[str]:
 
 def _select_consensus_evaluation_updates(
     evaluation_evolutions: list[EvaluationEvolution],
-    consensus_evaluators: set[str],
+    consensus_evaluators: object,
 ) -> list[LibraryRecord]:
+    consensus_evaluator_names = set(_unique(consensus_evaluators))
     records: list[LibraryRecord] = []
     for evolution in evaluation_evolutions:
-        if evolution.agent_name not in consensus_evaluators:
+        if evolution.agent_name not in consensus_evaluator_names:
             continue
         for record in evolution.evaluation_updates:
             if record.library_type != "evaluation":

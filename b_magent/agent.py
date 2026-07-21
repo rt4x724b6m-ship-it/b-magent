@@ -86,6 +86,16 @@ class QwenAgent:
 
     def self_improve(self, task: str, draft: Draft, evaluations: list[PeerEvaluation]) -> SelfImprovement:
         suggestions = _unique(item for evaluation in evaluations for item in evaluation.suggestions)
+        peer_rationales = _unique(evaluation.rationale for evaluation in evaluations)
+        peer_scores = [
+            (
+                f"evaluator={evaluation.evaluator}: "
+                f"correctness={evaluation.scores.correctness}, "
+                f"safety={evaluation.scores.safety}, "
+                f"efficiency={evaluation.scores.efficiency}"
+            )
+            for evaluation in evaluations
+        ]
         professional_memory = [record.summary for record in self.professional_library.search(task)]
         evaluation_alerts = [record.summary for record in self.evaluation_library.search(task)]
         improve_answer = getattr(self.backend, "improve_answer", None)
@@ -118,6 +128,8 @@ class QwenAgent:
             answer=draft.answer,
             thought_trace=draft.thought_trace,
             peer_suggestions=suggestions,
+            peer_evaluation_rationales=peer_rationales,
+            evaluation_scores=peer_scores,
             is_correct=is_correct,
         )
         update = self.self_evolution_library.evolve_professional(event)
@@ -137,6 +149,12 @@ class QwenAgent:
         all_evaluations: list[PeerEvaluation] | None = None,
         self_improvements: list[SelfImprovement] | None = None,
     ) -> EvaluationEvolution:
+        if not own_evaluations:
+            return EvaluationEvolution(
+                agent_name=self.name,
+                synthesized_suggestions=[],
+                evaluation_updates=[],
+            )
         all_evaluations = all_evaluations or own_evaluations
         self_improvements = self_improvements or []
         target_improvements = {item.agent_name: item for item in self_improvements}
