@@ -4,6 +4,7 @@ import json
 import shutil
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -15,6 +16,7 @@ add_project_root_to_sys_path()
 from baseline.qwen_gsm8k import STANDARD_TEST_LIMIT, run_qwen_gsm8k_baseline
 from b_magent.library import EvolutionLibrary
 from b_magent.local_qwen import DEFAULT_QWEN_MODEL, LocalQwenEngine, NUMERIC_ANSWER_INSTRUCTION
+from b_magent.models import LibraryRecord
 from train.four_agent_private_train import (
     AGENT_NAMES,
     format_voting_prediction_detail,
@@ -48,6 +50,30 @@ class RecordingModel:
     def generate(self, question: str) -> str:
         self.questions_seen.append(question)
         return "#### 0"
+
+
+class ConcurrentVoteModel:
+    def __init__(self, barrier: threading.Barrier) -> None:
+        self.barrier = barrier
+
+    def train_batch(self, batch: object) -> None:
+        return None
+
+    def generate(self, question: str) -> str:
+        self.barrier.wait(timeout=2)
+        return "#### 42"
+
+
+class CapturingKnowledgeEngine:
+    def __init__(self) -> None:
+        self.prompts: dict[str, str] = {}
+        self.lock = threading.Lock()
+
+    def generate(self, prompt: str, adapter_path: Path) -> str:
+        agent_name = adapter_path.parent.name
+        with self.lock:
+            self.prompts[agent_name] = prompt
+        return "#### 42"
 
 
 class KnowledgeLibraryVoteModel:
@@ -278,6 +304,72 @@ class FourAgentVotingTestCase(unittest.TestCase):
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+    def test_four_agents_generate_each_question_in_parallel(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_parallel_vote_test_"))
+        try:
+            dataset_dir = temp_dir / "data" / "gsm8k"
+            dataset_dir.mkdir(parents=True)
+            (dataset_dir / "test.jsonl").write_text(
+                json.dumps({"question": "What is 20 + 22?", "answer": "#### 42"}) + "\n",
+                encoding="utf-8",
+            )
+            barrier = threading.Barrier(len(AGENT_NAMES))
+            models = {
+                agent_name: ConcurrentVoteModel(barrier)
+                for agent_name in AGENT_NAMES
+            }
+
+            report = run_four_agent_voting_on_test(dataset_dir, models=models)
+
+            self.assertEqual(report.total, 1)
+            self.assertEqual(report.correct, 1)
+            self.assertEqual([vote.agent_name for vote in report.predictions[0].votes], list(AGENT_NAMES))
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_parallel_agents_use_only_their_own_professional_library(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_private_library_vote_test_"))
+        try:
+            dataset_dir = temp_dir / "gsm8k"
+            dataset_dir.mkdir()
+            question = "What is 20 + 22?"
+            (dataset_dir / "test.jsonl").write_text(
+                json.dumps({"question": question, "answer": "#### 42"}) + "\n",
+                encoding="utf-8",
+            )
+            data_dir = temp_dir / "agent_data"
+            lora_output_dir = temp_dir / "lora_adapters"
+            engine = CapturingKnowledgeEngine()
+            models: dict[str, KnowledgeLibraryVoteModel] = {}
+            for agent_name in AGENT_NAMES:
+                model = KnowledgeLibraryVoteModel(
+                    agent_name=agent_name,
+                    engine=engine,  # type: ignore[arg-type]
+                    data_dir=data_dir,
+                    lora_output_dir=lora_output_dir,
+                )
+                model.professional_library.add_record(
+                    LibraryRecord(
+                        agent_name=agent_name,
+                        library_type="professional",
+                        source_task=question,
+                        summary=f"private-marker-{agent_name}",
+                        detail="Use the agent's own arithmetic strategy.",
+                    )
+                )
+                models[agent_name] = model
+
+            report = run_four_agent_voting_on_test(dataset_dir, models=models)
+
+            self.assertEqual(report.correct, 1)
+            for agent_name, prompt in engine.prompts.items():
+                self.assertIn(f"private-marker-{agent_name}", prompt)
+                for other_agent in set(AGENT_NAMES) - {agent_name}:
+                    self.assertNotIn(f"private-marker-{other_agent}", prompt)
+                self.assertEqual(models[agent_name].adapter_path.parent.name, agent_name)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def test_voting_uses_same_first_100_questions_as_qwen_baseline(self) -> None:
         temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_vote_baseline_same_test_"))
         try:
@@ -333,7 +425,7 @@ class FourAgentVotingTestCase(unittest.TestCase):
 
 
 class KnowledgeLibraryFourAgentVotingIntegrationTestCase(unittest.TestCase):
-    def test_four_agents_vote_with_distilled_lora_tuned_models_on_first_100_test_questions(self) -> None:
+    def test_four_agents_vote_with_lora_tuned_models_on_first_100_test_questions(self) -> None:
         project_root = Path(__file__).resolve().parent.parent
         dataset_dir = project_root / "data" / "gsm8k"
         model_path = project_root / DEFAULT_QWEN_MODEL
@@ -379,7 +471,7 @@ class KnowledgeLibraryFourAgentVotingIntegrationTestCase(unittest.TestCase):
             limit=STANDARD_TEST_LIMIT,
             on_prediction=print_voting_prediction_detail,
         )
-        output_file = project_root / "train" / "four_agent_distilled_lora_voting_100_report.json"
+        output_file = project_root / "train" / "four_agent_lora_voting_100_report.json"
         output_file.parent.mkdir(parents=True, exist_ok=True)
         output_file.write_text(
             json.dumps(report.to_dict(), ensure_ascii=False, indent=2),

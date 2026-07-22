@@ -1,6 +1,6 @@
 # b_magent
 
-`b_magent` 是一个本地四智能体自进化实验系统，主要用于 GSM8K 数学题训练、四智能体协作求解、互评、自我反思和 LoRA 增量训练。仓库中保留了多智能体蒸馏模块，但当前默认训练入口只直接驱动经验库和 LoRA 更新。
+`b_magent` 是一个本地四智能体自进化实验系统，主要用于 GSM8K 数学题训练、四智能体协作求解、互评、自我反思和 LoRA 增量训练。当前仓库只保留直接驱动经验库和 LoRA 更新的主流程。
 
 系统默认使用 4 个同构 Qwen 智能体：
 
@@ -225,8 +225,10 @@ python -m train.four_agent_private_train \
 - `--private-batch-size`：每轮参与者读取多少条私有样本
 - `--enable-lora` / `--disable-lora`：开启或关闭 LoRA
 - `--lora-output-dir`：每个智能体的 LoRA SFT 数据集和 adapter 输出目录，默认 `data/lora_adapters`
-- `--lora-threshold`：兼容旧命令的保留参数；现在只要智能体有精选 SFT 数据集样本就触发 LoRA 训练
+- `--lora-threshold`：每个智能体累计多少条新精选样本后刷新一次 LoRA，默认 `10`；训练结束会刷新不足阈值的剩余样本
 - `--lora-max-seq-length`：LoRA 训练最大序列长度，默认 `1024`
+- `--lora-train-batch-size`：单卡 LoRA batch size，默认 `4`
+- `--lora-gradient-accumulation-steps`：LoRA 梯度累积步数，默认 `1`
 - `--lora-epochs`：每次 LoRA SFT 的 epoch 数，默认 `1.0`
 - `--lora-learning-rate`：LoRA 学习率，默认 `2e-4`
 - `--lora-min-evaluation-score`：接受 LoRA 样本所需的最低评价分数，默认 `0.6`
@@ -320,61 +322,6 @@ data/lora_adapters/qwen_agent_*/adapter/
 - `hash_lora_example()`：对样本做哈希去重
 - `is_improved_answer_correct()`：当任务含 gold answer 时，检查改进答案是否正确
 - `write_lora_metadata()`：训练完成后写 adapter 元数据
-
-LoRA 训练目标：
-
-```text
-冻结 base model，只训练每个智能体自己的 LoRA adapter。
-训练样本来自“原始回答 + 互评反馈 + 自我改进后的答案”。
-```
-
-## 多智能体蒸馏逻辑
-
-蒸馏逻辑在 [b_magent/distillation.py](/home/cxh/b_magent/b_magent/distillation.py)。
-
-默认输出：
-
-```text
-data/lora_adapters/qwen_agent_*/distillation_dataset.jsonl
-data/lora_adapters/qwen_agent_*/distillation_state.json
-data/lora_adapters/qwen_agent_*/distilled_adapter/
-```
-
-核心类：
-
-- `DistillationConfig`：蒸馏训练配置
-- `TeacherAdapter`：一个教师 adapter 的路径、权重、样本数和版本
-- `DistillationUpdate`：一次蒸馏更新结果
-- `DistillationState`：每个智能体的蒸馏状态
-- `PeftManyToManyDistillationTrainer`：多教师 KL 蒸馏训练器
-- `DistillationManager`：收集教师、刷新蒸馏数据集、触发蒸馏训练
-
-关键函数：
-
-- `DistillationConfig.from_lora_config()`：从 LoRA 配置派生蒸馏配置
-- `DistillationManager.update_from_lora_updates()`：根据 LoRA 更新决定哪些智能体需要刷新蒸馏数据
-- `collect_teachers()`：收集所有已经训练过的 agent LoRA adapter 作为教师
-- `normalize_teacher_weights()`：按教师样本数归一化教师权重
-- `refresh_agent_dataset()`：把该智能体的 SFT 数据同步到蒸馏数据集
-- `maybe_train_agent_distillation()`：达到阈值后训练该智能体的 `distilled_adapter`
-- `append_distillation_row()`：追加蒸馏样本
-- `hash_distillation_source()`：蒸馏样本去重
-- `write_distillation_metadata()`：写入蒸馏元数据和损失公式
-
-蒸馏目标：
-
-```text
-每个智能体保留自己的 private distilled adapter。
-其他智能体的 adapter 只作为 teacher，不保存公共 adapter。
-```
-
-损失形式：
-
-```text
-p_T = sum_i alpha_i * p_i, sum_i alpha_i = 1
-L_KD = T^2 * D_KL(p_T || p_S)
-L = sft_weight * L_SFT + kd_weight * L_KD
-```
 
 ## 投票评测逻辑
 
@@ -477,14 +424,6 @@ data/lora_adapters/qwen_agent_*/sft_dataset.jsonl
 data/lora_adapters/qwen_agent_*/current_sft_dataset.jsonl
 data/lora_adapters/qwen_agent_*/lora_state.json
 data/lora_adapters/qwen_agent_*/adapter/
-```
-
-仓库中的蒸馏模块会使用以下产物路径，但当前 `--mode b-magent` 训练入口不会自动生成它们：
-
-```text
-data/lora_adapters/qwen_agent_*/distillation_dataset.jsonl
-data/lora_adapters/qwen_agent_*/distillation_state.json
-data/lora_adapters/qwen_agent_*/distilled_adapter/
 ```
 
 ## 推荐运行顺序

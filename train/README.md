@@ -22,6 +22,11 @@ For each round it converts one GSM8K training sample into a task, runs the
 multi-agent self-evolution workflow, and writes professional/evaluation memory
 records under `data/<agent_name>/`.
 
+The professional library stores reflection-style professional experience:
+private data is abstracted into reusable solving reflections, and accepted
+self-improvements write evaluator-informed success/error reflections rather
+than raw answers.
+
 Before the first round, the prepared training set at `data/gsm8k/train.jsonl`
 is evenly split into `data/qwen_agent_*/private_data.jsonl`. Every row is used
 once; when the total is not divisible by four, earlier agents receive one extra
@@ -35,16 +40,14 @@ participating agent per round without loading the full private split into one
 prompt.
 
 LoRA self-evolution is enabled by default. Accepted examples are accumulated
-in each agent's curated SFT dataset and trigger LoRA training as soon as the
-curated dataset has an accepted example. Use `--disable-lora` when you only want the
+in each agent's curated SFT dataset and refresh LoRA in batches controlled by
+`--lora-threshold` (default 10); final partial batches are flushed when training
+ends. Use `--disable-lora` when you only want the
 JSONL experience-library loop:
 
 ```bash
 python -m train.four_agent_private_train --dataset-dir data/gsm8k --rounds 200 --model-path models/Qwen2.5-1.5B-Instruct
 ```
-
-The distillation module still exists in `b_magent.distillation`, but this
-training entry currently drives the experience-library and LoRA loops directly.
 
 By default `--mode b-magent` uses `--backend local-qwen`, so each solve and
 evaluation step calls the configured Qwen model. For a fast logic-only smoke

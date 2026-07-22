@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Any
 
 from b_magent.evaluation_format import format_structured_evaluation
@@ -190,7 +191,10 @@ def select_consensus_peer_reviews(peer_reviews: list[PeerEvaluation], threshold:
         if len(distinct_reviews) < 2:
             continue
         first, second = distinct_reviews[:2]
-        if _suggestion_similarity(first.suggestions, second.suggestions) >= threshold:
+        similarity = _suggestion_similarity(first.suggestions, second.suggestions)
+        # Require both semantic agreement and a minimally trustworthy review.
+        confidence = min(_review_confidence(first), _review_confidence(second))
+        if similarity >= threshold and confidence >= 0.5:
             consensus_reviews.extend([first, second])
     return consensus_reviews
 
@@ -216,9 +220,14 @@ def _suggestion_similarity(left: list[str], right: list[str]) -> float:
 
 def _suggestion_tokens(items: list[str]) -> set[str]:
     text = " ".join(str(item).lower() for item in items)
-    ascii_tokens = {token for token in text.replace("，", " ").replace("。", " ").split() if len(token) > 2}
+    ascii_tokens = set(re.findall(r"[a-z0-9]+", text))
     cjk_chars = {char for char in text if "\u4e00" <= char <= "\u9fff"}
     return ascii_tokens | cjk_chars
+
+
+def _review_confidence(review: PeerEvaluation) -> float:
+    scores = review.scores
+    return max(0.0, min(1.0, (scores.correctness * scores.safety * scores.efficiency) ** (1 / 3)))
 
 
 def _select_consensus_evaluation_updates(

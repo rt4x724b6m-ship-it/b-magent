@@ -7,6 +7,7 @@ import argparse
 import json
 import shutil
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable, Protocol
@@ -172,6 +173,8 @@ def run_b_magent_training_entry(
     lora_manager: LoraEvolutionManager | None = None,
     on_round_start: Callable[[int, int, str], None] | None = None,
     on_round_end: Callable[[int, int, BMagentTrainingRound], None] | None = None,
+    start_round: int = 0,
+    preserve_private_datasets: bool = False,
 ) -> BMagentTrainingReport:
     if rounds is not None and rounds <= 0:
         raise ValueError("rounds must be positive when explicitly set")
@@ -183,12 +186,27 @@ def run_b_magent_training_entry(
     if not train_samples:
         raise ValueError(f"no training samples found at {dataset_dir / 'train.jsonl'}")
 
-    private_dataset_counts = write_even_agent_private_datasets(train_samples, data_dir, AGENT_NAMES)
+    if start_round < 0:
+        raise ValueError("start_round must not be negative")
+    if rounds is not None and start_round >= rounds:
+        raise ValueError("start_round must be smaller than total rounds")
+    if preserve_private_datasets:
+        private_dataset_counts = {
+            agent_name: count_jsonl_lines(data_dir / agent_name / "private_data.jsonl")
+            for agent_name in AGENT_NAMES
+        }
+        if not all(private_dataset_counts.values()):
+            raise ValueError("resume requested but one or more private datasets are missing")
+    else:
+        private_dataset_counts = write_even_agent_private_datasets(train_samples, data_dir, AGENT_NAMES)
     base_participant_schedule = build_participant_schedule(private_dataset_counts, private_batch_size)
     effective_rounds = rounds or len(base_participant_schedule)
     participant_schedule = expand_participant_schedule(base_participant_schedule, effective_rounds)
     agents = build_default_agents(data_dir.parent, backend=backend)
     seed_agent_libraries(agents)
+    if start_round:
+        for agent in agents:
+            agent.restore_private_cursor(private_batch_size)
     professional_before = {
         agent.name: len(agent.professional_library.all_records())
         for agent in agents
@@ -200,7 +218,7 @@ def run_b_magent_training_entry(
     workflow = MultiAgentWorkflow(agents, random_seed=random_seed, private_batch_size=private_batch_size)
     training_rounds: list[BMagentTrainingRound] = []
 
-    for index in range(effective_rounds):
+    for index in range(start_round, effective_rounds):
         sample = train_samples[index % len(train_samples)]
         task = format_gsm8k_training_task(sample)
         if on_round_start is not None:
@@ -212,9 +230,6 @@ def run_b_magent_training_entry(
         )
         report = workflow.run(task, participant_names=participant_schedule[index])
         global_uploads = len(report.global_experience.global_updates) if report.global_experience else 0
-        release_model_memory = getattr(backend, "release_model_memory", None)
-        if callable(release_model_memory) and lora_manager is not None:
-            release_model_memory()
         lora_updates = []
         if lora_manager is not None:
             lora_updates = lora_manager.update_from_round(
@@ -223,6 +238,9 @@ def run_b_magent_training_entry(
                 peer_reviews=report.peer_reviews,
                 self_improvements=report.self_improvements,
             )
+            flush_pending = getattr(lora_manager, "flush_pending", None)
+            if index == effective_rounds - 1 and callable(flush_pending):
+                lora_updates.extend(flush_pending(AGENT_NAMES))
         round_report = BMagentTrainingRound(
             round_index=index + 1,
             task=task,
@@ -287,6 +305,27 @@ def run_b_magent_training_entry(
 
 def count_new_records_with_tag(records: list[LibraryRecord], start_index: int, tag: str) -> int:
     return sum(1 for record in records[start_index:] if tag in record.tags)
+
+
+def count_jsonl_lines(path: Path) -> int:
+    if not path.exists():
+        return 0
+    return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+
+
+def infer_completed_training_rounds(data_dir: Path) -> int:
+    completed_improvements = 0
+    for agent_name in AGENT_NAMES:
+        path = data_dir / agent_name / "professional_library.jsonl"
+        if not path.exists():
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            payload = json.loads(line)
+            if "self-evolution" in payload.get("tags", []):
+                completed_improvements += 1
+    return completed_improvements // 2
 
 
 def downlink_global_evaluation_experience(
@@ -426,30 +465,33 @@ def run_four_agent_voting_on_test(
         raise ValueError(f"missing models for agents: {', '.join(missing_agents)}")
 
     predictions: list[VotingPrediction] = []
-    for index, sample in enumerate(test_samples):
-        votes: list[AgentVote] = []
-        for agent_name in agent_names:
-            raw_prediction = models[agent_name].generate(sample.question)
-            votes.append(
+    with ThreadPoolExecutor(max_workers=len(agent_names), thread_name_prefix="voting-agent") as executor:
+        for index, sample in enumerate(test_samples):
+            raw_predictions = executor.map(
+                lambda agent_name: models[agent_name].generate(sample.question),
+                agent_names,
+            )
+            votes = [
                 AgentVote(
                     agent_name=agent_name,
                     raw_prediction=raw_prediction,
                     predicted_answer=extract_numeric_answer(raw_prediction),
                 )
+                for agent_name, raw_prediction in zip(agent_names, raw_predictions)
+            ]
+            final_answer = majority_vote(votes)
+            gold_answer = normalize_answer(sample.final_answer)
+            prediction = VotingPrediction(
+                index=index,
+                question=sample.question,
+                gold_answer=gold_answer,
+                votes=votes,
+                final_answer=final_answer,
+                correct=final_answer == gold_answer,
             )
-        final_answer = majority_vote(votes)
-        gold_answer = normalize_answer(sample.final_answer)
-        prediction = VotingPrediction(
-            index=index,
-            question=sample.question,
-            gold_answer=gold_answer,
-            votes=votes,
-            final_answer=final_answer,
-            correct=final_answer == gold_answer,
-        )
-        predictions.append(prediction)
-        if on_prediction is not None:
-            on_prediction(prediction, len(test_samples))
+            predictions.append(prediction)
+            if on_prediction is not None:
+                on_prediction(prediction, len(test_samples))
 
     correct = sum(1 for prediction in predictions if prediction.correct)
     total = len(predictions)
@@ -718,6 +760,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, default=Path("train/b_magent_training_report.json"))
     parser.add_argument("--seed", type=int, default=None, help="Reserved seed for reproducible b_magent runs.")
     parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Keep existing libraries/LoRA state and continue until --rounds total rounds.",
+    )
+    parser.add_argument(
         "--enable-lora",
         dest="enable_lora",
         action="store_true",
@@ -740,9 +787,11 @@ def parse_args() -> argparse.Namespace:
         "--lora-threshold",
         type=int,
         default=DEFAULT_LORA_THRESHOLD,
-        help="Deprecated compatibility option; LoRA now trains whenever an accepted curated SFT example exists.",
+        help="Number of newly accepted samples accumulated per agent before one LoRA refresh.",
     )
     parser.add_argument("--lora-max-seq-length", type=int, default=1024)
+    parser.add_argument("--lora-train-batch-size", type=int, default=4)
+    parser.add_argument("--lora-gradient-accumulation-steps", type=int, default=1)
     parser.add_argument("--lora-epochs", type=float, default=1.0)
     parser.add_argument("--lora-learning-rate", type=float, default=2e-4)
     parser.add_argument("--lora-min-evaluation-score", type=float, default=0.6)
@@ -785,6 +834,8 @@ def build_lora_manager(args: argparse.Namespace) -> LoraEvolutionManager | None:
         require_correct_answer=not args.allow_uncorrect_lora_labels,
         min_evaluation_score=args.lora_min_evaluation_score,
         max_seq_length=args.lora_max_seq_length,
+        per_device_train_batch_size=args.lora_train_batch_size,
+        gradient_accumulation_steps=args.lora_gradient_accumulation_steps,
         num_train_epochs=args.lora_epochs,
         learning_rate=args.lora_learning_rate,
     )
@@ -812,13 +863,18 @@ def main() -> None:
     if mode == "b-magent":
         print(f"backend: {args.backend}", flush=True)
         print(f"model: {args.model_path}", flush=True)
-        reset_b_magent_training_state(
-            PROJECT_ROOT / "data",
-            lora_output_dir=args.lora_output_dir,
-            reset_evaluation_libraries=True,
-        )
-        args.output.unlink(missing_ok=True)
-        print("已清空之前的训练存储", flush=True)
+        start_round = 0
+        if args.resume:
+            start_round = infer_completed_training_rounds(PROJECT_ROOT / "data")
+            print(f"保留已有训练成果，从第 {start_round + 1} 轮继续", flush=True)
+        else:
+            reset_b_magent_training_state(
+                PROJECT_ROOT / "data",
+                lora_output_dir=args.lora_output_dir,
+                reset_evaluation_libraries=True,
+            )
+            args.output.unlink(missing_ok=True)
+            print("已清空之前的训练存储", flush=True)
         print("开始训练", flush=True)
         report = run_b_magent_training_entry(
             dataset_dir=args.dataset_dir,
@@ -830,6 +886,8 @@ def main() -> None:
             lora_manager=build_lora_manager(args),
             on_round_start=print_training_round_start,
             on_round_end=print_training_round_end,
+            start_round=start_round,
+            preserve_private_datasets=args.resume,
         )
         export_json_report(report, args.output)
         print(f"b_magent agents: {', '.join(report.agents)}")

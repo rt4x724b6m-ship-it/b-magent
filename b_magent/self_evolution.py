@@ -21,6 +21,7 @@ class EvolutionInput:
     evaluation_memory_used: list[str] = field(default_factory=list)
     evaluation_scores: list[str] = field(default_factory=list)
     peer_evaluation_rationales: list[str] = field(default_factory=list)
+    reflection: str = ""
     is_correct: bool | None = None
 
 
@@ -70,7 +71,7 @@ class SelfEvolutionLibrary:
             fallback="No peer evaluation rationale provided",
         )
         score_summary = _summarize_list(event.evaluation_scores, fallback="No peer evaluation scores recorded")
-        professional_lesson = _build_professional_lesson(event, suggestions)
+        professional_lesson = _build_professional_reflection(event, suggestions)
         experience_kind = _professional_experience_kind(event.is_correct)
         record = LibraryRecord(
             agent_name=event.agent_name,
@@ -84,12 +85,14 @@ class SelfEvolutionLibrary:
                 f"peer_suggestions={suggestion_summary} | "
                 f"peer_evaluation_rationales={rationale_summary} | "
                 f"peer_evaluation_scores={score_summary} | "
-                f"future_solving_lesson={professional_lesson}"
+                f"reflection={_shorten(event.reflection) or 'No explicit self-reflection provided'} | "
+                f"future_solving_reflection={professional_lesson}"
             ),
             tags=[
                 event.specialty,
                 "self-evolution",
                 "professional",
+                "reflection",
                 experience_kind,
                 *_keyword_tags(event.task, suggestions),
             ],
@@ -167,13 +170,20 @@ def _shorten(text: str, limit: int = 240) -> str:
     return cleaned[: limit - 3] + "..."
 
 
-def _build_professional_lesson(event: EvolutionInput, suggestions: list[str]) -> str:
+def _build_professional_reflection(event: EvolutionInput, suggestions: list[str]) -> str:
+    explicit_reflection = _shorten(event.reflection, limit=160)
     top_suggestion = _shorten(suggestions[0], limit=90) if suggestions else "make the answer concrete and checkable"
     task_hint = _task_hint(event.task)
     outcome = _outcome_label(event.is_correct)
     basis = _professional_basis(event.is_correct)
+    if explicit_reflection:
+        return (
+            f"{event.specialty} {outcome} {basis} reflection for {task_hint}: "
+            f"{explicit_reflection} Future solving rule: before finalizing, {top_suggestion}; "
+            "keep steps explicit and verify the final answer."
+        )
     return (
-        f"{event.specialty} {outcome} {basis} solving lesson for {task_hint}: "
+        f"{event.specialty} {outcome} {basis} reflection for {task_hint}: "
         f"before finalizing, {top_suggestion}; keep steps explicit and verify the final answer."
     )
 

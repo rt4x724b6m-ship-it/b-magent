@@ -360,7 +360,7 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
                 lora_manager=NoopLoraManager(),
             )
 
-            self.assertEqual(backend.release_calls, 2)
+            self.assertEqual(backend.release_calls, 0)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -387,6 +387,9 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
         self.assertTrue(args.output.is_absolute())
         self.assertTrue(args.lora_output_dir.is_absolute())
         self.assertTrue(args.enable_lora)
+        self.assertEqual(args.lora_threshold, 10)
+        self.assertEqual(args.lora_train_batch_size, 4)
+        self.assertEqual(args.lora_gradient_accumulation_steps, 1)
 
     def test_cli_can_disable_lora(self) -> None:
         with patch("sys.argv", ["four_agent_private_train.py", "--disable-lora"]):

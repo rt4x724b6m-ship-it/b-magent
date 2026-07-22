@@ -243,7 +243,7 @@
           "pending_examples": 1
         }
       ],
-      "distillation_updates": []
+      "lora_refresh_updates": []
     }
   ],
   "professional_records": {
@@ -265,12 +265,12 @@
     "qwen_agent_3": 0,
     "qwen_agent_4": 0
   },
-  "distillation_enabled": false,
-  "distillation_updates": {
+  "lora_refresh_enabled": false,
+  "lora_refresh_updates": {
     "qwen_agent_1": 0,
     "qwen_agent_2": 0,
     "qwen_agent_3": 0,
     "qwen_agent_4": 0
   },
-  "distilled_adapter_paths": {}
+  "lora_refresh_adapter_paths": {}
 }

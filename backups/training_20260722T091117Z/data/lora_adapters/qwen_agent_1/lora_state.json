@@ -1,0 +1,16 @@
+{
+  "agent_name": "qwen_agent_1",
+  "dataset_path": "/root/autodl-tmp/user/cxh/b_magent/data/lora_adapters/qwen_agent_1/sft_dataset.jsonl",
+  "adapter_path": "/root/autodl-tmp/user/cxh/b_magent/data/lora_adapters/qwen_agent_1/adapter",
+  "examples": 5,
+  "pending_examples": 5,
+  "trained_examples": 0,
+  "version": 0,
+  "example_hashes": [
+    "4d5f028db590e27c72992c070b172e425cd99b1a41d542685c9c7cd4a5632cab",
+    "63cda3edcdd67b4da8dee78c17b2143b418a1eb761c7d8b309108557218a515b",
+    "83e07d73e512cf45efe53f48702cc8c1e8767dc9f29485632eff241aa734d306",
+    "476ac6aa8a1362b724a9c6016a13b8f74e9558e1d82430e08237c1932195d3d0",
+    "a29331290d7037de11f336016cea5f1d66c8c33592519f155552a84574a2e001"
+  ]
+}

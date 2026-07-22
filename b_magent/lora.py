@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import gc
 import re
+from decimal import Decimal, InvalidOperation
 from dataclasses import asdict, dataclass, field
 from hashlib import sha256
 from pathlib import Path
@@ -22,8 +23,8 @@ class LoraTrainingConfig:
     require_correct_answer: bool = True
     min_evaluation_score: float = 0.6
     max_seq_length: int = 1024
-    per_device_train_batch_size: int = 1
-    gradient_accumulation_steps: int = 4
+    per_device_train_batch_size: int = 4
+    gradient_accumulation_steps: int = 1
     learning_rate: float = 2e-4
     num_train_epochs: float = 1.0
     lora_r: int = 8
@@ -44,6 +45,14 @@ class LoraTrainingConfig:
             raise ValueError("LoRA threshold must be positive")
         if self.max_seq_length <= 0:
             raise ValueError("LoRA max_seq_length must be positive")
+        if self.per_device_train_batch_size <= 0:
+            raise ValueError("LoRA train batch size must be positive")
+        if self.gradient_accumulation_steps <= 0:
+            raise ValueError("LoRA gradient accumulation steps must be positive")
+        if not 0.0 <= self.min_evaluation_score <= 1.0:
+            raise ValueError("LoRA evaluation threshold must be between 0 and 1")
+        if not 0.0 <= self.lora_dropout < 1.0:
+            raise ValueError("LoRA dropout must be between 0 (inclusive) and 1")
 
 
 @dataclass(frozen=True)
@@ -95,7 +104,7 @@ class PeftSFTLoraTrainer:
             import torch
             from datasets import Dataset
             from peft import LoraConfig, TaskType, get_peft_model
-            from transformers import AutoModelForCausalLM, AutoTokenizer, DataCollatorForLanguageModeling, Trainer, TrainingArguments
+            from transformers import AutoModelForCausalLM, AutoTokenizer, DataCollatorForSeq2Seq, Trainer, TrainingArguments
         except ImportError as exc:
             raise RuntimeError(
                 "LoRA training requires peft plus torch, datasets, and transformers. "
@@ -128,19 +137,7 @@ class PeftSFTLoraTrainer:
         dataset = Dataset.from_list(rows)
 
         def tokenize(row: dict[str, str]) -> dict[str, list[int]]:
-            prompt = format_lora_prompt(
-                instruction=row["instruction"],
-                input_text=row["input"],
-                output=row["output"],
-            )
-            tokenized = tokenizer(
-                prompt,
-                truncation=True,
-                max_length=config.max_seq_length,
-                padding=False,
-            )
-            tokenized["labels"] = list(tokenized["input_ids"])
-            return tokenized
+            return tokenize_lora_row(tokenizer, row, config.max_seq_length)
 
         tokenized_dataset = dataset.map(tokenize, remove_columns=dataset.column_names)
         training_args = TrainingArguments(
@@ -156,19 +153,20 @@ class PeftSFTLoraTrainer:
             label_names=["labels"],
         )
 
-        class TrainerAdamW(torch.optim.AdamW):
-            def train(self) -> None:
-                return None
-
-            def eval(self) -> None:
-                return None
-
-        optimizer = TrainerAdamW(model.parameters(), lr=config.learning_rate)
+        # Use the real optimizer implementation.  Overriding ``train``/``eval``
+        # on an optimizer is incorrect (those methods belong to modules) and
+        # previously made this training path silently behave like a no-op.
+        optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
         trainer = Trainer(
             model=model,
             args=training_args,
             train_dataset=tokenized_dataset,
-            data_collator=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
+            data_collator=DataCollatorForSeq2Seq(
+                tokenizer=tokenizer,
+                model=model,
+                padding=True,
+                label_pad_token_id=-100,
+            ),
             optimizers=(optimizer, None),
         )
         trainer.train()
@@ -217,7 +215,25 @@ class LoraEvolutionManager:
             if not accepted:
                 updates.append(self.skipped_update(draft.agent_name, reason))
                 continue
+            state = self.load_state(draft.agent_name)
+            if state.pending_examples < self.config.threshold:
+                updates.append(
+                    self.skipped_update(
+                        draft.agent_name,
+                        f"pending examples below LoRA threshold: {state.pending_examples}/{self.config.threshold}",
+                    )
+                )
+                continue
             updates.append(self.train_agent_on_curated_dataset(draft.agent_name))
+        return updates
+
+    def flush_pending(self, agent_names: list[str] | tuple[str, ...]) -> list[LoraUpdate]:
+        """Train final partial batches so accepted samples are not left unused."""
+        updates = []
+        for agent_name in agent_names:
+            state = self.load_state(agent_name)
+            if state.pending_examples > 0:
+                updates.append(self.train_agent_on_curated_dataset(agent_name))
         return updates
 
     def add_example_if_usable(
@@ -393,6 +409,32 @@ def format_lora_prompt(instruction: str, input_text: str, output: str) -> str:
     )
 
 
+def tokenize_lora_row(tokenizer: object, row: dict[str, str], max_length: int) -> dict[str, list[int]]:
+    """Tokenize an SFT row while computing loss only on the desired response."""
+    if max_length < 2:
+        raise ValueError("LoRA max sequence length must be at least 2")
+
+    prefix = format_lora_prompt(row["instruction"], row["input"], output="")
+    prefix_ids = list(tokenizer(prefix, add_special_tokens=True, padding=False)["input_ids"])
+    output_ids = list(tokenizer(row["output"], add_special_tokens=False, padding=False)["input_ids"])
+    eos_token_id = getattr(tokenizer, "eos_token_id", None)
+    if eos_token_id is not None and (not output_ids or output_ids[-1] != eos_token_id):
+        output_ids.append(eos_token_id)
+
+    # Long reflection trajectories must not push all target tokens past the
+    # sequence boundary. Reserve half of the window for response supervision.
+    max_output_length = max(1, max_length // 2)
+    if len(output_ids) > max_output_length:
+        output_ids = output_ids[-max_output_length:]
+    prefix_ids = prefix_ids[: max_length - len(output_ids)]
+    input_ids = prefix_ids + output_ids
+    return {
+        "input_ids": input_ids,
+        "attention_mask": [1] * len(input_ids),
+        "labels": [-100] * len(prefix_ids) + list(output_ids),
+    }
+
+
 def append_lora_example(dataset_path: Path, example: LoraSFTExample) -> None:
     dataset_path.parent.mkdir(parents=True, exist_ok=True)
     with dataset_path.open("a", encoding="utf-8") as handle:
@@ -455,7 +497,7 @@ def is_improved_answer_correct(task: str, improved_answer: str) -> bool | None:
     if gold is None:
         return None
     predicted = extract_final_answer(improved_answer)
-    return predicted == gold
+    return _numeric_equal(predicted, gold)
 
 
 def extract_gold_final_answer(task: str) -> str | None:
@@ -480,10 +522,24 @@ def normalize_answer(text: str) -> str:
     return cleaned
 
 
+def _numeric_equal(left: str, right: str) -> bool:
+    try:
+        return abs(Decimal(left) - Decimal(right)) <= Decimal("1e-9")
+    except (InvalidOperation, ValueError):
+        return left == right
+
+
 def strip_gold_annotations(task: str) -> str:
     lines = []
+    in_gold_reasoning = False
     for line in task.splitlines():
-        if re.match(r"\s*Gold (?:reasoning|final answer):", line):
+        if re.match(r"\s*Gold reasoning:", line):
+            in_gold_reasoning = True
+            continue
+        if re.match(r"\s*Gold final answer:", line):
+            in_gold_reasoning = False
+            continue
+        if in_gold_reasoning:
             continue
         lines.append(line)
     return "\n".join(lines).strip()

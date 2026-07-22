@@ -27,6 +27,7 @@ class SelfEvolutionLibraryTestCase(unittest.TestCase):
                 evaluator_rationales=["The reviewed answer skipped the final numeric check."],
                 evaluation_memory_used=["Always verify the final numeric answer before suggesting style changes."],
                 evaluation_scores=["target=qwen_agent_2: correctness=0.8, safety=1.0, efficiency=0.7"],
+                reflection="Reflection: convert reviewer feedback into a verified final-answer checklist.",
             )
             library = SelfEvolutionLibrary(temp_dir, event.agent_name)
             result = library.evolve_from_round(event)
@@ -41,17 +42,19 @@ class SelfEvolutionLibraryTestCase(unittest.TestCase):
             self.assertIsNotNone(result.evaluation_record)
             self.assertEqual(result.professional_record.library_type, "professional")
             self.assertEqual(result.evaluation_record.library_type, "evaluation")
-            self.assertIn("solving lesson", result.professional_record.summary)
+            self.assertIn("reflection", result.professional_record.summary)
             self.assertIn("review lesson", result.evaluation_record.summary)
             self.assertIn("verify", result.professional_record.summary)
-            self.assertIn("evaluated solving lesson", result.professional_record.summary)
+            self.assertIn("evaluated reflection", result.professional_record.summary)
             self.assertIn("evaluated-experience", result.professional_record.tags)
+            self.assertIn("reflection", result.professional_record.tags)
             self.assertIn("numeric answer", result.evaluation_record.summary)
             self.assertIn("prior_evaluation_memory=", result.evaluation_record.detail)
             self.assertIn("own_review_rationales=", result.evaluation_record.detail)
             self.assertIn("correctness=0.8", result.evaluation_record.detail)
             self.assertIn("peer_evaluation_scores=target=qwen_agent_2: correctness=0.8", result.professional_record.detail)
-            self.assertIn("future_solving_lesson=", result.professional_record.detail)
+            self.assertIn("reflection=Reflection: convert reviewer feedback", result.professional_record.detail)
+            self.assertIn("future_solving_reflection=", result.professional_record.detail)
             self.assertIn("future_review_lesson=", result.evaluation_record.detail)
 
             professional_records = library.search_professional("boundary")
@@ -103,13 +106,16 @@ class SelfEvolutionLibraryTestCase(unittest.TestCase):
                 peer_suggestions=["keep the explicit arithmetic check"],
                 evaluation_scores=["evaluator=qwen_agent_3: correctness=1.0, safety=1.0, efficiency=0.9"],
                 peer_evaluation_rationales=["The answer is correct and reusable."],
+                reflection="Reflection: the arithmetic check matched the final answer.",
                 is_correct=True,
             )
             library = SelfEvolutionLibrary(temp_dir, event.agent_name)
             record = library.evolve_professional(event)
 
-            self.assertIn("success curated-by-evaluation solving lesson", record.summary)
+            self.assertIn("success curated-by-evaluation reflection", record.summary)
+            self.assertIn("the arithmetic check matched the final answer", record.summary)
             self.assertIn("curated-success-experience", record.tags)
+            self.assertIn("reflection", record.tags)
             self.assertIn("peer_evaluation_rationales=The answer is correct and reusable.", record.detail)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -124,15 +130,17 @@ class SelfEvolutionLibraryTestCase(unittest.TestCase):
                 answer="wrong reasoning #### 1",
                 thought_trace=["missed final check"],
                 peer_suggestions=["verify final numeric answer before submitting"],
+                reflection="Reflection: the original answer skipped the final numeric verification.",
                 is_correct=False,
             )
             library = SelfEvolutionLibrary(temp_dir, event.agent_name)
             record = library.evolve_professional(event)
 
-            self.assertIn("error reflection-from-error solving lesson", record.summary)
+            self.assertIn("error reflection-from-error reflection", record.summary)
+            self.assertIn("skipped the final numeric verification", record.summary)
             self.assertIn("verify final numeric answer", record.summary)
             self.assertIn("error-reflection-experience", record.tags)
-            self.assertIn("future_solving_lesson=", record.detail)
+            self.assertIn("future_solving_reflection=", record.detail)
             retrieved = library.search_professional("numeric verify")
             self.assertEqual(retrieved[0].summary, record.summary)
         finally:

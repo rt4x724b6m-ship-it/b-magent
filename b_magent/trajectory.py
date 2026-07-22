@@ -6,7 +6,7 @@ from .models import Draft
 
 
 def build_evaluation_trajectory(draft: Draft) -> list[str]:
-    """Build a FoT-style reusable trace without exposing raw private samples."""
+    """Build a peer-review trace that exposes reasoning while hiding private samples."""
     raw_steps = [item for item in draft.thought_trace if str(item).strip()]
     answer_features = extract_answer_features(draft.answer)
     trace: list[str] = [
@@ -26,9 +26,10 @@ def build_evaluation_trajectory(draft: Draft) -> list[str]:
     ]
     if raw_steps:
         trace.append(
-            "insight_reasoning_trace: Review the disclosed reasoning procedure as reusable procedural knowledge, "
-            f"not as private training evidence. Available public step count: {len(raw_steps)}."
+            "insight_reasoning_trace: Review the disclosed reasoning procedure directly; "
+            f"available public step count: {len(raw_steps)}."
         )
+        trace.extend(f"public_reasoning_step_{index}: {step}" for index, step in enumerate(raw_steps, start=1))
     if draft.professional_memory_used:
         trace.append(
             "insight_memory_abstraction: Treat retrieved professional memories as summarized strategy hints; "
@@ -53,7 +54,7 @@ def build_evaluation_trajectory(draft: Draft) -> list[str]:
 
 
 def mask_draft_for_evaluation(draft: Draft) -> Draft:
-    """Return a peer-review view that hides raw private data behind trajectory traces."""
+    """Return a peer-review view that hides private data but discloses reasoning traces."""
     return Draft(
         agent_name=draft.agent_name,
         specialty=draft.specialty,
@@ -72,7 +73,7 @@ def mask_draft_for_evaluation(draft: Draft) -> Draft:
         else [],
         tool_calls=[
             "mask_private_training_for_peer_evaluation()",
-            f"build_fot_style_trajectory(count={len(draft.thought_trace)})",
+            f"disclose_reasoning_trace_for_peer_evaluation(count={len(draft.thought_trace)})",
         ],
     )
 

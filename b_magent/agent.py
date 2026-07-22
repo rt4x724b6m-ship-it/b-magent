@@ -38,20 +38,31 @@ class QwenAgent:
     def train_private_data(self, task: str, batch_size: int | None = None) -> list[str]:
         private_items = self._load_private_data()
         training_batch = self._next_private_batch(private_items, batch_size)
+        reflection = _build_private_training_reflection(self.specialty, training_batch)
         record = LibraryRecord(
             agent_name=self.name,
             library_type="professional",
             source_task=task,
-            summary=f"{self.specialty} private training summary",
-            detail=" | ".join(training_batch),
-            tags=[self.specialty, "private-training"],
+            summary=reflection,
+            detail=(
+                f"reflection={reflection} | "
+                f"private_sample_count={len(training_batch)} | "
+                f"sample_summaries={_summarize_texts(training_batch)}"
+            ),
+            tags=[self.specialty, "private-training", "professional", "reflection"],
         )
         self.professional_library.add_record(record)
         return training_batch
 
     def solve_task(self, task: str, private_training: list[str]) -> Draft:
-        professional_records = self.professional_library.search(task)
-        evaluation_records = self.evaluation_library.search(task)
+        professional_records = self.professional_library.search(
+            task,
+            exclude_tags={"error-reflection-experience", "evaluated-experience"},
+        )
+        evaluation_records = self.evaluation_library.search(
+            task,
+            exclude_tags={"error-evaluation-experience"},
+        )
         professional_memory = [record.summary for record in professional_records]
         evaluation_alerts = [record.summary for record in evaluation_records]
         visible_task = _strip_gold_annotations(task)
@@ -79,7 +90,10 @@ class QwenAgent:
         )
 
     def evaluate_peer(self, task: str, draft: Draft) -> PeerEvaluation:
-        evaluation_records = self.evaluation_library.search(task)
+        evaluation_records = self.evaluation_library.search(
+            task,
+            exclude_tags={"error-evaluation-experience"},
+        )
         evaluation_memory = [record.summary for record in evaluation_records]
         masked_draft = mask_draft_for_evaluation(draft)
         return self.backend.suggest_improvements(self.name, masked_draft, _strip_gold_annotations(task), evaluation_memory)
@@ -96,8 +110,20 @@ class QwenAgent:
             )
             for evaluation in evaluations
         ]
-        professional_memory = [record.summary for record in self.professional_library.search(task)]
-        evaluation_alerts = [record.summary for record in self.evaluation_library.search(task)]
+        professional_memory = [
+            record.summary
+            for record in self.professional_library.search(
+                task,
+                exclude_tags={"error-reflection-experience", "evaluated-experience"},
+            )
+        ]
+        evaluation_alerts = [
+            record.summary
+            for record in self.evaluation_library.search(
+                task,
+                exclude_tags={"error-evaluation-experience"},
+            )
+        ]
         improve_answer = getattr(self.backend, "improve_answer", None)
         if callable(improve_answer):
             revised_answer, reflection = improve_answer(
@@ -130,6 +156,7 @@ class QwenAgent:
             peer_suggestions=suggestions,
             peer_evaluation_rationales=peer_rationales,
             evaluation_scores=peer_scores,
+            reflection=reflection,
             is_correct=is_correct,
         )
         update = self.self_evolution_library.evolve_professional(event)
@@ -243,6 +270,14 @@ class QwenAgent:
         self._private_cursor = (start + batch_size) % len(private_items)
         return batch
 
+    def restore_private_cursor(self, batch_size: int) -> None:
+        consumed_batches = sum(
+            1
+            for record in self.professional_library.all_records()
+            if "private-training" in record.tags
+        )
+        self._private_cursor = consumed_batches * batch_size
+
 
 def _unique(items: object) -> list[str]:
     result: list[str] = []
@@ -277,11 +312,38 @@ def _normalize_answer(text: str) -> str:
 
 def _strip_gold_annotations(task: str) -> str:
     lines = []
+    in_gold_reasoning = False
     for line in task.splitlines():
-        if re.match(r"\s*Gold (?:reasoning|final answer):", line):
+        if re.match(r"\s*Gold reasoning:", line):
+            in_gold_reasoning = True
+            continue
+        if re.match(r"\s*Gold final answer:", line):
+            in_gold_reasoning = False
+            continue
+        if in_gold_reasoning:
             continue
         lines.append(line)
     return "\n".join(lines).strip()
+
+
+def _build_private_training_reflection(specialty: str, training_batch: list[str]) -> str:
+    if not training_batch:
+        return f"{specialty} private-data reflection: no private sample was available; rely on explicit task constraints."
+    return (
+        f"{specialty} private-data reflection: extracted {len(training_batch)} private sample(s) into a reusable "
+        "solving rule; identify the requested value, preserve the final-answer format, and verify calculations "
+        "before submitting."
+    )
+
+
+def _summarize_texts(items: list[str], limit: int = 120) -> str:
+    summaries = []
+    for item in items[:3]:
+        cleaned = " ".join(str(item).split())
+        if len(cleaned) > limit:
+            cleaned = cleaned[: limit - 3] + "..."
+        summaries.append(cleaned)
+    return " ; ".join(summaries) or "No private samples"
 
 
 def _summarize_answer_for_evaluation(answer: str) -> str:

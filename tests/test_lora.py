@@ -9,8 +9,13 @@ from _project_path import add_project_root_to_sys_path
 
 add_project_root_to_sys_path()
 
-from b_magent.lora import LoraEvolutionManager, LoraTrainingConfig, LoraUpdate, build_lora_example
-from b_magent.distillation import DistillationConfig, DistillationManager, DistillationUpdate
+from b_magent.lora import (
+    LoraEvolutionManager,
+    LoraTrainingConfig,
+    LoraUpdate,
+    build_lora_example,
+    tokenize_lora_row,
+)
 from b_magent.models import Draft, EvaluationScores, PeerEvaluation, SelfImprovement
 
 
@@ -23,15 +28,6 @@ class FakeLoraTrainer:
         adapter_path.mkdir(parents=True, exist_ok=True)
 
 
-class FakeDistillationTrainer:
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, Path, Path, list[str]]] = []
-
-    def train(self, agent_name: str, dataset_path: Path, adapter_path: Path, teachers: list[object], config: DistillationConfig) -> None:
-        self.calls.append((agent_name, dataset_path, adapter_path, [teacher.agent_name for teacher in teachers]))
-        adapter_path.mkdir(parents=True, exist_ok=True)
-
-
 def count_jsonl_rows_for_test(path: Path) -> int:
     if not path.exists():
         return 0
@@ -39,6 +35,24 @@ def count_jsonl_rows_for_test(path: Path) -> int:
 
 
 class LoraEvolutionTestCase(unittest.TestCase):
+    def test_sft_tokenization_masks_prompt_and_preserves_output_when_truncated(self) -> None:
+        class CharacterTokenizer:
+            eos_token_id = 0
+
+            def __call__(self, text: str, **_: object) -> dict[str, list[int]]:
+                return {"input_ids": [ord(character) for character in text]}
+
+        tokenized = tokenize_lora_row(
+            CharacterTokenizer(),
+            {"instruction": "solve", "input": "x" * 100, "output": "answer"},
+            max_length=24,
+        )
+
+        self.assertLessEqual(len(tokenized["input_ids"]), 24)
+        first_target = tokenized["labels"].index(ord("a"))
+        self.assertTrue(all(label == -100 for label in tokenized["labels"][:first_target]))
+        self.assertEqual(tokenized["labels"][first_target:], [ord(char) for char in "answer"] + [0])
+
     def test_builds_reflection_sft_example_from_trajectory_and_evaluations(self) -> None:
         draft = Draft(
             agent_name="qwen_agent_1",
@@ -88,7 +102,7 @@ class LoraEvolutionTestCase(unittest.TestCase):
         improvement = SelfImprovement("qwen_agent_1", ["fix"], "corrected #### 2", [])
 
         example = build_lora_example(
-            "Question: q\nGold reasoning: hidden\nGold final answer: 2",
+            "Question: q\nGold reasoning: first hidden line\nsecond hidden line\n#### 2\nGold final answer: 2",
             draft,
             [PeerEvaluation("qwen_agent_3", "qwen_agent_1", ["fix"], "r", [])],
             improvement,
@@ -96,6 +110,8 @@ class LoraEvolutionTestCase(unittest.TestCase):
 
         self.assertNotIn("Gold reasoning", example.input)
         self.assertNotIn("Gold final answer", example.input)
+        self.assertNotIn("second hidden line", example.input)
+        self.assertNotIn("#### 2", example.input)
         self.assertIn("Question: q", example.input)
 
     def test_manager_accumulates_per_agent_datasets_and_trains_when_curated_examples_exist(self) -> None:
@@ -178,7 +194,7 @@ class LoraEvolutionTestCase(unittest.TestCase):
             self.assertEqual(duplicate_updates[0].reason, "duplicate SFT example")
             self.assertEqual(len(trainer.calls), 1)
 
-    def test_lora_trains_when_curated_dataset_has_example_even_below_threshold(self) -> None:
+    def test_lora_batches_updates_at_threshold_and_flushes_final_examples(self) -> None:
         with tempfile.TemporaryDirectory(prefix="b_magent_lora_curated_dataset_test_") as temp:
             trainer = FakeLoraTrainer()
             manager = LoraEvolutionManager(
@@ -205,10 +221,10 @@ class LoraEvolutionTestCase(unittest.TestCase):
                 reviews,
                 [SelfImprovement("qwen_agent_1", ["fix"], "correct #### 2", [])],
             )
-            self.assertTrue(first[0].trained)
-            self.assertEqual(first[0].pending_examples, 0)
-            self.assertEqual(first[0].reason, "")
-            self.assertEqual(len(trainer.calls), 1)
+            self.assertFalse(first[0].trained)
+            self.assertEqual(first[0].pending_examples, 1)
+            self.assertIn("1/2", first[0].reason)
+            self.assertEqual(len(trainer.calls), 0)
             self.assertEqual(count_jsonl_rows_for_test(manager.dataset_path("qwen_agent_1")), 1)
 
             second = manager.update_from_round(
@@ -221,121 +237,22 @@ class LoraEvolutionTestCase(unittest.TestCase):
             self.assertTrue(second[0].trained)
             self.assertEqual(second[0].examples, 2)
             self.assertEqual(second[0].pending_examples, 0)
-            self.assertEqual(len(trainer.calls), 2)
+            self.assertEqual(len(trainer.calls), 1)
             trained_rows = Path(second[0].dataset_path).read_text(encoding="utf-8").splitlines()
             self.assertEqual(len(trained_rows), 2)
 
-    def test_distills_trained_agent_loras_into_private_agent_adapters(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="b_magent_distill_test_") as temp:
-            lora_trainer = FakeLoraTrainer()
-            lora_config = LoraTrainingConfig(
-                base_model_path="models/Qwen2.5-1.5B-Instruct",
-                output_dir=Path(temp) / "lora",
-                threshold=1,
+            third = manager.update_from_round(
+                "Task C\nGold final answer: 4",
+                [Draft("qwen_agent_1", "通用智能体", "draft #### 1", ["t3"], [], [], [])],
+                reviews,
+                [SelfImprovement("qwen_agent_1", ["fix"], "correct #### 4", [])],
             )
-            lora_manager = LoraEvolutionManager(lora_config, trainer=lora_trainer)
-            distill_trainer = FakeDistillationTrainer()
-            distill_manager = DistillationManager(
-                DistillationConfig.from_lora_config(lora_config, threshold=1),
-                trainer=distill_trainer,
-            )
-            drafts = [
-                Draft("qwen_agent_1", "通用智能体", "a1", ["t1"], [], [], []),
-                Draft("qwen_agent_2", "通用智能体", "a2", ["t2"], [], [], []),
-            ]
-            reviews = [
-                PeerEvaluation("qwen_agent_3", "qwen_agent_1", ["s1"], "r1", []),
-                PeerEvaluation("qwen_agent_4", "qwen_agent_2", ["s2"], "r2", []),
-            ]
-            improvements = [
-                SelfImprovement("qwen_agent_1", ["s1"], "better a1", [], is_correct=None),
-                SelfImprovement("qwen_agent_2", ["s2"], "better a2", [], is_correct=None),
-            ]
+            self.assertFalse(third[0].trained)
 
-            lora_updates = lora_manager.update_from_round("task", drafts, reviews, improvements)
-            updates = distill_manager.update_from_lora_updates(lora_updates)
-
-            self.assertEqual(len(updates), 2)
-            self.assertTrue(all(isinstance(update, DistillationUpdate) for update in updates))
-            self.assertEqual([update.agent_name for update in updates], ["qwen_agent_1", "qwen_agent_2"])
-            self.assertTrue(all(update.trained for update in updates))
-            self.assertTrue(all(update.examples == 1 for update in updates))
-            self.assertTrue(all("shared" not in update.adapter_path for update in updates))
-            for update in updates:
-                self.assertEqual([teacher.agent_name for teacher in update.teachers], ["qwen_agent_1", "qwen_agent_2"])
-                self.assertAlmostEqual(sum(teacher.weight for teacher in update.teachers), 1.0)
-                rows = Path(update.dataset_path).read_text(encoding="utf-8").splitlines()
-                self.assertEqual(len(rows), 1)
-                self.assertTrue((Path(update.adapter_path) / "b_magent_distillation_metadata.json").exists())
-            self.assertEqual([call[0] for call in distill_trainer.calls], ["qwen_agent_1", "qwen_agent_2"])
-
-            duplicate = distill_manager.update_from_lora_updates(lora_updates)
-            self.assertTrue(all(not update.trained for update in duplicate))
-            self.assertTrue(all(update.reason == "no new private SFT examples for distillation" for update in duplicate))
-
-    def test_distillation_only_refreshes_agents_with_new_lora_examples(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="b_magent_distill_incremental_test_") as temp:
-            lora_dir = Path(temp) / "lora"
-            for agent_name in ("qwen_agent_1", "qwen_agent_2"):
-                agent_dir = lora_dir / agent_name
-                adapter_dir = agent_dir / "adapter"
-                adapter_dir.mkdir(parents=True)
-                (agent_dir / "sft_dataset.jsonl").write_text(
-                    json.dumps(
-                        {
-                            "agent_name": agent_name,
-                            "instruction": "Improve the answer.",
-                            "input": f"{agent_name} input",
-                            "output": f"{agent_name} output",
-                        },
-                        ensure_ascii=False,
-                    )
-                    + "\n",
-                    encoding="utf-8",
-                )
-                (agent_dir / "lora_state.json").write_text(
-                    json.dumps(
-                        {
-                            "agent_name": agent_name,
-                            "dataset_path": str(agent_dir / "sft_dataset.jsonl"),
-                            "adapter_path": str(adapter_dir),
-                            "examples": 1,
-                            "pending_examples": 0,
-                            "trained_examples": 1,
-                            "version": 1,
-                            "example_hashes": [],
-                        },
-                        ensure_ascii=False,
-                    ),
-                    encoding="utf-8",
-                )
-
-            trainer = FakeDistillationTrainer()
-            manager = DistillationManager(
-                DistillationConfig(
-                    base_model_path="models/Qwen2.5-1.5B-Instruct",
-                    lora_output_dir=lora_dir,
-                    threshold=1,
-                ),
-                trainer=trainer,
-            )
-            lora_updates = [
-                LoraUpdate(
-                    agent_name="qwen_agent_1",
-                    dataset_path=str(lora_dir / "qwen_agent_1" / "sft_dataset.jsonl"),
-                    adapter_path=str(lora_dir / "qwen_agent_1" / "adapter"),
-                    examples=1,
-                    trained=False,
-                    reason="pending dataset below threshold: 1/2",
-                    pending_examples=1,
-                )
-            ]
-
-            updates = manager.update_from_lora_updates(lora_updates)
-
-            self.assertEqual([update.agent_name for update in updates], ["qwen_agent_1"])
-            self.assertEqual([call[0] for call in trainer.calls], ["qwen_agent_1"])
-            self.assertFalse(manager.dataset_path("qwen_agent_2").exists())
+            flushed = manager.flush_pending(["qwen_agent_1"])
+            self.assertTrue(flushed[0].trained)
+            self.assertEqual(flushed[0].examples, 3)
+            self.assertEqual(len(trainer.calls), 2)
 
 
 if __name__ == "__main__":

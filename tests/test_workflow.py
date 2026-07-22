@@ -38,7 +38,7 @@ class WorkflowTestCase(unittest.TestCase):
         self.assertIn("federated_answer_summary", masked.answer)
         self.assertIn("final_answer: 42", masked.answer)
         self.assertNotIn("Compute public result", masked.answer)
-        self.assertNotIn("SECRET_RAW_TRACE", serialized)
+        self.assertIn("public_reasoning_step_1: SECRET_RAW_TRACE", serialized)
         self.assertNotIn("SECRET_PRIVATE_SAMPLE", serialized)
 
     def test_gold_answer_is_hidden_from_solver_and_evaluator_prompts(self) -> None:
@@ -62,16 +62,21 @@ class WorkflowTestCase(unittest.TestCase):
             seed_agent_libraries(agents)
             workflow = MultiAgentWorkflow(agents, random_seed=7)
 
-            workflow.run("Question: q\nGold reasoning: hidden\nGold final answer: 2")
+            workflow.run(
+                "Question: q\nGold reasoning: first hidden line\n"
+                "second hidden line\n#### 2\nGold final answer: 2"
+            )
 
             self.assertTrue(backend.solve_tasks)
             self.assertTrue(backend.review_tasks)
             self.assertTrue(all("Gold final answer" not in task for task in backend.solve_tasks))
             self.assertTrue(all("Gold reasoning" not in task for task in backend.review_tasks))
+            self.assertTrue(all("second hidden line" not in task for task in backend.solve_tasks))
+            self.assertTrue(all("#### 2" not in task for task in backend.review_tasks))
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
-    def test_peer_evaluation_receives_fot_trajectory_instead_of_private_data(self) -> None:
+    def test_peer_evaluation_receives_reasoning_trajectory_instead_of_private_data(self) -> None:
         class RecordingBackend:
             def __init__(self) -> None:
                 self.review_drafts: list[Draft] = []
@@ -101,8 +106,11 @@ class WorkflowTestCase(unittest.TestCase):
                 self.assertIn("federated_answer_summary", review_draft.answer)
                 self.assertNotIn("answer #### 1", review_draft.answer)
                 self.assertTrue(any(item.startswith("insight_") for item in review_draft.thought_trace))
+                self.assertTrue(
+                    any("public_reasoning_step_1: raw private-derived trace detail" in item for item in review_draft.thought_trace)
+                )
                 self.assertNotIn("SECRET_PRIVATE_SAMPLE", serialized)
-                self.assertNotIn("raw private-derived trace detail", serialized)
+                self.assertIn("raw private-derived trace detail", serialized)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -118,9 +126,9 @@ class WorkflowTestCase(unittest.TestCase):
 
             def suggest_improvements(self, evaluator_name, target_draft, task, evaluation_memory):
                 serialized = json.dumps(target_draft.__dict__, ensure_ascii=False)
-                assert "SECRET_RAW_THOUGHT_TRACE" not in serialized
                 assert "SECRET_PRIVATE_SAMPLE" not in serialized
                 assert "PRIVATE_DERIVED_REASONING_SENTENCE" not in serialized
+                assert "SECRET_RAW_THOUGHT_TRACE" in serialized
                 assert "federated_answer_summary" in target_draft.answer
                 return PeerEvaluation(evaluator_name, target_draft.agent_name, ["add verification"], "r", [])
 
@@ -418,7 +426,7 @@ class WorkflowTestCase(unittest.TestCase):
 
             flattened_solve_memories = "\n".join(item for batch in backend.solve_memories for item in batch)
             flattened_review_memories = "\n".join(item for batch in backend.review_memories for item in batch)
-            self.assertIn("solving lesson", flattened_solve_memories)
+            self.assertIn("reflection", flattened_solve_memories)
             self.assertIn("review lesson", flattened_review_memories)
             self.assertIn("verify final numeric answer", flattened_review_memories)
         finally:
