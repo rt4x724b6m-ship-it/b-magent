@@ -8,6 +8,7 @@ from typing import Any
 
 from .evaluation_format import format_confidence_from_scores, format_structured_evaluation
 from .models import Draft, EvaluationEvolution, EvaluationScores, LibraryRecord, PeerEvaluation
+from .self_evolution import normalize_experience_tags
 
 
 DEFAULT_QWEN_MODEL = "models/Qwen2.5-1.5B-Instruct"
@@ -329,6 +330,38 @@ class LocalQwenEvolutionBackend:
             "retrieved professional memories, and evaluation checks."
         )
         return revised_answer, reflection
+
+    def generate_experience_tags(
+        self,
+        agent_name: str,
+        specialty: str,
+        task: str,
+        original_answer: str,
+        revised_answer: str,
+        suggestions: list[str],
+        reflection: str,
+    ) -> list[str]:
+        prompt = (
+            f"Agent: {agent_name}\n"
+            f"Agent type: {specialty}\n"
+            "After improving an answer, classify the reusable experience learned from this reflection.\n\n"
+            f"Task:\n{task}\n\n"
+            f"Original answer:\n{original_answer}\n\n"
+            f"Improved answer:\n{revised_answer}\n\n"
+            f"Evaluator suggestions:\n{_format_context(suggestions)}\n\n"
+            f"Reflection:\n{reflection}\n\n"
+            "Choose 1 to 5 concise semantic tags. Prefer these stable tags when applicable: "
+            "arithmetic, final-answer, verification, boundary, structure. "
+            "You may create a more specific reusable tag when none fits. "
+            "Use lowercase kebab-case. Do not use names, numbers, agent roles, or lifecycle/status tags. "
+            'Return JSON only in this exact shape: {"tags": ["tag-one", "tag-two"]}.'
+        )
+        raw_response = self.engine.generate(prompt, adapter_path=self._adapter_path(agent_name))
+        parsed = _parse_json_object(raw_response) or {}
+        raw_tags = parsed.get("tags", [])
+        if not isinstance(raw_tags, list):
+            return []
+        return normalize_experience_tags([str(tag) for tag in raw_tags])
 
     def aggregate_global_experience(
         self,

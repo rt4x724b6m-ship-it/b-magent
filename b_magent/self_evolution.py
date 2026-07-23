@@ -23,6 +23,7 @@ class EvolutionInput:
     peer_evaluation_rationales: list[str] = field(default_factory=list)
     reflection: str = ""
     is_correct: bool | None = None
+    experience_tags: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -73,6 +74,10 @@ class SelfEvolutionLibrary:
         score_summary = _summarize_list(event.evaluation_scores, fallback="No peer evaluation scores recorded")
         professional_lesson = _build_professional_reflection(event, suggestions)
         experience_kind = _professional_experience_kind(event.is_correct)
+        semantic_tags = _merge_experience_tags(
+            event.experience_tags,
+            _keyword_tags(event.task, [*suggestions, event.reflection]),
+        )
         record = LibraryRecord(
             agent_name=event.agent_name,
             library_type="professional",
@@ -94,7 +99,7 @@ class SelfEvolutionLibrary:
                 "professional",
                 "reflection",
                 experience_kind,
-                *_keyword_tags(event.task, suggestions),
+                *semantic_tags,
             ],
         )
         return self.professional.add_record(record)
@@ -246,3 +251,28 @@ def _keyword_tags(task: str, suggestions: list[str]) -> list[str]:
         if any(needle in text for needle in needles):
             tags.append(tag)
     return tags
+
+
+def normalize_experience_tags(tags: list[str], limit: int = 5) -> list[str]:
+    """Normalize agent-authored semantic tags before they enter a library record."""
+    normalized: list[str] = []
+    reserved = {
+        "professional", "evaluation", "reflection", "self-evolution",
+        "curated-success-experience", "error-reflection-experience", "evaluated-experience",
+    }
+    for raw_tag in tags:
+        tag = str(raw_tag).strip().lower().replace("_", " ")
+        tag = "-".join(part for part in tag.split() if part)
+        tag = "".join(character for character in tag if character.isalnum() or character == "-")
+        tag = tag.strip("-")
+        if not tag or len(tag) > 48 or tag in reserved or tag in normalized:
+            continue
+        normalized.append(tag)
+        if len(normalized) >= limit:
+            break
+    return normalized
+
+
+def _merge_experience_tags(agent_tags: list[str], fallback_tags: list[str]) -> list[str]:
+    # Agent reflection is the primary classifier; stable rule tags fill unused slots.
+    return normalize_experience_tags([*agent_tags, *fallback_tags])

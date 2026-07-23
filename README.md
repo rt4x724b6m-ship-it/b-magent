@@ -127,6 +127,13 @@ data/latest_report.json
 - `evaluate_peer(task, draft)`：检索评价库，调用后端 `suggest_improvements()` 生成互评建议
 - `self_improve(task, draft, evaluations)`：合并互评建议，生成改进答案，校验 gold answer，并调用 `SelfEvolutionLibrary.evolve_professional()`
 - `evolve_evaluation_library(task, all_evaluations)`：汇总自己的评价行为，调用 `SelfEvolutionLibrary.evolve_evaluation()`
+
+专业经验自反思标签：
+
+- `self_improve()` 完成答案修订和反思后，会再次让当前 agent 根据任务、原答案、改进答案、评价建议和反思生成 1 到 5 个经验标签。
+- agent 优先复用 `arithmetic`、`final-answer`、`verification`、`boundary`、`structure`，也可以生成更具体的可复用标签。
+- 标签入库前统一转换为小写 `kebab-case`，并执行去重、长度、数量和保留标签检查。
+- agent 未实现标签生成或未返回有效 JSON 时，系统继续使用固定关键词标签，不影响训练流程。
 - `_load_private_data()`：优先读取 `data/<agent>/private_data.jsonl`，其次读取 txt，再退回 GSM8K train，再退回内置样例
 - `_next_private_batch()`：根据 `private_batch_size` 循环取每轮私有样本
 

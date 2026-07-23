@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .evaluation_format import format_confidence_from_scores, format_structured_evaluation
 from .models import Draft, EvaluationEvolution, EvaluationScores, LibraryRecord, PeerEvaluation
+from .self_evolution import normalize_experience_tags
 
 
 class DemoQwenBackend:
@@ -95,6 +96,28 @@ class DemoQwenBackend:
             "professional memory, and evaluation checks."
         )
         return revised_answer, reflection
+
+    def generate_experience_tags(
+        self,
+        agent_name: str,
+        specialty: str,
+        task: str,
+        original_answer: str,
+        revised_answer: str,
+        suggestions: list[str],
+        reflection: str,
+    ) -> list[str]:
+        text = " ".join((task, original_answer, revised_answer, *suggestions, reflection)).lower()
+        catalog = {
+            "arithmetic": ("arithmetic", "numeric", "calculation", "math", "算", "数字"),
+            "final-answer": ("final", "answer", "####", "答案"),
+            "verification": ("verify", "check", "验证", "检查", "自检"),
+            "boundary": ("boundary", "edge", "condition", "边界", "条件"),
+            "structure": ("step", "structure", "清单", "步骤", "编号"),
+        }
+        return normalize_experience_tags(
+            [tag for tag, needles in catalog.items() if any(needle in text for needle in needles)]
+        )
 
     def aggregate_global_experience(
         self,

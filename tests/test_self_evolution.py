@@ -9,10 +9,69 @@ from _project_path import add_project_root_to_sys_path
 
 add_project_root_to_sys_path()
 
-from b_magent.self_evolution import EvolutionInput, SelfEvolutionLibrary, evolve_all_agents
+from b_magent.self_evolution import (
+    EvolutionInput,
+    SelfEvolutionLibrary,
+    evolve_all_agents,
+    normalize_experience_tags,
+)
+from b_magent.agent import QwenAgent
+from b_magent.backend import DemoQwenBackend
+from b_magent.models import Draft
 
 
 class SelfEvolutionLibraryTestCase(unittest.TestCase):
+    def test_self_improvement_asks_agent_backend_to_tag_reflected_experience(self) -> None:
+        class TaggingBackend(DemoQwenBackend):
+            def generate_experience_tags(self, *args: object) -> list[str]:
+                return ["missing-condition", "Final Answer"]
+
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_self_tagging_test_"))
+        try:
+            agent = QwenAgent("qwen_agent_1", "general-agent", temp_dir, backend=TaggingBackend())
+            draft = Draft(
+                agent_name=agent.name,
+                specialty=agent.specialty,
+                answer="original answer",
+                thought_trace=[],
+                private_training_used=[],
+                professional_memory_used=[],
+                evaluation_alerts_used=[],
+            )
+            improvement = agent.self_improve("solve the problem", draft, [])
+            tags = improvement.professional_updates[0].tags
+
+            self.assertIn("missing-condition", tags)
+            self.assertIn("final-answer", tags)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_agent_authored_experience_tags_are_normalized_and_stored(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_agent_tags_test_"))
+        try:
+            event = EvolutionInput(
+                agent_name="qwen_agent_1",
+                specialty="general-agent",
+                task="solve a word problem",
+                answer="answer",
+                reflection="Reflection: preserve the reusable multi-step lesson.",
+                experience_tags=["Multi Step Reasoning", "verification", "verification", "self-evolution"],
+            )
+            record = SelfEvolutionLibrary(temp_dir, event.agent_name).evolve_professional(event)
+
+            self.assertIn("multi-step-reasoning", record.tags)
+            self.assertIn("verification", record.tags)
+            self.assertEqual(record.tags.count("verification"), 1)
+            self.assertEqual(record.tags.count("self-evolution"), 1)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_experience_tag_normalization_limits_invalid_or_excess_tags(self) -> None:
+        tags = normalize_experience_tags(
+            ["", "Final Answer", "bad/tag", "a", "two", "three", "four", "five", "six"]
+        )
+        self.assertEqual(tags, ["final-answer", "badtag", "a", "two", "three"])
+
     def test_professional_and_evaluation_libraries_are_stored_separately(self) -> None:
         temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_evolution_test_"))
         try:

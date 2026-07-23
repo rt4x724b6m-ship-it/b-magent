@@ -147,6 +147,18 @@ class QwenAgent:
         is_correct = None
         if gold_answer is not None:
             is_correct = _extract_final_answer(revised_answer) == gold_answer
+        experience_tags: list[str] = []
+        generate_experience_tags = getattr(self.backend, "generate_experience_tags", None)
+        if callable(generate_experience_tags):
+            experience_tags = generate_experience_tags(
+                self.name,
+                self.specialty,
+                _strip_gold_annotations(task),
+                draft.answer,
+                revised_answer,
+                suggestions,
+                reflection,
+            )
         event = EvolutionInput(
             agent_name=self.name,
             specialty=self.specialty,
@@ -158,6 +170,7 @@ class QwenAgent:
             evaluation_scores=peer_scores,
             reflection=reflection,
             is_correct=is_correct,
+            experience_tags=experience_tags,
         )
         update = self.self_evolution_library.evolve_professional(event)
         return SelfImprovement(
