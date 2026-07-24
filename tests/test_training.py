@@ -438,6 +438,7 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
             reset.assert_called_once()
             self.assertTrue(reset.call_args.kwargs["reset_evaluation_libraries"])
             self.assertEqual(reset.call_args.kwargs["lora_output_dir"], lora_output_dir)
+            self.assertIn(output_file, reset.call_args.kwargs["report_files"])
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 

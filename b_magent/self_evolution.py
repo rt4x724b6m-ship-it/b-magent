@@ -6,6 +6,7 @@ from pathlib import Path
 from .evaluation_format import format_structured_evaluation
 from .library import EvolutionLibrary
 from .models import LibraryRecord
+from .tagging import extract_math_task_tags
 
 
 @dataclass
@@ -238,19 +239,7 @@ def _task_hint(task: str) -> str:
 
 
 def _keyword_tags(task: str, suggestions: list[str]) -> list[str]:
-    text = " ".join([task, *suggestions]).lower()
-    candidates = {
-        "arithmetic": ("arithmetic", "numeric", "calculation", "math", "算", "数字"),
-        "final-answer": ("final", "answer", "####", "答案"),
-        "verification": ("verify", "check", "验证", "检查", "自检"),
-        "boundary": ("boundary", "edge", "condition", "边界", "条件"),
-        "structure": ("step", "structure", "清单", "步骤", "编号"),
-    }
-    tags: list[str] = []
-    for tag, needles in candidates.items():
-        if any(needle in text for needle in needles):
-            tags.append(tag)
-    return tags
+    return sorted(extract_math_task_tags(" ".join([task, *suggestions])))
 
 
 def normalize_experience_tags(tags: list[str], limit: int = 5) -> list[str]:
@@ -275,4 +264,4 @@ def normalize_experience_tags(tags: list[str], limit: int = 5) -> list[str]:
 
 def _merge_experience_tags(agent_tags: list[str], fallback_tags: list[str]) -> list[str]:
     # Agent reflection is the primary classifier; stable rule tags fill unused slots.
-    return normalize_experience_tags([*agent_tags, *fallback_tags])
+    return normalize_experience_tags([*agent_tags, *fallback_tags], limit=8)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gc
 import json
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -49,6 +50,9 @@ class LocalQwenEngine:
         self._tokenizer: Any | None = None
         self._model: Any | None = None
         self._adapter_models: dict[tuple[str, int], Any] = {}
+        self._load_lock = threading.Lock()
+        self._adapter_lock = threading.Lock()
+        self._generation_lock = threading.Lock()
 
     @property
     def tokenizer(self) -> Any:
@@ -61,6 +65,10 @@ class LocalQwenEngine:
         return self._model
 
     def generate(self, prompt: str, adapter_path: str | Path | None = None) -> str:
+        with self._generation_lock:
+            return self._generate_unlocked(prompt, adapter_path=adapter_path)
+
+    def _generate_unlocked(self, prompt: str, adapter_path: str | Path | None = None) -> str:
         self._load()
         model = self._model
         if adapter_path is not None and _is_lora_adapter_ready(Path(adapter_path)):
@@ -95,20 +103,24 @@ class LocalQwenEngine:
     def _load_adapter_model(self, adapter_path: Path) -> Any:
         resolved_path = str(adapter_path.resolve())
         key = (resolved_path, _adapter_fingerprint(adapter_path))
-        if key in self._adapter_models:
-            return self._adapter_models[key]
-        self._adapter_models = {
-            cached_key: cached_model
-            for cached_key, cached_model in self._adapter_models.items()
-            if cached_key[0] != resolved_path
-        }
-        try:
-            from peft import PeftModel
-        except ImportError as exc:
-            raise RuntimeError("Loading LoRA adapters requires peft.") from exc
-        adapter_model = PeftModel.from_pretrained(self._model, resolved_path)
-        self._adapter_models[key] = adapter_model
-        return adapter_model
+        with self._adapter_lock:
+            if key in self._adapter_models:
+                return self._adapter_models[key]
+            self._adapter_models = {
+                cached_key: cached_model
+                for cached_key, cached_model in self._adapter_models.items()
+                if cached_key[0] != resolved_path
+            }
+            try:
+                from peft import PeftModel
+            except ImportError as exc:
+                raise RuntimeError("Loading LoRA adapters requires peft.") from exc
+            adapter_model = PeftModel.from_pretrained(self._model, resolved_path)
+            model_device = getattr(self._model, "device", None)
+            if model_device is not None:
+                adapter_model = adapter_model.to(model_device)
+            self._adapter_models[key] = adapter_model
+            return adapter_model
 
     def unload(self) -> None:
         self._adapter_models.clear()
@@ -130,9 +142,20 @@ class LocalQwenEngine:
             raise RuntimeError("Local Qwen requires torch.") from exc
         return getattr(torch, self.torch_dtype)
 
+    def _resolve_device_map(self) -> Any:
+        if self.device_map != "auto":
+            return self.device_map
+        return None
+
     def _load(self) -> None:
         if self._tokenizer is not None and self._model is not None:
             return
+        with self._load_lock:
+            if self._tokenizer is not None and self._model is not None:
+                return
+            self._load_unlocked()
+
+    def _load_unlocked(self) -> None:
         model_path = Path(self.model_name_or_path)
         if self.local_files_only and not model_path.exists():
             raise RuntimeError(
@@ -141,7 +164,14 @@ class LocalQwenEngine:
                 "Pass --model-path /path/to/Qwen2.5-1.5B-Instruct or place the model under models/Qwen2.5-1.5B-Instruct."
             )
         try:
-            from transformers import AutoModelForCausalLM, AutoTokenizer
+            import transformers
+
+            AutoModelForCausalLM = getattr(transformers, "AutoModelForCausalLM", None)
+            AutoTokenizer = getattr(transformers, "AutoTokenizer", None)
+            if AutoModelForCausalLM is None:
+                from transformers.models.auto.modeling_auto import AutoModelForCausalLM
+            if AutoTokenizer is None:
+                from transformers.models.auto.tokenization_auto import AutoTokenizer
         except ImportError as exc:
             raise RuntimeError(
                 "Local Qwen requires transformers. Install transformers and torch, "
@@ -155,10 +185,20 @@ class LocalQwenEngine:
         self._model = AutoModelForCausalLM.from_pretrained(
             self.model_name_or_path,
             torch_dtype=self._resolve_torch_dtype(),
-            device_map=self.device_map,
-            low_cpu_mem_usage=True,
+            device_map=self._resolve_device_map(),
+            low_cpu_mem_usage=self.device_map != "auto",
             local_files_only=self.local_files_only,
         )
+        if self.device_map == "auto":
+            try:
+                import torch
+            except ImportError as exc:
+                raise RuntimeError("Local Qwen requires torch.") from exc
+            if torch.cuda.is_available():
+                self._model = self._model.to("cuda")
+        tie_weights = getattr(self._model, "tie_weights", None)
+        if callable(tie_weights):
+            tie_weights()
         if not self.generation_config.do_sample:
             self._model.generation_config.temperature = None
             self._model.generation_config.top_p = None
@@ -188,11 +228,18 @@ class LocalQwenAgentModel:
                 self.training_examples.append(to_training_text())
 
     def generate(self, question: str) -> str:
+        return self.generate_with_server_guidance(question, "")
+
+    def generate_with_server_guidance(self, question: str, server_guidance: str) -> str:
         context = "\n".join(self.training_examples[-4:])
         prompt = (
             f"Agent: {self.agent_name}\n"
             f"Private examples:\n{context or '(none)'}\n\n"
             f"Question:\n{question}\n\n"
+            "Server evaluation guidance:\n"
+            f"{server_guidance or '(none)'}\n\n"
+            "Solve independently while applying the server's risk checks. "
+            "Do not treat the guidance as a proposed numeric answer.\n\n"
             f"Output constraint:\n{NUMERIC_ANSWER_INSTRUCTION}"
         )
         adapter_path = self._adapter_path()
@@ -350,8 +397,10 @@ class LocalQwenEvolutionBackend:
             f"Improved answer:\n{revised_answer}\n\n"
             f"Evaluator suggestions:\n{_format_context(suggestions)}\n\n"
             f"Reflection:\n{reflection}\n\n"
-            "Choose 1 to 5 concise semantic tags. Prefer these stable tags when applicable: "
-            "arithmetic, final-answer, verification, boundary, structure. "
+            "Choose 1 to 8 concise semantic tags that capture the actual operation and problem type. "
+            "Use these stable tags when applicable: addition, subtraction, multiplication, division, "
+            "fraction, percentage, ratio, rate, unit-conversion, money, time, geometry, counting, "
+            "multi-step, arithmetic, final-answer, verification, boundary, structure. "
             "You may create a more specific reusable tag when none fits. "
             "Use lowercase kebab-case. Do not use names, numbers, agent roles, or lifecycle/status tags. "
             'Return JSON only in this exact shape: {"tags": ["tag-one", "tag-two"]}.'
@@ -361,7 +410,7 @@ class LocalQwenEvolutionBackend:
         raw_tags = parsed.get("tags", [])
         if not isinstance(raw_tags, list):
             return []
-        return normalize_experience_tags([str(tag) for tag in raw_tags])
+        return normalize_experience_tags([str(tag) for tag in raw_tags], limit=8)
 
     def aggregate_global_experience(
         self,

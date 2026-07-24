@@ -7,6 +7,7 @@ from typing import Any
 from b_magent.evaluation_format import format_structured_evaluation
 from b_magent.library import EvolutionLibrary
 from b_magent.models import EvaluationEvolution, GlobalExperience, LibraryRecord, PeerEvaluation
+from b_magent.tagging import extract_math_task_tags
 
 
 class ServerAgent:
@@ -25,6 +26,58 @@ class ServerAgent:
         self.global_library = EvolutionLibrary(
             data_dir / name / "global_evaluation_library.jsonl",
             "global_evaluation",
+        )
+        self.agent_training_tags_library = EvolutionLibrary(
+            data_dir / name / "agent_training_tags.jsonl",
+            "agent_training_tags",
+        )
+        self.agent_training_tags_dir = data_dir / name / "agent_training_tags"
+
+    def store_agent_training_tags(
+        self,
+        task: str,
+        training_records: list[LibraryRecord],
+    ) -> list[LibraryRecord]:
+        """Store each agent's self-training tags separately on the server.
+
+        Only metadata and tags are uploaded. Record details are intentionally
+        excluded so private training samples stay in the agent-local library.
+        """
+        updates: list[LibraryRecord] = []
+        for record in training_records:
+            learned_tags = sorted(extract_math_task_tags(f"{record.source_task}\n{record.summary}"))
+            tags = _unique([*record.tags, *learned_tags])
+            if not record.agent_name or not tags:
+                continue
+            update = LibraryRecord(
+                agent_name=record.agent_name,
+                library_type="agent_training_tags",
+                source_task=task,
+                summary=f"{record.agent_name} training tags: {', '.join(tags)}",
+                detail=(
+                    f"source_agent={record.agent_name} | "
+                    f"source_library_type={record.library_type} | "
+                    f"source_summary={_shorten(record.summary)} | "
+                    f"tags={', '.join(tags)}"
+                ),
+                tags=[
+                    record.agent_name,
+                    "agent-training-tags",
+                    record.library_type,
+                    *tags,
+                ],
+            )
+            stored_update = self.agent_training_tags_library.add_record(update)
+            self._agent_training_tag_library(record.agent_name).add_record(update)
+            updates.append(stored_update)
+        return updates
+
+    def _agent_training_tag_library(self, agent_name: str) -> EvolutionLibrary:
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", agent_name) or agent_name in {".", ".."}:
+            raise ValueError(f"invalid agent name for tag storage: {agent_name!r}")
+        return EvolutionLibrary(
+            self.agent_training_tags_dir / f"{agent_name}.jsonl",
+            "agent_training_tags",
         )
 
     def aggregate_evaluation_experience(

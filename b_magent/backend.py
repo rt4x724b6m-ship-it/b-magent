@@ -107,17 +107,10 @@ class DemoQwenBackend:
         suggestions: list[str],
         reflection: str,
     ) -> list[str]:
-        text = " ".join((task, original_answer, revised_answer, *suggestions, reflection)).lower()
-        catalog = {
-            "arithmetic": ("arithmetic", "numeric", "calculation", "math", "算", "数字"),
-            "final-answer": ("final", "answer", "####", "答案"),
-            "verification": ("verify", "check", "验证", "检查", "自检"),
-            "boundary": ("boundary", "edge", "condition", "边界", "条件"),
-            "structure": ("step", "structure", "清单", "步骤", "编号"),
-        }
-        return normalize_experience_tags(
-            [tag for tag, needles in catalog.items() if any(needle in text for needle in needles)]
-        )
+        from .tagging import extract_math_task_tags
+
+        text = " ".join((task, original_answer, revised_answer, *suggestions, reflection))
+        return normalize_experience_tags(sorted(extract_math_task_tags(text)), limit=8)
 
     def aggregate_global_experience(
         self,

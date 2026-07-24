@@ -87,6 +87,24 @@ class MultiAgentWorkflow:
             evaluation_evolutions,
             evaluators,
         )
+        training_tag_records = [
+            record
+            for record in (
+                [agent.last_private_training_record for agent in participants]
+                + [
+                    update
+                    for improvement in self_improvements
+                    for update in improvement.professional_updates
+                ]
+                + [
+                    update
+                    for evolution in evaluation_evolutions
+                    for update in evolution.evaluation_updates
+                ]
+            )
+            if record is not None
+        ]
+        server_training_tag_updates = self.server_agent.store_agent_training_tags(task, training_tag_records)
 
         return EvolutionReport(
             task=task,
@@ -97,6 +115,7 @@ class MultiAgentWorkflow:
             self_improvements=self_improvements,
             evaluation_evolutions=evaluation_evolutions,
             global_experience=global_experience,
+            server_training_tag_updates=server_training_tag_updates,
         )
 
     def _select_participants(self, participant_names: list[str] | None) -> list[QwenAgent]:

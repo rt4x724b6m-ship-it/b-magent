@@ -109,6 +109,7 @@ class EvolutionReport:
     self_improvements: list[SelfImprovement]
     evaluation_evolutions: list[EvaluationEvolution]
     global_experience: GlobalExperience | None = None
+    server_training_tag_updates: list[LibraryRecord] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

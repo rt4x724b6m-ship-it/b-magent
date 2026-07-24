@@ -9,6 +9,7 @@ from .datasets import GSM8KDataset
 from .library import EvolutionLibrary
 from .models import Draft, EvaluationEvolution, LibraryRecord, PeerEvaluation, SelfImprovement
 from .self_evolution import EvolutionInput, SelfEvolutionLibrary
+from .tagging import extract_math_task_tags
 from .trajectory import extract_answer_features, mask_draft_for_evaluation
 
 
@@ -33,12 +34,14 @@ class QwenAgent:
             "evaluation",
         )
         self.self_evolution_library = SelfEvolutionLibrary(data_dir, name)
+        self.last_private_training_record: LibraryRecord | None = None
         self._private_cursor = 0
 
     def train_private_data(self, task: str, batch_size: int | None = None) -> list[str]:
         private_items = self._load_private_data()
         training_batch = self._next_private_batch(private_items, batch_size)
         reflection = _build_private_training_reflection(self.specialty, training_batch)
+        learned_tags = sorted(extract_math_task_tags("\n".join([task, *training_batch])))
         record = LibraryRecord(
             agent_name=self.name,
             library_type="professional",
@@ -49,9 +52,9 @@ class QwenAgent:
                 f"private_sample_count={len(training_batch)} | "
                 f"sample_summaries={_summarize_texts(training_batch)}"
             ),
-            tags=[self.specialty, "private-training", "professional", "reflection"],
+            tags=[self.specialty, "private-training", "professional", "reflection", *learned_tags],
         )
-        self.professional_library.add_record(record)
+        self.last_private_training_record = self.professional_library.add_record(record)
         return training_batch
 
     def solve_task(self, task: str, private_training: list[str]) -> Draft:

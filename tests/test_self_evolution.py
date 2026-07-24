@@ -18,9 +18,23 @@ from b_magent.self_evolution import (
 from b_magent.agent import QwenAgent
 from b_magent.backend import DemoQwenBackend
 from b_magent.models import Draft
+from b_magent.tagging import extract_math_task_tags
 
 
 class SelfEvolutionLibraryTestCase(unittest.TestCase):
+    def test_math_task_tags_capture_operations_and_problem_type(self) -> None:
+        task = (
+            "A worker earns $12 per hour for 3 hours and spends half of the money. "
+            "Gold reasoning: 12 * 3 = <<12*3=36>>36, then 36 / 2 = <<36/2=18>>18."
+        )
+
+        tags = extract_math_task_tags(task)
+
+        self.assertTrue(
+            {"multiplication", "division", "fraction", "rate", "money", "time", "multi-step"}
+            <= tags
+        )
+
     def test_self_improvement_asks_agent_backend_to_tag_reflected_experience(self) -> None:
         class TaggingBackend(DemoQwenBackend):
             def generate_experience_tags(self, *args: object) -> list[str]:

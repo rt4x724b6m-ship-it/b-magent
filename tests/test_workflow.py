@@ -291,6 +291,8 @@ class WorkflowTestCase(unittest.TestCase):
             self.assertNotIn("score", payload["peer_reviews"][0])
             self.assertIn("global_experience", payload)
             self.assertEqual(payload["global_experience"]["server_name"], "qwen_server_agent")
+            self.assertIn("server_training_tag_updates", payload)
+            self.assertTrue(payload["server_training_tag_updates"])
 
             for agent_name in expected_agents:
                 professional_file = temp_dir / "data" / agent_name / "professional_library.jsonl"
@@ -298,6 +300,35 @@ class WorkflowTestCase(unittest.TestCase):
                 self.assertTrue(professional_file.exists())
                 self.assertTrue(evaluation_file.exists())
             self.assertTrue((temp_dir / "data" / "qwen_server_agent" / "global_evaluation_library.jsonl").exists())
+
+            server_tag_file = temp_dir / "data" / "qwen_server_agent" / "agent_training_tags.jsonl"
+            self.assertTrue(server_tag_file.exists())
+            server_tag_payloads = [
+                json.loads(line)
+                for line in server_tag_file.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertTrue(server_tag_payloads)
+            stored_agents = {item["agent_name"] for item in server_tag_payloads}
+            self.assertTrue(set(report.participants).issubset(stored_agents))
+            self.assertTrue(set(report.evaluators).issubset(stored_agents))
+            self.assertTrue(all(item["library_type"] == "agent_training_tags" for item in server_tag_payloads))
+            self.assertTrue(any("private-training" in item["tags"] for item in server_tag_payloads))
+            self.assertTrue(any("evaluation" in item["tags"] for item in server_tag_payloads))
+            server_tag_text = server_tag_file.read_text(encoding="utf-8")
+            self.assertIn("agent-training-tags", server_tag_text)
+            self.assertNotIn("sample_summaries=", server_tag_text)
+            per_agent_tag_dir = temp_dir / "data" / "qwen_server_agent" / "agent_training_tags"
+            for agent_name in stored_agents:
+                agent_tag_file = per_agent_tag_dir / f"{agent_name}.jsonl"
+                self.assertTrue(agent_tag_file.exists())
+                agent_payloads = [
+                    json.loads(line)
+                    for line in agent_tag_file.read_text(encoding="utf-8").splitlines()
+                    if line.strip()
+                ]
+                self.assertTrue(agent_payloads)
+                self.assertEqual({item["agent_name"] for item in agent_payloads}, {agent_name})
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 

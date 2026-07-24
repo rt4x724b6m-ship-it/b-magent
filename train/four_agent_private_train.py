@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import shutil
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -27,6 +28,7 @@ from b_magent.local_qwen import (
 from b_magent.lora import DEFAULT_LORA_THRESHOLD, LoraEvolutionManager, LoraTrainingConfig, LoraUpdate
 from b_magent.models import LibraryRecord
 from b_magent.seed import seed_agent_libraries
+from b_magent.tagging import ROUTING_TAGS, extract_math_task_tags, routing_tag_importance
 from b_magent.workflow import MultiAgentWorkflow, build_default_agents
 
 
@@ -40,6 +42,16 @@ class TrainableQwenModel(Protocol):
 
     def generate(self, question: str) -> str:
         """Return one answer for evaluation."""
+
+
+class ServerGuidedQwenModel(Protocol):
+    def generate_with_server_guidance(self, question: str, server_guidance: str) -> str:
+        """Answer a question using observable server-side evaluation advice."""
+
+
+class ServerRoutingModel(Protocol):
+    def generate(self, prompt: str) -> str:
+        """Return a server-side diagnostic for routing test questions."""
 
 
 class MemoryQwenModel:
@@ -105,6 +117,20 @@ class AgentVote:
     agent_name: str
     raw_prediction: str
     predicted_answer: str
+    tag_match_score: float = 0.0
+
+
+@dataclass
+class ServerRoutingAssessment:
+    difficulty: str = "medium"
+    key_steps: list[str] = field(default_factory=list)
+    risk_steps: list[str] = field(default_factory=list)
+    capability_tags: list[str] = field(default_factory=list)
+    risk_tags: list[str] = field(default_factory=list)
+
+    @property
+    def routing_tags(self) -> set[str]:
+        return set(self.capability_tags) | set(self.risk_tags)
 
 
 @dataclass
@@ -115,6 +141,14 @@ class VotingPrediction:
     votes: list[AgentVote]
     final_answer: str
     correct: bool
+    server_diagnostic: str = ""
+    difficulty: str = ""
+    key_steps: list[str] = field(default_factory=list)
+    risk_steps: list[str] = field(default_factory=list)
+    selected_agents: list[str] = field(default_factory=list)
+    routing_tags: list[str] = field(default_factory=list)
+    routing_scores: dict[str, float] = field(default_factory=dict)
+    matched_tags: dict[str, list[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -455,6 +489,9 @@ def run_four_agent_voting_on_test(
     agent_names: tuple[str, ...] = AGENT_NAMES,
     limit: int | None = STANDARD_TEST_LIMIT,
     on_prediction: Callable[["VotingPrediction", int], None] | None = None,
+    server_model: ServerRoutingModel | None = None,
+    server_training_tag_records: list[LibraryRecord] | None = None,
+    prior_global_evaluation_records: list[LibraryRecord] | None = None,
 ) -> VotingReport:
     dataset = GSM8KDataset(dataset_dir)
     test_samples = dataset.load("test", limit=limit)
@@ -464,22 +501,58 @@ def run_four_agent_voting_on_test(
     if missing_agents:
         raise ValueError(f"missing models for agents: {', '.join(missing_agents)}")
 
+    tag_index = _build_agent_tag_index(server_training_tag_records or [])
     predictions: list[VotingPrediction] = []
     with ThreadPoolExecutor(max_workers=len(agent_names), thread_name_prefix="voting-agent") as executor:
         for index, sample in enumerate(test_samples):
+            server_diagnostic = ""
+            selected_agents = list(agent_names)
+            routing_tags: set[str] = set()
+            routing_scores: dict[str, float] = {}
+            matched_tags: dict[str, list[str]] = {}
+            assessment = ServerRoutingAssessment()
+            if server_model is not None and tag_index:
+                server_diagnostic = _server_diagnose_question(
+                    server_model,
+                    sample.question,
+                    prior_global_evaluation_records or [],
+                )
+                assessment = _parse_server_routing_assessment(server_diagnostic, sample.question)
+                selected_agents, matched_tags = select_agents_by_server_tags(
+                    server_diagnostic,
+                    tag_index,
+                    agent_names,
+                    selected_count=3,
+                    question=sample.question,
+                    assessment=assessment,
+                )
+                routing_tags = assessment.routing_tags
+                routing_scores = {
+                    agent_name: _agent_routing_score(
+                        tag_index.get(agent_name, {}),
+                        routing_tags,
+                        assessment.difficulty,
+                    )
+                    for agent_name in agent_names
+                }
             raw_predictions = executor.map(
-                lambda agent_name: models[agent_name].generate(sample.question),
-                agent_names,
+                lambda agent_name: _generate_with_server_guidance(
+                    models[agent_name],
+                    sample.question,
+                    "",
+                ),
+                selected_agents,
             )
             votes = [
                 AgentVote(
                     agent_name=agent_name,
                     raw_prediction=raw_prediction,
                     predicted_answer=extract_numeric_answer(raw_prediction),
+                    tag_match_score=routing_scores.get(agent_name, 0.0),
                 )
-                for agent_name, raw_prediction in zip(agent_names, raw_predictions)
+                for agent_name, raw_prediction in zip(selected_agents, raw_predictions)
             ]
-            final_answer = majority_vote(votes)
+            final_answer = routed_vote(votes) if server_model is not None and tag_index else majority_vote(votes)
             gold_answer = normalize_answer(sample.final_answer)
             prediction = VotingPrediction(
                 index=index,
@@ -488,6 +561,14 @@ def run_four_agent_voting_on_test(
                 votes=votes,
                 final_answer=final_answer,
                 correct=final_answer == gold_answer,
+                server_diagnostic=server_diagnostic,
+                difficulty=assessment.difficulty if server_diagnostic else "",
+                key_steps=assessment.key_steps,
+                risk_steps=assessment.risk_steps,
+                selected_agents=selected_agents,
+                routing_tags=sorted(routing_tags),
+                routing_scores=routing_scores,
+                matched_tags=matched_tags,
             )
             predictions.append(prediction)
             if on_prediction is not None:
@@ -537,6 +618,286 @@ def majority_vote(votes: list[AgentVote]) -> str:
             best_answer = vote.predicted_answer
             best_count = count
     return best_answer
+
+
+def routed_vote(votes: list[AgentVote]) -> str:
+    """Use the most tag-matched agent unless the 2nd and 3rd agree."""
+    if not votes:
+        return ""
+    ranked_votes = sorted(
+        enumerate(votes),
+        key=lambda indexed_vote: (indexed_vote[1].tag_match_score, -indexed_vote[0]),
+        reverse=True,
+    )
+    ranked = [vote for _, vote in ranked_votes]
+    if len(ranked) >= 3 and ranked[1].predicted_answer == ranked[2].predicted_answer:
+        return ranked[1].predicted_answer
+    return ranked[0].predicted_answer
+
+
+def select_agents_by_server_tags(
+    server_diagnostic: str,
+    agent_tag_index: dict[str, set[str] | dict[str, float]],
+    agent_names: tuple[str, ...] = AGENT_NAMES,
+    selected_count: int = 3,
+    question: str = "",
+    assessment: ServerRoutingAssessment | None = None,
+) -> tuple[list[str], dict[str, list[str]]]:
+    assessment = assessment or _parse_server_routing_assessment(server_diagnostic, question)
+    diagnostic_tags = assessment.routing_tags
+    matched_tags = {
+        agent_name: sorted(set(agent_tag_index.get(agent_name, {})) & diagnostic_tags)
+        for agent_name in agent_names
+    }
+    ranked = sorted(
+        agent_names,
+        key=lambda agent_name: (
+            _agent_routing_score(
+                agent_tag_index.get(agent_name, {}),
+                diagnostic_tags,
+                assessment.difficulty,
+            ),
+            -agent_names.index(agent_name),
+        ),
+        reverse=True,
+    )
+    selected_names = set(ranked[:selected_count])
+    selected = [agent_name for agent_name in agent_names if agent_name in selected_names]
+    return selected, {agent_name: matched_tags[agent_name] for agent_name in selected}
+
+
+def _server_diagnose_question(
+    server_model: ServerRoutingModel,
+    question: str,
+    prior_global_evaluation_records: list[LibraryRecord],
+) -> str:
+    relevant_global_records = _select_relevant_global_records(question, prior_global_evaluation_records)
+    global_memory = "\n".join(
+        f"- summary={record.summary}; detail={' '.join(record.detail.split())[:360]}; "
+        f"tags={', '.join(record.tags)}"
+        for record in relevant_global_records
+    ) or "(none)"
+    prompt = (
+        "Server-side routing diagnosis.\n"
+        "First solve the test question privately on the server. Use chain-of-thought internally, "
+        "then report only observable errors, likely failure points, and routing tags.\n\n"
+        "Prior aggregated evaluation experience:\n"
+        f"{global_memory}\n\n"
+        "Test question:\n"
+        f"{question}\n\n"
+        "Use the relevant global evaluation experience to identify the likely failure points. "
+        "Return JSON only with this schema: "
+        '{"difficulty":"easy|medium|hard","key_steps":["..."],"risk_steps":["..."],'
+        '"capability_tags":["..."],"risk_tags":["..."]}. '
+        "Select capability_tags and risk_tags only from: "
+        "addition, subtraction, multiplication, division, fraction, percentage, ratio, rate, "
+        "unit-conversion, money, time, geometry, counting, multi-step, arithmetic, final-answer, "
+        "verification, boundary, structure. key_steps and risk_steps must be short observable step "
+        "descriptions, not hidden chain-of-thought. Assess the whole problem rather than choosing one tag."
+    )
+    return server_model.generate(prompt)
+
+
+def _build_agent_tag_index(records: list[LibraryRecord]) -> dict[str, dict[str, float]]:
+    evidence: dict[str, dict[str, dict[str, float]]] = {}
+    for record in records:
+        if not record.agent_name:
+            continue
+        source_library_type = _source_library_type(record)
+        if source_library_type == "evaluation":
+            continue
+        semantic_tags = {
+            str(tag).strip().lower().replace("_", "-")
+            for tag in record.tags
+            if str(tag).strip().lower().replace("_", "-") in ROUTING_TAGS
+        }
+        semantic_tags.update(extract_math_task_tags(record.source_task))
+        semantic_tags.add("overall-reliability")
+        task_key = record.source_task.strip() or record.created_at
+        value = _training_evidence_value(record)
+        agent_evidence = evidence.setdefault(record.agent_name, {})
+        for tag in semantic_tags:
+            task_evidence = agent_evidence.setdefault(tag, {})
+            task_evidence[task_key] = max(task_evidence.get(task_key, 0.0), value)
+
+    index: dict[str, dict[str, float]] = {}
+    for agent_name, tag_evidence in evidence.items():
+        index[agent_name] = {}
+        for tag, task_values in tag_evidence.items():
+            values = list(task_values.values())
+            quality = (1.0 + sum(values)) / (2.0 + len(values))
+            evidence_bonus = 1.0 + min(math.log1p(len(values)) / 10.0, 0.35)
+            index[agent_name][tag] = round(quality * evidence_bonus, 4)
+    return index
+
+
+def _extract_routing_tags(text: str) -> set[str]:
+    return extract_math_task_tags(text)
+
+
+def _parse_server_routing_assessment(text: str, question: str = "") -> ServerRoutingAssessment:
+    payload = _parse_json_payload(text)
+    capability_tags = _normalized_routing_tags(payload.get("capability_tags", []))
+    risk_tags = _normalized_routing_tags(payload.get("risk_tags", []))
+    fallback_tags = _extract_routing_tags(f"{text}\n{question}")
+    if not capability_tags:
+        capability_tags = sorted(_extract_routing_tags(question))
+    combined_tags = set(capability_tags) | set(risk_tags) | fallback_tags
+    difficulty = str(payload.get("difficulty", "")).strip().lower()
+    if difficulty not in {"easy", "medium", "hard"}:
+        specific_tags = combined_tags - {"arithmetic", "final-answer", "verification", "structure"}
+        if "multi-step" in combined_tags and len(specific_tags) >= 3:
+            difficulty = "hard"
+        elif "multi-step" in combined_tags or len(specific_tags) >= 2:
+            difficulty = "medium"
+        else:
+            difficulty = "easy"
+    return ServerRoutingAssessment(
+        difficulty=difficulty,
+        key_steps=_string_list(payload.get("key_steps", [])),
+        risk_steps=_string_list(payload.get("risk_steps", [])),
+        capability_tags=sorted(set(capability_tags) | fallback_tags),
+        risk_tags=sorted(risk_tags),
+    )
+
+
+def _parse_json_payload(text: str) -> dict[str, object]:
+    candidate = str(text).strip()
+    if candidate.startswith("```"):
+        candidate = candidate.split("\n", 1)[1] if "\n" in candidate else ""
+        candidate = candidate.rsplit("```", 1)[0].strip()
+    try:
+        payload = json.loads(candidate)
+        return payload if isinstance(payload, dict) else {}
+    except (json.JSONDecodeError, TypeError):
+        pass
+    decoder = json.JSONDecoder()
+    for index, character in enumerate(candidate):
+        if character != "{":
+            continue
+        try:
+            payload, _ = decoder.raw_decode(candidate[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return {}
+
+
+def _normalized_routing_tags(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    allowed = set(ROUTING_TAGS)
+    return [
+        tag
+        for item in value
+        if (tag := str(item).strip().lower().replace("_", "-")) in allowed
+    ]
+
+
+def _string_list(value: object, limit: int = 6) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [" ".join(str(item).split())[:240] for item in value if str(item).strip()][:limit]
+
+
+def _format_server_guidance(assessment: ServerRoutingAssessment) -> str:
+    key_steps = "; ".join(assessment.key_steps) or "Follow the required mathematical steps."
+    risk_steps = "; ".join(assessment.risk_steps) or "Verify intermediate and final calculations."
+    return (
+        f"Difficulty: {assessment.difficulty}\n"
+        f"Key steps to cover: {key_steps}\n"
+        f"Likely failure points to avoid: {risk_steps}\n"
+        f"Required capabilities: {', '.join(assessment.capability_tags) or '(none)'}\n"
+        f"Risk checks: {', '.join(assessment.risk_tags) or '(none)'}"
+    )
+
+
+def _generate_with_server_guidance(
+    model: TrainableQwenModel,
+    question: str,
+    server_guidance: str,
+) -> str:
+    guided_generate = getattr(model, "generate_with_server_guidance", None)
+    if server_guidance and callable(guided_generate):
+        return guided_generate(question, server_guidance)
+    return model.generate(question)
+
+
+def _tag_match_score(profile: set[str] | dict[str, float], routing_tags: set[str]) -> float:
+    if isinstance(profile, set):
+        return sum(routing_tag_importance(tag) for tag in profile & routing_tags)
+    return round(
+        sum(profile.get(tag, 0.0) * routing_tag_importance(tag) for tag in routing_tags),
+        4,
+    )
+
+
+def _agent_routing_score(
+    profile: set[str] | dict[str, float],
+    routing_tags: set[str],
+    difficulty: str,
+) -> float:
+    tag_score = _tag_match_score(profile, routing_tags)
+    reliability = profile.get("overall-reliability", 0.0) if isinstance(profile, dict) else 0.0
+    reliability_weight = {"easy": 0.05, "medium": 0.20, "hard": 0.40}.get(difficulty, 0.20)
+    return round(tag_score + reliability * reliability_weight, 4)
+
+
+def _select_relevant_global_records(
+    question: str,
+    records: list[LibraryRecord],
+    limit: int = 5,
+) -> list[LibraryRecord]:
+    question_tags = _extract_routing_tags(question)
+    question_words = set(_routing_words(question))
+    ranked = sorted(
+        enumerate(records),
+        key=lambda indexed_record: (
+            len(
+                question_tags
+                & (
+                    _extract_routing_tags(indexed_record[1].source_task)
+                    | _extract_routing_tags(indexed_record[1].summary)
+                    | _extract_routing_tags(" ".join(indexed_record[1].tags))
+                )
+            ),
+            len(question_words & set(_routing_words(indexed_record[1].source_task))),
+            indexed_record[0],
+        ),
+        reverse=True,
+    )
+    return [record for _, record in ranked[:limit]]
+
+
+def _routing_words(text: str) -> list[str]:
+    return [
+        token
+        for token in "".join(character if character.isalnum() else " " for character in text.lower()).split()
+        if len(token) >= 4
+    ]
+
+
+def _source_library_type(record: LibraryRecord) -> str:
+    marker = "source_library_type="
+    if marker in record.detail:
+        return record.detail.split(marker, 1)[1].split(" | ", 1)[0].strip()
+    if len(record.tags) >= 3 and record.tags[1] == "agent-training-tags":
+        return str(record.tags[2]).strip()
+    return record.library_type
+
+
+def _training_evidence_value(record: LibraryRecord) -> float:
+    tags = set(record.tags)
+    if "curated-success-experience" in tags:
+        return 1.0
+    if "error-reflection-experience" in tags:
+        return 0.0
+    if "private-training" in tags:
+        return 0.60
+    if "evaluated-experience" in tags:
+        return 0.40
+    return 0.50
 
 
 def split_private_data(
@@ -629,9 +990,10 @@ def reset_b_magent_training_state(
     data_dir: Path,
     lora_output_dir: Path | None = Path("data/lora_adapters"),
     agent_names: tuple[str, ...] = AGENT_NAMES,
-    reset_evaluation_libraries: bool = False,
+    reset_evaluation_libraries: bool = True,
+    report_files: tuple[Path, ...] = (),
 ) -> None:
-    """Remove generated per-agent training state before a fresh b_magent run."""
+    """Remove all generated experience and results before a fresh b_magent run."""
     for agent_name in agent_names:
         agent_dir = data_dir / agent_name
         for file_name in ("professional_library.jsonl", "private_data.jsonl"):
@@ -639,9 +1001,16 @@ def reset_b_magent_training_state(
         if reset_evaluation_libraries:
             (agent_dir / "evaluation_library.jsonl").unlink(missing_ok=True)
 
-        if lora_output_dir is not None:
-            shutil.rmtree(lora_output_dir / agent_name, ignore_errors=True)
-    (data_dir / "qwen_server_agent" / "global_evaluation_library.jsonl").unlink(missing_ok=True)
+    server_dir = data_dir / "qwen_server_agent"
+    for file_name in ("global_evaluation_library.jsonl", "agent_training_tags.jsonl"):
+        (server_dir / file_name).unlink(missing_ok=True)
+    shutil.rmtree(server_dir / "agent_training_tags", ignore_errors=True)
+
+    if lora_output_dir is not None:
+        shutil.rmtree(lora_output_dir, ignore_errors=True)
+
+    for report_file in report_files:
+        report_file.unlink(missing_ok=True)
 
 
 def make_cyclic_batch(samples: list[GSM8KSample], batch_index: int, batch_size: int) -> list[GSM8KSample]:
@@ -706,10 +1075,20 @@ def format_voting_prediction_detail(prediction: VotingPrediction, total: int) ->
         f"{vote.agent_name}={vote.predicted_answer or '<empty>'}"
         for vote in prediction.votes
     )
+    routing_summary = ""
+    if prediction.routing_tags:
+        scores = ", ".join(
+            f"{agent_name}={prediction.routing_scores.get(agent_name, 0.0):.3f}"
+            for agent_name in AGENT_NAMES
+        )
+        routing_summary = (
+            f" difficulty={prediction.difficulty} "
+            f"tags=({', '.join(prediction.routing_tags)}) scores=({scores})"
+        )
     return (
         f"[{prediction.index + 1}/{total}] result={status} "
         f"final={prediction.final_answer or '<empty>'} "
-        f"gold={prediction.gold_answer} votes=({vote_summary})"
+        f"gold={prediction.gold_answer} votes=({vote_summary}){routing_summary}"
     )
 
 
@@ -872,8 +1251,14 @@ def main() -> None:
                 PROJECT_ROOT / "data",
                 lora_output_dir=args.lora_output_dir,
                 reset_evaluation_libraries=True,
+                report_files=(
+                    args.output,
+                    PROJECT_ROOT / "data" / "latest_report.json",
+                    PROJECT_ROOT / "outputs" / "latest_report.json",
+                    PROJECT_ROOT / "outputs" / "demo_report.json",
+                    PROJECT_ROOT / "train" / "four_agent_lora_voting_100_report.json",
+                ),
             )
-            args.output.unlink(missing_ok=True)
             print("已清空之前的训练存储", flush=True)
         print("开始训练", flush=True)
         report = run_b_magent_training_entry(
