@@ -13,21 +13,28 @@
 
 ## 环境
 
-推荐使用可迁移的 conda 环境文件：
+推荐直接用仓库中的可迁移 Conda 环境文件创建完整环境：
 
 ```bash
-conda env create -f environment-portable.yml
-conda activate cxh
+git clone https://github.com/rt4x724b6m-ship-it/b-magent.git
+cd b-magent
+conda env create -f environment.yml
+conda activate b-magent
 ```
 
-环境文件说明：
+以后仓库更新了依赖，可以在项目目录同步现有环境：
 
-- `environment.yml`：完整导出，包含本机路径 `prefix`
-- `environment-portable.yml`：推荐使用，已去掉本机路径
-- `environment-from-history.yml`：只包含 conda 显式安装历史，较干净但可能不够完整
-- `conda-explicit.txt`：精确复刻 conda 包 URL，适合同系统 Linux 机器
+```bash
+git pull
+conda env update -n b-magent -f environment.yml --prune
+```
 
-也可以使用 pip 安装依赖：
+`environment.yml` 是项目的主环境声明，只包含可跨设备解析的直接依赖，不包含
+本机 `prefix`、Conda 缓存路径或平台相关的 build 字符串。仓库里的
+`environment-portable.yml` 和 `environment-from-history.yml` 是旧环境快照，仅供
+排查历史环境，不建议用于新设备安装。
+
+如果不使用 Conda，也可以在 Python 3.12 虚拟环境中用 pip 安装同一组依赖：
 
 ```bash
 pip install -r requirements.txt
