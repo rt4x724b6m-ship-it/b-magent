@@ -433,6 +433,70 @@ data/lora_adapters/qwen_agent_*/lora_state.json
 data/lora_adapters/qwen_agent_*/adapter/
 ```
 
+## 两层任务编排设计（规划中）
+
+当前训练主线使用 GSM8K 数学题，样本结构为 `question`、`answer` 和
+`final_answer`。这种单题单答案数据适合验证求解、自我反思和 LoRA 更新，
+但不包含任务拆分、子任务依赖或客户端选择的监督信号。
+
+下一阶段计划扩展为两层架构：
+
+```text
+用户任务
+  -> 第一层：任务拆分服务器
+  -> 子任务、依赖关系、所需能力
+  -> 第二层：按能力选择客户端智能体
+  -> 客户端执行、评价、反思与 LoRA 更新
+```
+
+截至目前，`FirstLayerServer` 仍是架构占位，不会实际拆分任务、维护任务图
+或调度客户端；四个 `qwen_agent_*` 也仍是同构的通用智能体。以下数据集是
+后续设计和数据接入的候选，不表示它们已经下载、转换或用于训练。
+
+### 候选数据集
+
+| 目标 | 数据集 | 可用信息 | 推荐用途 |
+| --- | --- | --- | --- |
+| 第一层任务拆分 | [TaskBench](https://huggingface.co/datasets/microsoft/Taskbench) | Tool Graph、子任务与工具依赖 | 构建任务图、学习子任务排序和并行关系 |
+| 第一层规划补充 | [UltraTool](https://github.com/JoeYing1019/UltraTool) | 独立的自然语言多步骤计划与工具任务 | 训练或评测先规划、后执行的流程 |
+| 第二层客户端选择 | [MetaTool / ToolE](https://github.com/HowieHwong/MetaTool) | 查询、目标工具、工具描述、相似候选与多工具场景 | 将工具视为客户端能力，训练候选智能体排序和拒选 |
+| 客户端能力扩展 | [ToolBench](https://github.com/OpenBMB/ToolBench) | 真实 API 描述与多步调用路径 | 生成跨领域客户端能力卡和多步执行样本 |
+| 高质量函数调用补充 | [ToolACE](https://huggingface.co/datasets/Team-ACE/ToolACE) | 经验证的复杂函数调用对话和 API 模式 | 补充复杂参数、并行调用和多工具组合 |
+| 工具/路由评测 | [BFCL](https://github.com/ShishirPatil/gorilla/tree/main/berkeley-function-call-leaderboard) | 候选函数选择、并行/多函数、拒选及多轮场景 | 验证客户端路由和调用格式的正确性 |
+| 长程交互评测 | [tau-bench](https://github.com/sierra-research/tau2-bench) | 领域策略、工具集和多轮任务 | 验证拆分后委派的端到端完成度 |
+| 泛化保留测试 | [GAIA](https://huggingface.co/gaia-benchmark/GAIA) | 多模态、工具型通用助理任务 | 作为最终泛化评测，不作为主要拆分监督数据 |
+
+建议的最小数据闭环是先接入 `TaskBench + MetaTool`：前者提供
+`subtasks + depends_on`，后者提供 `candidate_agents + selected_agent` 的监督
+范式。随后再使用 `ToolBench` 和 `ToolACE` 扩展客户端能力覆盖面，并以
+`BFCL`、`tau-bench` 和 `GAIA` 分别评估路由、长程执行和泛化能力。
+
+### 目标样本格式
+
+后续数据适配不应继续局限于 GSM8K 的 `question/answer` 格式，而应保留任务图
+与路由标签，例如：
+
+```json
+{
+  "task": "用户原始任务",
+  "subtasks": [
+    {
+      "id": "s1",
+      "instruction": "子任务描述",
+      "depends_on": [],
+      "required_capabilities": ["retrieval", "web-search"],
+      "candidate_agents": ["agent_retrieval", "agent_general"],
+      "selected_agent": "agent_retrieval",
+      "expected_tool_or_action": "search"
+    }
+  ]
+}
+```
+
+客户端需要先定义清晰、可重叠但可区分的能力卡；否则即使引入上述数据，多个
+同构智能体仍可能退化为随机分派或投票。公开候选数据主要为英文，转换为中文时
+应保留工具名、参数名和依赖边的原始语义。
+
 ## 推荐运行顺序
 
 1. 检查环境：

@@ -8,7 +8,7 @@ from typing import Any
 from .agent import QwenAgent
 from .backend import DemoQwenBackend
 from .models import Draft, EvolutionReport, PeerEvaluation
-from s_server import ServerAgent
+from s_server import FirstLayerServer, ServerAgent
 from s_server.server_agent import select_consensus_peer_reviews
 
 
@@ -30,11 +30,21 @@ def build_default_server_agent(base_dir: Path | None = None, backend: Any | None
     return ServerAgent("qwen_server_agent", data_dir, backend or DemoQwenBackend())
 
 
+def build_default_first_layer_server(
+    base_dir: Path | None = None,
+    backend: Any | None = None,
+) -> FirstLayerServer:
+    root = base_dir or Path(__file__).resolve().parent.parent
+    data_dir = root / "data"
+    return FirstLayerServer("qwen_first_layer_server", data_dir, backend or DemoQwenBackend())
+
+
 class MultiAgentWorkflow:
     def __init__(
         self,
         agents: list[QwenAgent],
         server_agent: ServerAgent | None = None,
+        first_layer_server: FirstLayerServer | None = None,
         random_seed: int | None = None,
         private_batch_size: int | None = None,
     ) -> None:
@@ -44,6 +54,11 @@ class MultiAgentWorkflow:
         backend = agents[0].backend if agents else DemoQwenBackend()
         data_dir = agents[0].data_dir if agents else Path(__file__).resolve().parent.parent / "data"
         self.server_agent = server_agent or ServerAgent("qwen_server_agent", data_dir, backend)
+        self.first_layer_server = first_layer_server or FirstLayerServer(
+            "qwen_first_layer_server",
+            data_dir,
+            backend,
+        )
         self.random_seed = random_seed
         self._rng = random.Random(random_seed)
         self.private_batch_size = private_batch_size
