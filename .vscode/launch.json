@@ -2,6 +2,27 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "Train b-magent (local Qwen, 200 rounds)",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "/home/cxh/.conda/envs/b-magent-complete/bin/python",
+            "module": "train.four_agent_private_train",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "env": {
+                "PYTHONNOUSERSITE": "1",
+                "TOKENIZERS_PARALLELISM": "false"
+            },
+            "args": [
+                "--mode", "b-magent",
+                "--backend", "local-qwen",
+                "--model-path", "${workspaceFolder}/models/Qwen2.5-1.5B-Instruct",
+                "--dataset-dir", "${workspaceFolder}/data/gsm8k",
+                "--rounds", "200",
+                "--output", "${workspaceFolder}/train/b_magent_training_report.json"
+            ]
+        },
+        {
             "name": "Run qwen_gsm8k.py (quick placeholder)",
             "type": "debugpy",
             "request": "launch",
