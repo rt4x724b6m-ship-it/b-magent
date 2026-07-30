@@ -4,6 +4,16 @@ import re
 
 
 ROUTING_TAGS = (
+    "ocr",
+    "chart-reading",
+    "table-reading",
+    "object-recognition",
+    "attribute-recognition",
+    "spatial-relation",
+    "visual-counting",
+    "fine-grained-detail",
+    "scene-understanding",
+    "visual-grounding",
     "addition",
     "subtraction",
     "multiplication",
@@ -27,6 +37,9 @@ ROUTING_TAGS = (
 )
 
 ROUTING_TAG_IMPORTANCE = {
+    "ocr": 1.25,
+    "visual-grounding": 1.25,
+    "fine-grained-detail": 1.15,
     "arithmetic": 0.25,
     "final-answer": 0.10,
     "verification": 0.15,
@@ -36,6 +49,16 @@ ROUTING_TAG_IMPORTANCE = {
 }
 
 _TAG_ALIASES = {
+    "ocr": ("ocr", "read the text", "scene text", "written", "label", "文字识别", "读取文字", "文本"),
+    "chart-reading": ("chart", "graph", "plot", "infographic", "图表", "信息图", "趋势图"),
+    "table-reading": ("table", "row", "column", "表格", "行", "列"),
+    "object-recognition": ("object", "item", "what is shown", "identify", "物体", "识别", "是什么"),
+    "attribute-recognition": ("color", "shape", "size", "brand", "颜色", "形状", "大小", "品牌"),
+    "spatial-relation": ("left of", "right of", "above", "below", "next to", "左边", "右边", "上方", "下方", "旁边"),
+    "visual-counting": ("how many", "number of", "count", "多少个", "数量", "数一数"),
+    "fine-grained-detail": ("detail", "small text", "fine-grained", "细节", "小字", "精细"),
+    "scene-understanding": ("scene", "occasion", "happening", "场景", "发生了什么"),
+    "visual-grounding": ("image", "picture", "visual", "visible", "图像", "图片", "视觉", "可见"),
     "addition": ("addition", "add", "sum", "total", "altogether", "combined", "in all", "加法", "总共", "合计"),
     "subtraction": ("subtraction", "subtract", "difference", "remaining", "remain", "left", "fewer", "减法", "剩余", "相差"),
     "multiplication": ("multiplication", "multiply", "product", "times as many", "each", "乘法", "乘以", "每个"),
@@ -62,7 +85,7 @@ _EQUATION_RE = re.compile(r"<<\s*(.+?)\s*=.+?>>")
 
 
 def extract_math_task_tags(text: str) -> set[str]:
-    """Extract stable operation, problem-type, and answer-quality tags."""
+    """Extract stable visual, operation, and answer-quality tags."""
     lower = str(text).lower().replace("_", "-")
     tags = {
         tag

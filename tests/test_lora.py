@@ -35,6 +35,31 @@ def count_jsonl_rows_for_test(path: Path) -> int:
 
 
 class LoraEvolutionTestCase(unittest.TestCase):
+    def test_releases_inference_model_before_lora_training(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="b_magent_lora_release_test_") as temp:
+            trainer = FakeLoraTrainer()
+            release_calls: list[str] = []
+            manager = LoraEvolutionManager(
+                LoraTrainingConfig(
+                    base_model_path="model",
+                    output_dir=Path(temp) / "lora",
+                    threshold=1,
+                ),
+                trainer=trainer,
+                before_train=lambda: release_calls.append("released"),
+            )
+            dataset_path = manager.dataset_path("qwen_agent_1")
+            dataset_path.parent.mkdir(parents=True, exist_ok=True)
+            dataset_path.write_text(
+                json.dumps({"instruction": "solve", "input": "q", "output": "a"}) + "\n",
+                encoding="utf-8",
+            )
+
+            manager.train_agent_on_curated_dataset("qwen_agent_1")
+
+            self.assertEqual(release_calls, ["released"])
+            self.assertEqual(len(trainer.calls), 1)
+
     def test_sft_tokenization_masks_prompt_and_preserves_output_when_truncated(self) -> None:
         class CharacterTokenizer:
             eos_token_id = 0

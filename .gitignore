@@ -1,8 +1,13 @@
 __pycache__/
 *.py[cod]
 *$py.class
+.env
 
 .qoder/
+
+models/
+data/infographicsvqa/
+baseline/gpt56_sol_output/
 
 data/**/*.jsonl
 data/**/*.json
@@ -12,4 +17,5 @@ data/lora_adapters/
 !data/gsm8k/README.md
 
 baseline/*_report.json
+baseline/*_report_*.json
 train/*_report.json

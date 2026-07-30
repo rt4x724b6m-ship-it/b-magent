@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import shutil
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -18,7 +19,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from baseline.qwen_gsm8k import STANDARD_TEST_LIMIT, extract_numeric_answer, normalize_answer
-from b_magent.datasets import GSM8KDataset, GSM8KSample
+from b_magent.datasets import GSM8KSample, VisionQASample, load_project_dataset
 from b_magent.local_qwen import (
     DEFAULT_QWEN_MODEL,
     LocalQwenAgentModel,
@@ -141,6 +142,9 @@ class VotingPrediction:
     votes: list[AgentVote]
     final_answer: str
     correct: bool
+    dataset: str = ""
+    sample_id: str = ""
+    anls: float | None = None
     server_diagnostic: str = ""
     difficulty: str = ""
     key_steps: list[str] = field(default_factory=list)
@@ -157,6 +161,8 @@ class VotingReport:
     correct: int
     accuracy: float
     predictions: list[VotingPrediction]
+    anls: float | None = None
+    evaluation_split: str = "test"
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -215,10 +221,29 @@ def run_b_magent_training_entry(
     if private_batch_size <= 0:
         raise ValueError("private_batch_size must be positive")
 
-    dataset = GSM8KDataset(dataset_dir)
+    dataset = load_project_dataset(dataset_dir)
     train_samples = dataset.load("train")
     if not train_samples:
-        raise ValueError(f"no training samples found at {dataset_dir / 'train.jsonl'}")
+        expected_path = (
+            dataset_dir / "infographicsvqa" / "train.jsonl"
+            if dataset_dir.name.lower() not in {"gsm8k", "infographicsvqa"}
+            else dataset_dir / "train.jsonl"
+        )
+        raise ValueError(
+            f"no training samples found at {expected_path}. "
+            "Prepare the official InfographicsVQA train split with: "
+            "python scripts/prepare_vision_datasets.py --dataset infographicsvqa --output-dir data"
+        )
+    is_vision_training = isinstance(train_samples[0], VisionQASample)
+    if is_vision_training:
+        required_samples = len(AGENT_NAMES) * STANDARD_PRIVATE_TRAIN_SIZE
+        if len(train_samples) < required_samples:
+            raise ValueError(
+                f"need at least {required_samples} InfographicsVQA training samples for "
+                f"{len(AGENT_NAMES)} agents with {STANDARD_PRIVATE_TRAIN_SIZE} samples each; "
+                f"found {len(train_samples)}"
+            )
+        train_samples = train_samples[:required_samples]
 
     if start_round < 0:
         raise ValueError("start_round must not be negative")
@@ -254,7 +279,7 @@ def run_b_magent_training_entry(
 
     for index in range(start_round, effective_rounds):
         sample = train_samples[index % len(train_samples)]
-        task = format_gsm8k_training_task(sample)
+        task = format_training_task(sample)
         if on_round_start is not None:
             on_round_start(index + 1, effective_rounds, sample.question)
         global_downlinks = downlink_global_evaluation_experience(
@@ -362,6 +387,31 @@ def infer_completed_training_rounds(data_dir: Path) -> int:
     return completed_improvements // 2
 
 
+def load_training_progress(progress_file: Path) -> int:
+    if not progress_file.exists():
+        return 0
+    payload = json.loads(progress_file.read_text(encoding="utf-8"))
+    return max(0, int(payload.get("completed_rounds", 0)))
+
+
+def save_training_progress(progress_file: Path, completed_rounds: int, total_rounds: int) -> None:
+    progress_file.parent.mkdir(parents=True, exist_ok=True)
+    temporary_file = progress_file.with_suffix(progress_file.suffix + ".tmp")
+    temporary_file.write_text(
+        json.dumps(
+            {
+                "completed_rounds": completed_rounds,
+                "total_rounds": total_rounds,
+                "complete": completed_rounds >= total_rounds,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    temporary_file.replace(progress_file)
+
+
 def downlink_global_evaluation_experience(
     task: str,
     agents: list[object],
@@ -437,9 +487,10 @@ def run_four_agent_private_training(
     if private_train_size <= 0:
         raise ValueError("private_train_size must be positive")
 
-    dataset = GSM8KDataset(dataset_dir)
+    dataset = load_project_dataset(dataset_dir)
     train_samples = dataset.load("train")
-    test_samples = dataset.load("test", limit=test_limit)
+    effective_test_limit = STANDARD_TEST_LIMIT if test_limit is None else min(test_limit, STANDARD_TEST_LIMIT)
+    test_samples = dataset.load("test", limit=effective_test_limit)
     if not train_samples:
         raise ValueError(f"no training samples found at {dataset_dir / 'train.jsonl'}")
     if not test_samples:
@@ -492,11 +543,13 @@ def run_four_agent_voting_on_test(
     server_model: ServerRoutingModel | None = None,
     server_training_tag_records: list[LibraryRecord] | None = None,
     prior_global_evaluation_records: list[LibraryRecord] | None = None,
+    split: str = "test",
 ) -> VotingReport:
-    dataset = GSM8KDataset(dataset_dir)
-    test_samples = dataset.load("test", limit=limit)
+    dataset = load_project_dataset(dataset_dir)
+    effective_limit = STANDARD_TEST_LIMIT if limit is None else min(limit, STANDARD_TEST_LIMIT)
+    test_samples = dataset.load(split, limit=effective_limit)
     if not test_samples:
-        raise ValueError(f"no test samples found at {dataset_dir / 'test.jsonl'}")
+        raise ValueError(f"no {split} samples found under {dataset_dir}")
     missing_agents = [agent_name for agent_name in agent_names if agent_name not in models]
     if missing_agents:
         raise ValueError(f"missing models for agents: {', '.join(missing_agents)}")
@@ -505,6 +558,7 @@ def run_four_agent_voting_on_test(
     predictions: list[VotingPrediction] = []
     with ThreadPoolExecutor(max_workers=len(agent_names), thread_name_prefix="voting-agent") as executor:
         for index, sample in enumerate(test_samples):
+            model_question = format_inference_question(sample)
             server_diagnostic = ""
             selected_agents = list(agent_names)
             routing_tags: set[str] = set()
@@ -514,16 +568,16 @@ def run_four_agent_voting_on_test(
             if server_model is not None and tag_index:
                 server_diagnostic = _server_diagnose_question(
                     server_model,
-                    sample.question,
+                    model_question,
                     prior_global_evaluation_records or [],
                 )
-                assessment = _parse_server_routing_assessment(server_diagnostic, sample.question)
+                assessment = _parse_server_routing_assessment(server_diagnostic, model_question)
                 selected_agents, matched_tags = select_agents_by_server_tags(
                     server_diagnostic,
                     tag_index,
                     agent_names,
                     selected_count=3,
-                    question=sample.question,
+                    question=model_question,
                     assessment=assessment,
                 )
                 routing_tags = assessment.routing_tags
@@ -538,7 +592,7 @@ def run_four_agent_voting_on_test(
             raw_predictions = executor.map(
                 lambda agent_name: _generate_with_server_guidance(
                     models[agent_name],
-                    sample.question,
+                    model_question,
                     "",
                 ),
                 selected_agents,
@@ -547,20 +601,33 @@ def run_four_agent_voting_on_test(
                 AgentVote(
                     agent_name=agent_name,
                     raw_prediction=raw_prediction,
-                    predicted_answer=extract_numeric_answer(raw_prediction),
+                    predicted_answer=extract_prediction_answer(raw_prediction, sample),
                     tag_match_score=routing_scores.get(agent_name, 0.0),
                 )
                 for agent_name, raw_prediction in zip(selected_agents, raw_predictions)
             ]
             final_answer = routed_vote(votes) if server_model is not None and tag_index else majority_vote(votes)
-            gold_answer = normalize_answer(sample.final_answer)
+            normalize_sample_answer = (
+                normalize_vision_answer if isinstance(sample, VisionQASample) else normalize_answer
+            )
+            accepted_answers = tuple(
+                normalize_sample_answer(answer)
+                for answer in getattr(sample, "answers", ()) or (sample.final_answer,)
+            )
+            gold_answer = accepted_answers[0]
+            sample_anls = None
+            if isinstance(sample, VisionQASample) and sample.dataset == "infographicsvqa":
+                sample_anls = infographic_anls(final_answer, accepted_answers)
             prediction = VotingPrediction(
                 index=index,
                 question=sample.question,
                 gold_answer=gold_answer,
                 votes=votes,
                 final_answer=final_answer,
-                correct=final_answer == gold_answer,
+                correct=normalize_sample_answer(final_answer) in accepted_answers,
+                dataset=getattr(sample, "dataset", "gsm8k"),
+                sample_id=getattr(sample, "sample_id", ""),
+                anls=sample_anls,
                 server_diagnostic=server_diagnostic,
                 difficulty=assessment.difficulty if server_diagnostic else "",
                 key_steps=assessment.key_steps,
@@ -576,11 +643,14 @@ def run_four_agent_voting_on_test(
 
     correct = sum(1 for prediction in predictions if prediction.correct)
     total = len(predictions)
+    anls_values = [prediction.anls for prediction in predictions if prediction.anls is not None]
     return VotingReport(
         total=total,
         correct=correct,
         accuracy=correct / total,
         predictions=predictions,
+        anls=sum(anls_values) / len(anls_values) if anls_values else None,
+        evaluation_split=split,
     )
 
 
@@ -690,9 +760,7 @@ def _server_diagnose_question(
         '{"difficulty":"easy|medium|hard","key_steps":["..."],"risk_steps":["..."],'
         '"capability_tags":["..."],"risk_tags":["..."]}. '
         "Select capability_tags and risk_tags only from: "
-        "addition, subtraction, multiplication, division, fraction, percentage, ratio, rate, "
-        "unit-conversion, money, time, geometry, counting, multi-step, arithmetic, final-answer, "
-        "verification, boundary, structure. key_steps and risk_steps must be short observable step "
+        f"{', '.join(ROUTING_TAGS)}. key_steps and risk_steps must be short observable step "
         "descriptions, not hidden chain-of-thought. Assess the whole problem rather than choosing one tag."
     )
     return server_model.generate(prompt)
@@ -802,8 +870,8 @@ def _string_list(value: object, limit: int = 6) -> list[str]:
 
 
 def _format_server_guidance(assessment: ServerRoutingAssessment) -> str:
-    key_steps = "; ".join(assessment.key_steps) or "Follow the required mathematical steps."
-    risk_steps = "; ".join(assessment.risk_steps) or "Verify intermediate and final calculations."
+    key_steps = "; ".join(assessment.key_steps) or "Inspect the relevant image regions before answering."
+    risk_steps = "; ".join(assessment.risk_steps) or "Verify OCR, visual grounding, and the final answer."
     return (
         f"Difficulty: {assessment.difficulty}\n"
         f"Key steps to cover: {key_steps}\n"
@@ -1060,13 +1128,109 @@ def _extract_global_source_id(detail: str) -> str:
     return source_id.split(" | ", 1)[0].strip()
 
 
-def format_gsm8k_training_task(sample: GSM8KSample) -> str:
+def format_training_task(sample: GSM8KSample | VisionQASample) -> str:
+    if isinstance(sample, VisionQASample):
+        accepted = " | ".join(sample.answers or (sample.final_answer,))
+        return (
+            "Answer this visual question and preserve reusable visual reasoning lessons.\n"
+            f"Dataset: {sample.dataset}\n"
+            f"Image: {sample.image_path}\n"
+            f"Question: {sample.question}\n"
+            f"Gold image elements: {json.dumps(sample.image_elements, ensure_ascii=False)}\n"
+            f"Gold final answer: {accepted}"
+        )
     return (
         "Solve this GSM8K training problem and preserve reusable solving lessons.\n"
         f"Question: {sample.question}\n"
         f"Gold reasoning: {sample.answer}\n"
         f"Gold final answer: {sample.final_answer}"
     )
+
+
+format_gsm8k_training_task = format_training_task
+
+
+def format_inference_question(sample: GSM8KSample | VisionQASample) -> str:
+    if isinstance(sample, VisionQASample):
+        return (
+            f"Image: {sample.image_path}\nQuestion: {sample.question}\n"
+            "Return JSON with image_elements and final_answer."
+        )
+    return sample.question
+
+
+def extract_prediction_answer(text: str, sample: GSM8KSample | VisionQASample) -> str:
+    if not isinstance(sample, VisionQASample):
+        return extract_numeric_answer(text)
+    try:
+        payload = json.loads(_strip_json_fence(text))
+        if isinstance(payload, dict) and "final_answer" in payload:
+            return normalize_vision_answer(str(payload["final_answer"]))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+    matches = re.findall(r"####\s*([^\n]+)", text)
+    if matches:
+        return normalize_vision_answer(matches[-1])
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return normalize_vision_answer(lines[-1]) if lines else ""
+
+
+def _strip_json_fence(text: str) -> str:
+    candidate = str(text).strip()
+    if candidate.startswith("```"):
+        candidate = candidate.split("\n", 1)[-1]
+        candidate = candidate.rsplit("```", 1)[0].strip()
+    return candidate
+
+
+def normalize_vision_answer(text: str) -> str:
+    cleaned = re.sub(r"^(?:final answer|answer)\s*:\s*", "", str(text).strip(), flags=re.IGNORECASE)
+    return " ".join(cleaned.rstrip(".。").casefold().split())
+
+
+def infographic_anls(prediction: str, references: tuple[str, ...]) -> float:
+    """Official-style ANLS with the 0.5 normalized-distance threshold."""
+    predicted = normalize_vision_answer(prediction)
+    best = 0.0
+    for reference in references:
+        expected = normalize_vision_answer(reference)
+        denominator = max(len(predicted), len(expected))
+        if denominator == 0:
+            similarity = 1.0
+        else:
+            normalized_distance = _levenshtein_distance(predicted, expected) / denominator
+            similarity = 1.0 - normalized_distance if normalized_distance < 0.5 else 0.0
+        best = max(best, similarity)
+    return best
+
+
+def _levenshtein_distance(left: str, right: str) -> int:
+    if len(left) < len(right):
+        left, right = right, left
+    previous = list(range(len(right) + 1))
+    for row, left_character in enumerate(left, start=1):
+        current = [row]
+        for column, right_character in enumerate(right, start=1):
+            current.append(min(
+                current[-1] + 1,
+                previous[column] + 1,
+                previous[column - 1] + (left_character != right_character),
+            ))
+        previous = current
+    return previous[-1]
+
+
+def export_mmvet_predictions(report: VotingReport, output_path: Path) -> None:
+    """Write the question-id to answer mapping consumed by MM-Vet's evaluator."""
+    predictions = {
+        prediction.sample_id: prediction.final_answer
+        for prediction in report.predictions
+        if prediction.dataset == "mm-vet" and prediction.sample_id
+    }
+    if not predictions:
+        raise ValueError("voting report contains no MM-Vet predictions with sample ids")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(predictions, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def format_voting_prediction_detail(prediction: VotingPrediction, total: int) -> str:
@@ -1097,7 +1261,7 @@ def print_voting_prediction_detail(prediction: VotingPrediction, total: int) -> 
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Training entry for b_magent agents and GSM8K runners.")
+    parser = argparse.ArgumentParser(description="Training entry for MM-Vet and InfographicsVQA runners.")
     parser.add_argument(
         "--mode",
         choices=["b-magent", "placeholder", "local-qwen-vote"],
@@ -1113,12 +1277,12 @@ def parse_args() -> argparse.Namespace:
         default="local-qwen",
         help="Backend for --mode b-magent. local-qwen calls the configured local model; demo is deterministic smoke test logic.",
     )
-    parser.add_argument("--dataset-dir", type=Path, default=Path("data/gsm8k"))
+    parser.add_argument("--dataset-dir", type=Path, default=Path("data"))
     parser.add_argument(
         "--rounds",
         type=int,
-        default=200,
-        help="Training rounds. Use 0 to auto-cover the evenly split private training data.",
+        default=0,
+        help="Training rounds. Default 0 auto-covers all 200 private samples per agent.",
     )
     parser.add_argument(
         "--private-batch-size",
@@ -1129,7 +1293,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batches-per-round", type=int, default=32)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--private-train-size", type=int, default=STANDARD_PRIVATE_TRAIN_SIZE)
-    parser.add_argument("--test-limit", type=int, default=STANDARD_TEST_LIMIT)
+    parser.add_argument(
+        "--test-limit",
+        type=int,
+        default=STANDARD_TEST_LIMIT,
+        help="Evaluation sample count, capped at the first 100 official samples.",
+    )
+    parser.add_argument(
+        "--eval-split",
+        choices=["validation", "test"],
+        default="test",
+        help="Official split used by local-qwen-vote; use validation for labeled InfographicsVQA evaluation.",
+    )
     parser.add_argument(
         "--local-qwen",
         action="store_true",
@@ -1141,7 +1316,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--resume",
         action="store_true",
-        help="Keep existing libraries/LoRA state and continue until --rounds total rounds.",
+        help="Resume from the last completed round without deleting libraries, datasets, or LoRA state.",
     )
     parser.add_argument(
         "--enable-lora",
@@ -1203,7 +1378,10 @@ def build_b_magent_backend(args: argparse.Namespace) -> object | None:
     )
 
 
-def build_lora_manager(args: argparse.Namespace) -> LoraEvolutionManager | None:
+def build_lora_manager(
+    args: argparse.Namespace,
+    before_train: Callable[[], None] | None = None,
+) -> LoraEvolutionManager | None:
     if not args.enable_lora:
         return None
     config = LoraTrainingConfig(
@@ -1218,7 +1396,7 @@ def build_lora_manager(args: argparse.Namespace) -> LoraEvolutionManager | None:
         num_train_epochs=args.lora_epochs,
         learning_rate=args.lora_learning_rate,
     )
-    return LoraEvolutionManager(config)
+    return LoraEvolutionManager(config, before_train=before_train)
 
 
 def print_training_round_start(round_index: int, rounds: int, question: str) -> None:
@@ -1242,35 +1420,61 @@ def main() -> None:
     if mode == "b-magent":
         print(f"backend: {args.backend}", flush=True)
         print(f"model: {args.model_path}", flush=True)
-        start_round = 0
+        training_dataset = load_project_dataset(args.dataset_dir)
+        if not training_dataset.load("train", limit=1):
+            expected_path = args.dataset_dir / "infographicsvqa" / "train.jsonl"
+            if args.dataset_dir.name.lower() in {"gsm8k", "infographicsvqa"}:
+                expected_path = args.dataset_dir / "train.jsonl"
+            raise ValueError(
+                f"no training samples found at {expected_path}; training state was not cleared. "
+                "Run: python scripts/prepare_vision_datasets.py "
+                "--dataset infographicsvqa --output-dir data"
+            )
+        progress_file = PROJECT_ROOT / "data" / "training_progress.json"
+        report_files = (
+            args.output,
+            progress_file,
+            PROJECT_ROOT / "data" / "latest_report.json",
+            PROJECT_ROOT / "outputs" / "latest_report.json",
+            PROJECT_ROOT / "outputs" / "demo_report.json",
+            PROJECT_ROOT / "train" / "four_agent_lora_voting_100_report.json",
+        )
         if args.resume:
-            start_round = infer_completed_training_rounds(PROJECT_ROOT / "data")
-            print(f"保留已有训练成果，从第 {start_round + 1} 轮继续", flush=True)
+            start_round = load_training_progress(progress_file)
+            if start_round == 0:
+                start_round = infer_completed_training_rounds(PROJECT_ROOT / "data")
+            print(f"从第 {start_round + 1} 轮继续训练（已完成 {start_round} 轮）", flush=True)
         else:
             reset_b_magent_training_state(
                 PROJECT_ROOT / "data",
                 lora_output_dir=args.lora_output_dir,
                 reset_evaluation_libraries=True,
-                report_files=(
-                    args.output,
-                    PROJECT_ROOT / "data" / "latest_report.json",
-                    PROJECT_ROOT / "outputs" / "latest_report.json",
-                    PROJECT_ROOT / "outputs" / "demo_report.json",
-                    PROJECT_ROOT / "train" / "four_agent_lora_voting_100_report.json",
-                ),
+                report_files=report_files,
             )
+            start_round = 0
             print("已清空之前的训练存储", flush=True)
         print("开始训练", flush=True)
+        backend = build_b_magent_backend(args)
+        engine = getattr(backend, "engine", None)
+        unload_inference_model = getattr(engine, "unload", None)
+
+        def on_round_end(round_index: int, total_rounds: int, round_report: BMagentTrainingRound) -> None:
+            save_training_progress(progress_file, round_index, total_rounds)
+            print_training_round_end(round_index, total_rounds, round_report)
+
         report = run_b_magent_training_entry(
             dataset_dir=args.dataset_dir,
             data_dir=PROJECT_ROOT / "data",
             rounds=args.rounds if args.rounds > 0 else None,
             private_batch_size=args.private_batch_size,
             random_seed=args.seed,
-            backend=build_b_magent_backend(args),
-            lora_manager=build_lora_manager(args),
+            backend=backend,
+            lora_manager=build_lora_manager(
+                args,
+                before_train=unload_inference_model if callable(unload_inference_model) else None,
+            ),
             on_round_start=print_training_round_start,
-            on_round_end=print_training_round_end,
+            on_round_end=on_round_end,
             start_round=start_round,
             preserve_private_datasets=args.resume,
         )
@@ -1297,6 +1501,7 @@ def main() -> None:
             models,
             limit=args.test_limit,
             on_prediction=print_voting_prediction_detail,
+            split=args.eval_split,
         )
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(
@@ -1310,6 +1515,12 @@ def main() -> None:
             f"accuracy={voting_report.correct}/{voting_report.total}="
             f"{voting_report.accuracy:.4f} ({accuracy_percent:.2f}%)"
         )
+        if voting_report.anls is not None:
+            print(f"anls={voting_report.anls:.4f}")
+        if any(prediction.dataset == "mm-vet" for prediction in voting_report.predictions):
+            mmvet_output = args.output.with_name(f"{args.output.stem}_mmvet.json")
+            export_mmvet_predictions(voting_report, mmvet_output)
+            print(f"mm-vet predictions: {mmvet_output}")
     elif mode == "placeholder":
         report = run_four_agent_private_training(
             dataset_dir=args.dataset_dir,

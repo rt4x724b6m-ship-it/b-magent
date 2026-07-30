@@ -1,6 +1,6 @@
   # b_magent
 
-`b_magent` 是一个本地四智能体自进化实验系统，主要用于 GSM8K 数学题训练、四智能体协作求解、互评、自我反思和 LoRA 增量训练。当前仓库只保留直接驱动经验库和 LoRA 更新的主流程。
+`b_magent` 是一个本地四智能体自进化实验系统，现使用 MM-Vet 和 InfographicsVQA 进行视觉问答训练与评测。
 
 系统默认使用 4 个同构 Qwen 智能体：
 
@@ -42,12 +42,52 @@ python scripts/check_setup.py
 本地 Qwen 默认模型路径：
 
 ```text
-models/Qwen2.5-1.5B-Instruct
+models/Qwen2.5-VL-3B-Instruct
 ```
 
 该项目按离线本地模型运行，不会自动下载模型。可以通过 `--model-path` 指定其他本地模型目录。
 
 ## 数据
+
+默认数据集已替换为 MM-Vet 和 InfographicsVQA。首次使用时运行：
+
+```bash
+python scripts/prepare_vision_datasets.py --output-dir data
+```
+
+只准备训练所需的InfographicsVQA（推荐先执行）：
+
+```bash
+python scripts/prepare_vision_datasets.py --dataset infographicsvqa --output-dir data
+```
+
+可用 `--limit 10` 先准备小样本。规范化后的目录为 `data/mm-vet/` 和
+`data/infographicsvqa/`，JSONL 每行包含 `image`、`question`和 `answers`。训练入口默认
+`--dataset-dir data`。
+规范化过程保留 InfographicsVQA 官方 `train`、`validation`、`test` 划分。只有官方
+`train` 参与训练，`validation` 用于本地 ANLS 评估。MM-Vet 始终作为评测集，不会
+进入四智能体私有训练数据或 LoRA 经验。
+
+视觉训练固定按官方train原始顺序取前800条：4个智能体依次获得互不重叠的200条。
+默认 `--rounds 0` 会自动运行足够轮次，使每个智能体完整处理自己的200条。验证与
+测试默认只读取对应split的前100条。
+
+InfographicsVQA 本地验证：
+
+```bash
+python -m train.four_agent_private_train \
+  --mode local-qwen-vote \
+  --dataset-dir data/infographicsvqa \
+  --eval-split validation
+```
+
+报告同时包含严格匹配 `accuracy` 和官方风格的 `anls`。对 MM-Vet 运行
+`--eval-split test` 时，还会在报告旁生成可交给 MM-Vet 官方评估器的预测 JSON。
+
+默认模型为轻量视觉语言模型 `models/Qwen2.5-VL-3B-Instruct`。引擎会自动
+读取视觉问答任务中的 `Image:` 本地路径，并向模型同时传入图像和文本。
+
+### 旧 GSM8K 格式（兼容）
 
 GSM8K 数据默认放在：
 
@@ -180,7 +220,7 @@ data/qwen_agent_*/private_data.jsonl
 python -m train.four_agent_private_train \
   --mode b-magent \
   --backend local-qwen \
-  --model-path models/Qwen2.5-1.5B-Instruct \
+  --model-path models/Qwen2.5-VL-3B-Instruct \
   --dataset-dir data/gsm8k \
   --rounds 200 \
   --output train/b_magent_training_report.json
@@ -203,7 +243,7 @@ python -m train.four_agent_private_train \
 python -m train.four_agent_private_train \
   --mode b-magent \
   --backend local-qwen \
-  --model-path models/Qwen2.5-1.5B-Instruct \
+  --model-path models/Qwen2.5-VL-3B-Instruct \
   --dataset-dir data/gsm8k \
   --disable-lora
 ```
@@ -339,7 +379,7 @@ data/lora_adapters/qwen_agent_*/adapter/
 ```bash
 python -m train.four_agent_private_train \
   --mode local-qwen-vote \
-  --model-path models/Qwen2.5-1.5B-Instruct \
+  --model-path models/Qwen2.5-VL-3B-Instruct \
   --dataset-dir data/gsm8k \
   --test-limit 100 \
   --lora-output-dir data/lora_adapters \
@@ -450,11 +490,11 @@ python -m train.four_agent_private_train --mode b-magent --backend demo --datase
 3. 再跑本地 Qwen 自进化训练：
 
 ```bash
-python -m train.four_agent_private_train --mode b-magent --backend local-qwen --model-path models/Qwen2.5-1.5B-Instruct --dataset-dir data/gsm8k --rounds 200
+python -m train.four_agent_private_train --mode b-magent --backend local-qwen --model-path models/Qwen2.5-VL-3B-Instruct --dataset-dir data/gsm8k --rounds 200
 ```
 
 4. 最后用训练后的 4 个智能体投票评测：
 
 ```bash
-python -m train.four_agent_private_train --mode local-qwen-vote --model-path models/Qwen2.5-1.5B-Instruct --dataset-dir data/gsm8k --test-limit 100 --lora-output-dir data/lora_adapters --output train/four_agent_trained_voting_100_report.json
+python -m train.four_agent_private_train --mode local-qwen-vote --model-path models/Qwen2.5-VL-3B-Instruct --dataset-dir data/gsm8k --test-limit 100 --lora-output-dir data/lora_adapters --output train/four_agent_trained_voting_100_report.json
 ```

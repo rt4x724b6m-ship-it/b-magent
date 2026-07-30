@@ -6,7 +6,7 @@ package agents by default.
 Default mode:
 
 ```bash
-python -m train.four_agent_private_train --dataset-dir data/gsm8k --rounds 3 --model-path models/Qwen2.5-1.5B-Instruct
+python -m train.four_agent_private_train --dataset-dir data/gsm8k --rounds 3 --model-path models/Qwen2.5-VL-3B-Instruct
 ```
 
 This runs four equal `b_magent` agents. They share the same workflow and model
@@ -46,8 +46,14 @@ ends. Use `--disable-lora` when you only want the
 JSONL experience-library loop:
 
 ```bash
-python -m train.four_agent_private_train --dataset-dir data/gsm8k --rounds 200 --model-path models/Qwen2.5-1.5B-Instruct
+python -m train.four_agent_private_train --dataset-dir data/gsm8k --rounds 200 --model-path models/Qwen2.5-VL-3B-Instruct
 ```
+
+Every new training invocation starts from a clean state. Existing agent
+professional/evaluation libraries, server records, private-data splits, LoRA
+adapters, and generated reports are deleted after the training dataset has
+been validated. The deprecated `--resume` flag is accepted for compatibility
+but does not preserve previous training state.
 
 By default `--mode b-magent` uses `--backend local-qwen`, so each solve and
 evaluation step calls the configured Qwen model. For a fast logic-only smoke

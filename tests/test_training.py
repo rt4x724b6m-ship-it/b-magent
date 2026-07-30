@@ -266,6 +266,51 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+    def test_visual_training_uses_first_200_samples_per_agent(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_visual_private_limit_test_"))
+        try:
+            dataset_dir = temp_dir / "data" / "infographicsvqa"
+            dataset_dir.mkdir(parents=True)
+            train_rows = [
+                {
+                    "dataset": "infographicsvqa",
+                    "id": str(index),
+                    "image": f"images/{index}.png",
+                    "question": f"visual-{index}",
+                    "answers": [str(index)],
+                }
+                for index in range(STANDARD_PRIVATE_TRAIN_SIZE * len(AGENT_NAMES) + 5)
+            ]
+            (dataset_dir / "train.jsonl").write_text(
+                "\n".join(json.dumps(row) for row in train_rows) + "\n",
+                encoding="utf-8",
+            )
+
+            report = run_b_magent_training_entry(
+                dataset_dir=dataset_dir,
+                data_dir=temp_dir / "agent_data",
+                rounds=1,
+                backend=None,
+            )
+
+            self.assertEqual(report.train_total, STANDARD_PRIVATE_TRAIN_SIZE * len(AGENT_NAMES))
+            self.assertEqual(
+                report.private_dataset_counts,
+                {agent_name: STANDARD_PRIVATE_TRAIN_SIZE for agent_name in AGENT_NAMES},
+            )
+            for agent_index, agent_name in enumerate(AGENT_NAMES):
+                rows = [
+                    json.loads(line)
+                    for line in (temp_dir / "agent_data" / agent_name / "private_data.jsonl")
+                    .read_text(encoding="utf-8")
+                    .splitlines()
+                ]
+                start = agent_index * STANDARD_PRIVATE_TRAIN_SIZE
+                self.assertEqual(rows[0]["question"], f"visual-{start}")
+                self.assertEqual(rows[-1]["question"], f"visual-{start + STANDARD_PRIVATE_TRAIN_SIZE - 1}")
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def test_b_magent_auto_rounds_cover_even_private_splits(self) -> None:
         temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_auto_rounds_test_"))
         try:
@@ -378,11 +423,11 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
         self.assertEqual(len(schedule), 5)
         self.assertTrue(all(len(set(pair)) == 2 for pair in schedule))
 
-    def test_cli_defaults_enable_lora_and_200_rounds(self) -> None:
+    def test_cli_defaults_enable_lora_and_auto_cover_private_data(self) -> None:
         with patch("sys.argv", ["four_agent_private_train.py"]):
             args = parse_args()
 
-        self.assertEqual(args.rounds, 200)
+        self.assertEqual(args.rounds, 0)
         self.assertTrue(args.dataset_dir.is_absolute())
         self.assertTrue(args.output.is_absolute())
         self.assertTrue(args.lora_output_dir.is_absolute())
@@ -402,6 +447,12 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
         try:
             output_file = temp_dir / "report.json"
             lora_output_dir = temp_dir / "lora_adapters"
+            dataset_dir = temp_dir / "gsm8k"
+            dataset_dir.mkdir()
+            (dataset_dir / "train.jsonl").write_text(
+                json.dumps({"question": "q", "answer": "#### 1"}) + "\n",
+                encoding="utf-8",
+            )
             with (
                 patch(
                     "sys.argv",
@@ -412,7 +463,7 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
                         "--backend",
                         "demo",
                         "--dataset-dir",
-                        str(temp_dir / "gsm8k"),
+                        str(dataset_dir),
                         "--output",
                         str(output_file),
                         "--lora-output-dir",
@@ -441,6 +492,66 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
             self.assertIn(output_file, reset.call_args.kwargs["report_files"])
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_b_magent_main_preserves_training_state_with_resume_flag(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_main_resume_reset_test_"))
+        try:
+            dataset_dir = temp_dir / "gsm8k"
+            dataset_dir.mkdir()
+            (dataset_dir / "train.jsonl").write_text(
+                json.dumps({"question": "q", "answer": "#### 1"}) + "\n",
+                encoding="utf-8",
+            )
+            with (
+                patch(
+                    "sys.argv",
+                    [
+                        "four_agent_private_train.py",
+                        "--mode",
+                        "b-magent",
+                        "--backend",
+                        "demo",
+                        "--dataset-dir",
+                        str(dataset_dir),
+                        "--resume",
+                    ],
+                ),
+                patch("train.four_agent_private_train.reset_b_magent_training_state") as reset,
+                patch("train.four_agent_private_train.load_training_progress", return_value=12),
+                patch("train.four_agent_private_train.run_b_magent_training_entry") as run_training,
+                patch("train.four_agent_private_train.export_json_report"),
+            ):
+                run_training.return_value.agents = []
+                run_training.return_value.rounds = 0
+
+                main()
+
+            reset.assert_not_called()
+            self.assertEqual(run_training.call_args.kwargs["start_round"], 12)
+            self.assertTrue(run_training.call_args.kwargs["preserve_private_datasets"])
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_b_magent_main_does_not_reset_state_when_training_data_is_missing(self) -> None:
+        with (
+            patch(
+                "sys.argv",
+                [
+                    "four_agent_private_train.py",
+                    "--mode",
+                    "b-magent",
+                    "--backend",
+                    "demo",
+                    "--dataset-dir",
+                    "/tmp/missing-infographicsvqa-data",
+                ],
+            ),
+            patch("train.four_agent_private_train.reset_b_magent_training_state") as reset,
+        ):
+            with self.assertRaisesRegex(ValueError, "training state was not cleared"):
+                main()
+
+        reset.assert_not_called()
 
 
 if __name__ == "__main__":

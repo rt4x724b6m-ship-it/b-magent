@@ -5,7 +5,7 @@ import re
 from typing import Any
 
 from .backend import DemoQwenBackend
-from .datasets import GSM8KDataset
+from .datasets import GSM8KDataset, MultimodalBenchmarkDataset
 from .library import EvolutionLibrary
 from .models import Draft, EvaluationEvolution, LibraryRecord, PeerEvaluation, SelfImprovement
 from .self_evolution import EvolutionInput, SelfEvolutionLibrary
@@ -149,7 +149,7 @@ class QwenAgent:
         gold_answer = _extract_gold_final_answer(task)
         is_correct = None
         if gold_answer is not None:
-            is_correct = _extract_final_answer(revised_answer) == gold_answer
+            is_correct = _answer_matches_gold(revised_answer, gold_answer)
         experience_tags: list[str] = []
         generate_experience_tags = getattr(self.backend, "generate_experience_tags", None)
         if callable(generate_experience_tags):
@@ -261,9 +261,9 @@ class QwenAgent:
         if agent_text.exists():
             return [line.strip() for line in agent_text.read_text(encoding="utf-8").splitlines() if line.strip()]
 
-        gsm8k_items = self._load_gsm8k_private_data()
-        if gsm8k_items:
-            return gsm8k_items
+        dataset_items = self._load_project_private_data()
+        if dataset_items:
+            return dataset_items
 
         return [
             f"{self.specialty} private sample: keep reusable solving strategy",
@@ -274,6 +274,12 @@ class QwenAgent:
         dataset = GSM8KDataset(self.data_dir / "gsm8k")
         samples = dataset.load(split="train", limit=3)
         return [sample.to_training_text() for sample in samples]
+
+    def _load_project_private_data(self) -> list[str]:
+        samples = MultimodalBenchmarkDataset(self.data_dir).load(split="train", limit=3)
+        if samples:
+            return [sample.to_training_text() for sample in samples]
+        return self._load_gsm8k_private_data()
 
     def _next_private_batch(self, private_items: list[str], batch_size: int | None) -> list[str]:
         if batch_size is None or batch_size <= 0 or batch_size >= len(private_items):
@@ -326,10 +332,29 @@ def _normalize_answer(text: str) -> str:
     return cleaned
 
 
+def _answer_matches_gold(answer: str, gold_text: str) -> bool:
+    """Match numeric answers exactly and short visual answers in natural prose."""
+    normalized_answer = " ".join(_normalize_answer(answer).casefold().rstrip(".。").split())
+    for candidate in gold_text.split(" | "):
+        normalized_gold = " ".join(_normalize_answer(candidate).casefold().rstrip(".。").split())
+        if not normalized_gold:
+            continue
+        extracted = " ".join(_extract_final_answer(answer).casefold().rstrip(".。").split())
+        if extracted == normalized_gold:
+            return True
+        if re.fullmatch(r"-?\d+(?:\.\d+)?", normalized_gold):
+            continue
+        if re.search(rf"(?<!\w){re.escape(normalized_gold)}(?!\w)", normalized_answer):
+            return True
+    return False
+
+
 def _strip_gold_annotations(task: str) -> str:
     lines = []
     in_gold_reasoning = False
     for line in task.splitlines():
+        if re.match(r"\s*Gold image elements:", line):
+            continue
         if re.match(r"\s*Gold reasoning:", line):
             in_gold_reasoning = True
             continue

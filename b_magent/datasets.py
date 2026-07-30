@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 
 @dataclass
@@ -116,3 +117,122 @@ class GSM8KDataset:
         except json.JSONDecodeError:
             return False
         return bool(str(payload.get("question", "")).strip() and str(payload.get("answer", "")).strip())
+
+
+@dataclass
+class VisionQASample:
+    """One normalized sample shared by MM-Vet and InfographicsVQA."""
+
+    question: str
+    answer: str
+    final_answer: str
+    image_path: str
+    dataset: str
+    sample_id: str = ""
+    answers: tuple[str, ...] = ()
+    image_elements: dict[str, Any] = field(default_factory=dict)
+
+    def to_training_text(self) -> str:
+        accepted = self.answers or (self.final_answer,)
+        return json.dumps(
+            {
+                "dataset": self.dataset,
+                "id": self.sample_id,
+                "image": self.image_path,
+                "question": self.question,
+                "answers": list(accepted),
+                "image_elements": self.image_elements,
+            },
+            ensure_ascii=False,
+        )
+
+
+class VisionQADataset:
+    """Reader for normalized visual-QA JSONL files and local images.
+
+    A row must contain ``question``, ``image`` (or ``image_path``), and at
+    least one answer in ``answer`` or ``answers``. Relative image paths are
+    resolved against the dataset directory.
+    """
+
+    def __init__(self, root: Path, name: str | None = None) -> None:
+        self.root = root
+        self.name = name or root.name
+
+    def exists(self, split: str = "train") -> bool:
+        return (self.root / f"{split}.jsonl").exists()
+
+    def load(self, split: str = "train", limit: int | None = None) -> list[VisionQASample]:
+        path = self.root / f"{split}.jsonl"
+        if not path.exists():
+            return []
+        samples: list[VisionQASample] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            payload = json.loads(line)
+            sample = self._normalize(payload)
+            if sample is not None:
+                samples.append(sample)
+            if limit is not None and len(samples) >= limit:
+                break
+        return samples
+
+    def _normalize(self, payload: dict[str, Any]) -> VisionQASample | None:
+        question = str(payload.get("question") or payload.get("prompt") or "").strip()
+        raw_answers = payload.get("answers", payload.get("answer", payload.get("reference_answer", [])))
+        if isinstance(raw_answers, (str, int, float)):
+            answers = (str(raw_answers).strip(),)
+        else:
+            answers = tuple(str(item).strip() for item in (raw_answers or []) if str(item).strip())
+        image_value = payload.get("image_path", payload.get("image", payload.get("image_name", "")))
+        image_path = Path(str(image_value))
+        if image_path and not image_path.is_absolute():
+            image_path = self.root / image_path
+        if not question or not answers or not str(image_value).strip():
+            return None
+        answer = answers[0]
+        return VisionQASample(
+            question=question,
+            answer=answer,
+            final_answer=answer,
+            answers=answers,
+            image_path=str(image_path),
+            dataset=str(payload.get("dataset") or self.name),
+            sample_id=str(payload.get("id", payload.get("question_id", ""))),
+            image_elements=dict(payload.get("image_elements") or {}),
+        )
+
+
+class MultimodalBenchmarkDataset:
+    """Official benchmark splits with MM-Vet excluded from training."""
+
+    DATASETS = ("mm-vet", "infographicsvqa")
+    TRAIN_DATASETS = ("infographicsvqa",)
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+
+    def exists(self, split: str = "train") -> bool:
+        names = self.TRAIN_DATASETS if split == "train" else self.DATASETS
+        return any(VisionQADataset(self.root / name, name).exists(split) for name in names)
+
+    def load(self, split: str = "train", limit: int | None = None) -> list[VisionQASample]:
+        samples: list[VisionQASample] = []
+        names = self.TRAIN_DATASETS if split == "train" else self.DATASETS
+        for name in names:
+            remaining = None if limit is None else max(0, limit - len(samples))
+            if remaining == 0:
+                break
+            samples.extend(VisionQADataset(self.root / name, name).load(split, remaining))
+        return samples
+
+
+def load_project_dataset(root: Path) -> GSM8KDataset | VisionQADataset | MultimodalBenchmarkDataset:
+    """Load the new combined benchmark, while accepting legacy GSM8K paths."""
+    normalized_name = root.name.lower()
+    if normalized_name in MultimodalBenchmarkDataset.DATASETS:
+        return VisionQADataset(root, normalized_name)
+    if normalized_name == "gsm8k" or (root / "train.jsonl").exists():
+        return GSM8KDataset(root)
+    return MultimodalBenchmarkDataset(root)

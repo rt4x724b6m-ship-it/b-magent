@@ -8,6 +8,7 @@ from typing import Any
 from .agent import QwenAgent
 from .backend import DemoQwenBackend
 from .models import Draft, EvolutionReport, PeerEvaluation
+from .lora import is_improved_answer_correct
 from s_server import ServerAgent
 from s_server.server_agent import select_consensus_peer_reviews
 
@@ -64,6 +65,19 @@ class MultiAgentWorkflow:
                 if evaluator.name == draft.agent_name:
                     continue
                 peer_reviews.append(evaluator.evaluate_peer(task, draft))
+
+        # During supervised training, gold labels are the authority for the
+        # correctness component. Evaluators still own safety, efficiency, and
+        # qualitative feedback, but a weak judge must not invert known labels.
+        if "Image:" in task:
+            drafts_by_agent = {draft.agent_name: draft for draft in drafts}
+            for review in peer_reviews:
+                target_draft = drafts_by_agent.get(review.target)
+                if target_draft is None:
+                    continue
+                gold_correct = is_improved_answer_correct(task, target_draft.answer)
+                if gold_correct is not None:
+                    review.scores.correctness = 1.0 if gold_correct else 0.0
 
         self_improvements = []
         for participant in participants:
