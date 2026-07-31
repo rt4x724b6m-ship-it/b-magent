@@ -10,6 +10,11 @@ from pathlib import Path
 from typing import Protocol
 
 from .models import Draft, PeerEvaluation, SelfImprovement
+from .retrieval_training import (
+    build_verified_retrieval_output,
+    is_retrieval_summary_grounded,
+    strip_hidden_retrieval_labels,
+)
 
 
 DEFAULT_LORA_THRESHOLD = 10
@@ -22,7 +27,7 @@ class LoraTrainingConfig:
     threshold: int = DEFAULT_LORA_THRESHOLD
     require_correct_answer: bool = True
     min_evaluation_score: float = 0.6
-    max_seq_length: int = 1024
+    max_seq_length: int = 4096
     per_device_train_batch_size: int = 4
     gradient_accumulation_steps: int = 1
     learning_rate: float = 2e-4
@@ -104,7 +109,13 @@ class PeftSFTLoraTrainer:
             import torch
             from datasets import Dataset
             from peft import LoraConfig, TaskType, get_peft_model
-            from transformers import AutoModelForCausalLM, AutoTokenizer, DataCollatorForSeq2Seq, Trainer, TrainingArguments
+            from transformers import (
+                AutoProcessor,
+                DataCollatorForSeq2Seq,
+                Qwen2_5_VLForConditionalGeneration,
+                Trainer,
+                TrainingArguments,
+            )
         except ImportError as exc:
             raise RuntimeError(
                 "LoRA training requires peft plus torch, datasets, and transformers. "
@@ -115,11 +126,11 @@ class PeftSFTLoraTrainer:
         if not rows:
             raise ValueError(f"LoRA dataset is empty: {dataset_path}")
 
-        tokenizer = AutoTokenizer.from_pretrained(config.base_model_path, local_files_only=True)
+        tokenizer = AutoProcessor.from_pretrained(config.base_model_path, local_files_only=True)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
 
-        model = AutoModelForCausalLM.from_pretrained(
+        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             config.base_model_path,
             torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
             local_files_only=True,
@@ -250,10 +261,13 @@ class LoraEvolutionManager:
         low_scores = [evaluation for evaluation in evaluations if not evaluation.scores.is_usable_for_lora(self.config.min_evaluation_score)]
         if low_scores:
             return False, "evaluation scores below LoRA quality threshold"
-        correct = is_improved_answer_correct(task, improvement.revised_answer)
+        correct = improvement.is_correct
+        if correct is None:
+            correct = is_improved_answer_correct(task, improvement.revised_answer)
         improvement.is_correct = correct
-        if self.config.require_correct_answer and correct is False:
-            return False, "improved answer failed gold-answer correctness gate"
+        has_verified_retrieval_label = build_verified_retrieval_output(task) is not None
+        if self.config.require_correct_answer and correct is not True and not has_verified_retrieval_label:
+            return False, "improved answer did not pass a verifiable correctness or grounding gate"
         digest = hash_lora_example(example)
         if digest in state.example_hashes:
             return False, "duplicate SFT example"
@@ -361,15 +375,19 @@ def build_lora_example(
 ) -> LoraSFTExample:
     evaluation_report = format_evaluation_report(evaluations)
     trajectory = format_trajectory(draft)
+    verified_output = build_verified_retrieval_output(task)
     return LoraSFTExample(
         agent_name=draft.agent_name,
-        instruction="Solve the task, reflect on evaluator feedback, and produce the improved final answer.",
+        instruction=(
+            "Summarize the evidence already retrieved by the server. Preserve the user's target and "
+            "hard constraints, remove duplication and conflicts, and produce a concise grounded answer."
+        ),
         input=(
             f"Task:\n{strip_gold_annotations(task)}\n\n"
             f"Trajectory:\n{trajectory}\n\n"
             f"Evaluation Report:\n{evaluation_report}"
         ),
-        output=improvement.revised_answer,
+        output=verified_output or improvement.revised_answer,
     )
 
 
@@ -493,6 +511,9 @@ def hash_lora_example(example: LoraSFTExample) -> str:
 
 
 def is_improved_answer_correct(task: str, improved_answer: str) -> bool | None:
+    retrieval_correct = is_retrieval_summary_grounded(task, improved_answer)
+    if retrieval_correct is not None:
+        return retrieval_correct
     gold = extract_gold_final_answer(task)
     if gold is None:
         return None
@@ -530,6 +551,7 @@ def _numeric_equal(left: str, right: str) -> bool:
 
 
 def strip_gold_annotations(task: str) -> str:
+    task = strip_hidden_retrieval_labels(task)
     lines = []
     in_gold_reasoning = False
     for line in task.splitlines():

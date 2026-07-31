@@ -17,7 +17,7 @@ from b_magent.datasets import GSM8KDataset
 from b_magent.local_qwen import LocalQwenEngine
 
 
-DEFAULT_LOCAL_QWEN_MODEL = PROJECT_ROOT / "models" / "Qwen2.5-1.5B-Instruct"
+DEFAULT_LOCAL_QWEN_MODEL = PROJECT_ROOT / "models" / "Qwen2.5-VL-3B-Instruct"
 STANDARD_TEST_LIMIT = 100
 
 
@@ -163,7 +163,7 @@ def normalize_answer(answer: str) -> str:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run a local Qwen2.5-1.5B GSM8K baseline.")
+    parser = argparse.ArgumentParser(description="Run a local Qwen2.5-VL-3B GSM8K baseline.")
     parser.add_argument("--dataset-dir", type=Path, default=Path("data/gsm8k"))
     parser.add_argument("--split", default="test", choices=["test"])
     parser.add_argument(
@@ -177,7 +177,7 @@ def parse_args() -> argparse.Namespace:
         "--model-path",
         type=Path,
         default=DEFAULT_LOCAL_QWEN_MODEL,
-        help="Local path for Qwen2.5-1.5B.",
+        help="Local path for Qwen2.5-VL-3B-Instruct.",
     )
     return parser.parse_args()
 

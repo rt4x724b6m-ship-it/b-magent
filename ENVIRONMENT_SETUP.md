@@ -62,7 +62,7 @@ pip install -r requirements.txt
 默认模型路径：
 
 ```text
-models/Qwen2.5-1.5B-Instruct
+models/Qwen2.5-VL-3B-Instruct
 ```
 
 至少应包含：
@@ -93,7 +93,7 @@ data/gsm8k/test.jsonl
 建议显卡满足：
 
 - 可用 CUDA
-- 有足够显存加载 `Qwen2.5-1.5B-Instruct`
+- 有足够显存加载 `Qwen2.5-VL-3B-Instruct`
 - 训练 LoRA 时显存更充裕更稳
 
 如果只是跑逻辑 smoke test，可以用：
@@ -140,7 +140,7 @@ python -m baseline.qwen_gsm8k --dataset-dir data/gsm8k --split test --output bas
 python -m train.four_agent_private_train \
   --mode b-magent \
   --backend local-qwen \
-  --model-path models/Qwen2.5-1.5B-Instruct \
+  --model-path models/Qwen2.5-VL-3B-Instruct \
   --dataset-dir data/gsm8k \
   --rounds 200 \
   --output train/b_magent_training_report.json
@@ -167,4 +167,3 @@ python -m train.four_agent_private_train \
 4. 放好 GSM8K 数据
 5. 跑 `scripts/check_setup.py`
 6. 再启动对应入口
-

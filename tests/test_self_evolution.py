@@ -17,11 +17,87 @@ from b_magent.self_evolution import (
 )
 from b_magent.agent import QwenAgent
 from b_magent.backend import DemoQwenBackend
-from b_magent.models import Draft
+from b_magent.library import EvolutionLibrary
+from b_magent.models import Draft, LibraryRecord
 from b_magent.tagging import extract_math_task_tags
+from b_magent.datasets import GSM8KSample
+from b_magent.retrieval_training import (
+    build_retrieval_training_context,
+    build_verified_retrieval_output,
+    is_retrieval_summary_grounded,
+    strip_hidden_retrieval_labels,
+)
+from train.four_agent_private_train import format_gsm8k_training_task
 
 
 class SelfEvolutionLibraryTestCase(unittest.TestCase):
+    def test_retrieval_training_hides_gold_labels_and_builds_verified_lora_output(self) -> None:
+        raw_reference = str(
+            [
+                {"Description": "Hotels in Norfolk", "Content": "Harbor Hotel costs 100 per night."},
+                {"Description": "Restaurants in Norfolk", "Content": "Cafe Blue serves French food."},
+            ]
+        )
+        gold = "Stay at Harbor Hotel and eat at Cafe Blue. Total hotel cost is 200."
+        context, targets = build_retrieval_training_context(raw_reference, gold)
+        sample = GSM8KSample(
+            question="Plan two nights in Norfolk with French food.",
+            answer=gold,
+            task_type="TravelPlanner",
+            reference_information=context,
+            retrieval_targets=targets,
+        )
+
+        task = format_gsm8k_training_task(sample)
+        visible = strip_hidden_retrieval_labels(task)
+        verified_output = build_verified_retrieval_output(task)
+
+        self.assertIn("evidence summarization task", visible)
+        self.assertIn("second-layer server has already retrieved", visible)
+        self.assertIn("Do not perform another search", visible)
+        self.assertIn("Candidate reference information", visible)
+        self.assertNotIn(gold, visible)
+        self.assertNotIn("Gold retrieval targets", visible)
+        self.assertIn("Relevant sources:", verified_output or "")
+        self.assertIn(gold, verified_output or "")
+        self.assertTrue(is_retrieval_summary_grounded(task, verified_output or ""))
+
+    def test_library_search_uses_chinese_key_facts_tags_and_units(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_key_info_search_test_"))
+        try:
+            library = EvolutionLibrary(temp_dir / "professional.jsonl", "professional")
+            relevant = library.add_record(
+                LibraryRecord(
+                    agent_name="qwen_agent_1",
+                    library_type="professional",
+                    source_task="商品原价100元，打八折后求最终价格",
+                    summary="先计算折扣金额，再得到折扣后的实际付款金额",
+                    detail="注意目标是最终价格，而不是优惠金额。",
+                    tags=["money", "percentage", "curated-success-experience"],
+                )
+            )
+            library.add_record(
+                LibraryRecord(
+                    agent_name="qwen_agent_1",
+                    library_type="professional",
+                    source_task="计算长方形面积",
+                    summary="使用长度乘以宽度",
+                    detail="检查面积单位。",
+                    tags=["geometry", "curated-success-experience"],
+                )
+            )
+
+            results = library.search(
+                "一件商品降价后需要支付多少钱",
+                limit=1,
+                query_tags={"money", "percentage"},
+                key_facts=["目标是折扣后的最终价格", "价格单位为元"],
+            )
+
+            self.assertEqual(results, [relevant])
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def test_math_task_tags_capture_operations_and_problem_type(self) -> None:
         task = (
             "A worker earns $12 per hour for 3 hours and spends half of the money. "
@@ -33,6 +109,18 @@ class SelfEvolutionLibraryTestCase(unittest.TestCase):
         self.assertTrue(
             {"multiplication", "division", "fraction", "rate", "money", "time", "multi-step"}
             <= tags
+        )
+
+    def test_summary_task_tags_capture_synthesis_and_constraint_preservation(self) -> None:
+        task = (
+            "Summarize and integrate evidence into a concise travel plan while preserving "
+            "the user's budget and other hard constraints."
+        )
+
+        tags = extract_math_task_tags(task)
+
+        self.assertTrue(
+            {"summarization", "information-synthesis", "constraint-preservation"} <= tags
         )
 
     def test_self_improvement_asks_agent_backend_to_tag_reflected_experience(self) -> None:

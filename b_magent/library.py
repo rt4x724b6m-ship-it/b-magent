@@ -40,20 +40,46 @@ class EvolutionLibrary:
         query: str,
         limit: int = 3,
         exclude_tags: set[str] | None = None,
+        query_tags: set[str] | None = None,
+        key_facts: list[str] | None = None,
     ) -> list[LibraryRecord]:
         excluded = {"quarantined", *(exclude_tags or set())}
-        terms = _semantic_terms(query)
+        normalized_query_tags = {_normalize_tag(tag) for tag in (query_tags or set())}
+        facts = [fact for fact in (key_facts or []) if str(fact).strip()]
+        terms = _semantic_terms(" ".join([query, *facts]))
+        query_numbers_and_units = _numbers_and_units(" ".join([query, *facts]))
         records = [record for record in self.all_records() if not excluded.intersection(record.tags)]
         if not records:
             return []
 
         def rank(record: LibraryRecord) -> tuple[float, str]:
-            record_terms = _semantic_terms(
-                f"{record.source_task} {record.summary} {' '.join(record.tags)} {record.detail}"
-            )
+            record_text = f"{record.source_task} {record.summary} {' '.join(record.tags)} {record.detail}"
+            record_terms = _semantic_terms(record_text)
             overlap = terms & record_terms
             union = terms | record_terms
-            score = len(overlap) / len(union) if union else 0.0
+            lexical_score = len(overlap) / len(union) if union else 0.0
+            record_tags = {_normalize_tag(tag) for tag in record.tags}
+            tag_score = (
+                len(normalized_query_tags & record_tags) / len(normalized_query_tags)
+                if normalized_query_tags
+                else 0.0
+            )
+            fact_score = max(
+                (_term_overlap(_semantic_terms(fact), record_terms) for fact in facts),
+                default=0.0,
+            )
+            numeric_unit_score = _term_overlap(
+                query_numbers_and_units,
+                _numbers_and_units(record_text),
+            )
+            quality_score = _experience_quality(record_tags)
+            relevance_score = (
+                lexical_score * 0.30
+                + tag_score * 0.25
+                + fact_score * 0.25
+                + numeric_unit_score * 0.10
+            )
+            score = relevance_score + quality_score * 0.10 if relevance_score > 0 else 0.0
             return score, record.created_at
 
         ranked = sorted(records, key=rank, reverse=True)
@@ -73,8 +99,45 @@ _STOP_TERMS = {
 
 def _semantic_terms(text: str) -> set[str]:
     visible = re.split(r"\n\s*Gold reasoning:", str(text), maxsplit=1, flags=re.IGNORECASE)[0]
-    tokens = re.findall(r"[a-zA-Z]+(?:'[a-zA-Z]+)?|\d+(?:\.\d+)?|[\u4e00-\u9fff]{2,}", visible.lower())
-    return {token for token in tokens if len(token) >= 2 and token not in _STOP_TERMS}
+    lower = visible.lower()
+    tokens = re.findall(r"[a-zA-Z]+(?:'[a-zA-Z]+)?|\d+(?:\.\d+)?", lower)
+    terms = {token for token in tokens if len(token) >= 2 and token not in _STOP_TERMS}
+    for sequence in re.findall(r"[\u4e00-\u9fff]+", lower):
+        if len(sequence) == 1:
+            continue
+        terms.add(sequence)
+        terms.update(sequence[index : index + 2] for index in range(len(sequence) - 1))
+    return terms
+
+
+def _numbers_and_units(text: str) -> set[str]:
+    return set(
+        re.findall(
+            r"\d+(?:\.\d+)?%?|[$¥€£]|percent|percentage|dollars?|hours?|minutes?|days?|"
+            r"百分之|元|美元|小时|分钟|天|米|千米|公里|千克|公斤",
+            str(text).lower(),
+        )
+    )
+
+
+def _term_overlap(left: set[str], right: set[str]) -> float:
+    return len(left & right) / len(left) if left else 0.0
+
+
+def _normalize_tag(tag: str) -> str:
+    return str(tag).strip().lower().replace("_", "-").replace(" ", "-")
+
+
+def _experience_quality(tags: set[str]) -> float:
+    if "curated-success-experience" in tags:
+        return 1.0
+    if "error-reflection-experience" in tags or "error-evaluation-experience" in tags:
+        return 0.0
+    if "private-training" in tags:
+        return 0.7
+    if "evaluated-experience" in tags:
+        return 0.6
+    return 0.5
 
 
 def _record_fingerprint(record: LibraryRecord) -> str:

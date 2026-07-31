@@ -12,12 +12,18 @@ from .models import Draft, EvaluationEvolution, EvaluationScores, LibraryRecord,
 from .self_evolution import normalize_experience_tags
 
 
-DEFAULT_QWEN_MODEL = "models/Qwen2.5-1.5B-Instruct"
+DEFAULT_QWEN_MODEL = "models/Qwen2.5-VL-3B-Instruct"
 
 NUMERIC_ANSWER_INSTRUCTION = (
     "You are a careful math reasoning assistant. Solve the problem step by step. "
     "End your response with a final line exactly in this format: #### <numeric_answer>. "
     "Do not include units, explanations, or full sentences after ####."
+)
+
+GENERAL_TASK_INSTRUCTION = (
+    "You are a careful research and planning assistant. Follow every explicit constraint, "
+    "separate verified facts from assumptions, and produce a structured, auditable answer. "
+    "Never invent citations, prices, schedules, distances, or availability."
 )
 
 
@@ -30,7 +36,7 @@ class QwenGenerationConfig:
 
 
 class LocalQwenEngine:
-    """Lazy Transformers loader for a local Qwen2.5 model."""
+    """Lazy Transformers loader for a local Qwen2.5-VL model."""
 
     def __init__(
         self,
@@ -68,6 +74,17 @@ class LocalQwenEngine:
         with self._generation_lock:
             return self._generate_unlocked(prompt, adapter_path=adapter_path)
 
+    def generate_multimodal(
+        self,
+        prompt: str,
+        image_paths: list[str | Path],
+        adapter_path: str | Path | None = None,
+    ) -> str:
+        if not image_paths:
+            return self.generate(prompt, adapter_path=adapter_path)
+        with self._generation_lock:
+            return self._generate_multimodal_unlocked(prompt, image_paths, adapter_path=adapter_path)
+
     def _generate_unlocked(self, prompt: str, adapter_path: str | Path | None = None) -> str:
         self._load()
         model = self._model
@@ -82,7 +99,7 @@ class LocalQwenEngine:
             tokenize=False,
             add_generation_prompt=True,
         )
-        inputs = self._tokenizer([text], return_tensors="pt").to(model.device)
+        inputs = self._tokenizer(text=[text], return_tensors="pt").to(model.device)
         generation_kwargs = {
             "max_new_tokens": self.generation_config.max_new_tokens,
             "do_sample": self.generation_config.do_sample,
@@ -94,6 +111,58 @@ class LocalQwenEngine:
             **inputs,
             **generation_kwargs,
         )
+        completion_ids = [
+            output_ids[len(input_ids) :]
+            for input_ids, output_ids in zip(inputs.input_ids, generated_ids)
+        ]
+        return self._tokenizer.batch_decode(completion_ids, skip_special_tokens=True)[0].strip()
+
+    def _generate_multimodal_unlocked(
+        self,
+        prompt: str,
+        image_paths: list[str | Path],
+        adapter_path: str | Path | None = None,
+    ) -> str:
+        self._load()
+        model = self._model
+        if adapter_path is not None and _is_lora_adapter_ready(Path(adapter_path)):
+            model = self._load_adapter_model(Path(adapter_path))
+        try:
+            from PIL import Image
+        except ImportError as exc:
+            raise RuntimeError("Multimodal generation requires Pillow.") from exc
+        images = []
+        for image_path in image_paths:
+            with Image.open(image_path) as image:
+                images.append(image.convert("RGB").copy())
+        messages = []
+        if self.system_prompt:
+            messages.append({"role": "system", "content": self.system_prompt})
+        user_content = [
+            {"type": "image", "image": str(Path(image_path).resolve())}
+            for image_path in image_paths
+        ]
+        user_content.append({"type": "text", "text": prompt})
+        messages.append({"role": "user", "content": user_content})
+        text = self._tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        inputs = self._tokenizer(
+            text=[text],
+            images=images,
+            padding=True,
+            return_tensors="pt",
+        ).to(model.device)
+        generation_kwargs = {
+            "max_new_tokens": self.generation_config.max_new_tokens,
+            "do_sample": self.generation_config.do_sample,
+        }
+        if self.generation_config.do_sample:
+            generation_kwargs["temperature"] = self.generation_config.temperature
+            generation_kwargs["top_p"] = self.generation_config.top_p
+        generated_ids = model.generate(**inputs, **generation_kwargs)
         completion_ids = [
             output_ids[len(input_ids) :]
             for input_ids, output_ids in zip(inputs.input_ids, generated_ids)
@@ -161,28 +230,28 @@ class LocalQwenEngine:
             raise RuntimeError(
                 "Local Qwen model directory was not found. "
                 f"Expected: {model_path.resolve()}. "
-                "Pass --model-path /path/to/Qwen2.5-1.5B-Instruct or place the model under models/Qwen2.5-1.5B-Instruct."
+                "Pass --model-path /path/to/Qwen2.5-VL-3B-Instruct or place the model under models/Qwen2.5-VL-3B-Instruct."
             )
         try:
             import transformers
 
-            AutoModelForCausalLM = getattr(transformers, "AutoModelForCausalLM", None)
-            AutoTokenizer = getattr(transformers, "AutoTokenizer", None)
-            if AutoModelForCausalLM is None:
-                from transformers.models.auto.modeling_auto import AutoModelForCausalLM
-            if AutoTokenizer is None:
-                from transformers.models.auto.tokenization_auto import AutoTokenizer
+            AutoProcessor = getattr(transformers, "AutoProcessor", None)
+            Qwen2_5_VLForConditionalGeneration = getattr(
+                transformers, "Qwen2_5_VLForConditionalGeneration", None
+            )
+            if AutoProcessor is None or Qwen2_5_VLForConditionalGeneration is None:
+                raise ImportError("installed transformers does not support Qwen2.5-VL")
         except ImportError as exc:
             raise RuntimeError(
                 "Local Qwen requires transformers. Install transformers and torch, "
-                "then pass a local Qwen2.5-1.5B model path or use the default Hugging Face id."
+                "then pass a local Qwen2.5-VL-3B-Instruct model path."
             ) from exc
 
-        self._tokenizer = AutoTokenizer.from_pretrained(
+        self._tokenizer = AutoProcessor.from_pretrained(
             self.model_name_or_path,
             local_files_only=self.local_files_only,
         )
-        self._model = AutoModelForCausalLM.from_pretrained(
+        self._model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             self.model_name_or_path,
             torch_dtype=self._resolve_torch_dtype(),
             device_map=self._resolve_device_map(),
@@ -401,6 +470,8 @@ class LocalQwenEvolutionBackend:
             "Use these stable tags when applicable: addition, subtraction, multiplication, division, "
             "fraction, percentage, ratio, rate, unit-conversion, money, time, geometry, counting, "
             "multi-step, arithmetic, final-answer, verification, boundary, structure. "
+            "For evidence-based planning and research, prefer summarization, information-synthesis, "
+            "and constraint-preservation when those capabilities were actually used. "
             "You may create a more specific reusable tag when none fits. "
             "Use lowercase kebab-case. Do not use names, numbers, agent roles, or lifecycle/status tags. "
             'Return JSON only in this exact shape: {"tags": ["tag-one", "tag-two"]}.'

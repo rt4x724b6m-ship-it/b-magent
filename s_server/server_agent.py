@@ -8,6 +8,8 @@ from b_magent.evaluation_format import format_structured_evaluation
 from b_magent.library import EvolutionLibrary
 from b_magent.models import EvaluationEvolution, GlobalExperience, LibraryRecord, PeerEvaluation
 from b_magent.tagging import extract_math_task_tags
+from .key_information_store import ServerKeyInformationStore
+from .web_search_store import ServerWebSearchStore
 
 
 class ServerAgent:
@@ -32,6 +34,12 @@ class ServerAgent:
             "agent_training_tags",
         )
         self.agent_training_tags_dir = data_dir / name / "agent_training_tags"
+        self.key_information_store = ServerKeyInformationStore(
+            data_dir / name / "key_information_store.jsonl"
+        )
+        self.web_search_store = ServerWebSearchStore(
+            data_dir / name / "web_search_store.jsonl"
+        )
 
     def store_agent_training_tags(
         self,

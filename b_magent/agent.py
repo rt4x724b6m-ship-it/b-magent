@@ -11,6 +11,8 @@ from .models import Draft, EvaluationEvolution, LibraryRecord, PeerEvaluation, S
 from .self_evolution import EvolutionInput, SelfEvolutionLibrary
 from .tagging import extract_math_task_tags
 from .trajectory import extract_answer_features, mask_draft_for_evaluation
+from .retrieval_training import is_retrieval_summary_grounded, strip_hidden_retrieval_labels
+from .answer_validation import AnswerValidator
 
 
 class QwenAgent:
@@ -20,11 +22,13 @@ class QwenAgent:
         specialty: str,
         data_dir: Path,
         backend: Any | None = None,
+        answer_validator: AnswerValidator | None = None,
     ) -> None:
         self.name = name
         self.specialty = specialty
         self.data_dir = data_dir
         self.backend = backend or DemoQwenBackend()
+        self.answer_validator = answer_validator
         self.professional_library = EvolutionLibrary(
             data_dir / name / "professional_library.jsonl",
             "professional",
@@ -147,9 +151,21 @@ class QwenAgent:
                 "into an improved answer."
             )
         gold_answer = _extract_gold_final_answer(task)
-        is_correct = None
-        if gold_answer is not None:
-            is_correct = _extract_final_answer(revised_answer) == gold_answer
+        if self.answer_validator is not None:
+            validation = self.answer_validator.validate(task, revised_answer)
+            is_correct = validation.correct
+            peer_scores.append(
+                "external_answer_validation="
+                f"correct={validation.correct}; "
+                f"requirements_met={'; '.join(validation.requirements_met) or '(none)'}; "
+                f"requirements_missed={'; '.join(validation.requirements_missed) or '(none)'}; "
+                f"unsupported_claims={'; '.join(validation.unsupported_claims) or '(none)'}; "
+                f"rationale={validation.rationale}"
+            )
+        else:
+            is_correct = is_retrieval_summary_grounded(task, revised_answer)
+            if is_correct is None and gold_answer is not None:
+                is_correct = _extract_final_answer(revised_answer) == gold_answer
         experience_tags: list[str] = []
         generate_experience_tags = getattr(self.backend, "generate_experience_tags", None)
         if callable(generate_experience_tags):
@@ -261,19 +277,22 @@ class QwenAgent:
         if agent_text.exists():
             return [line.strip() for line in agent_text.read_text(encoding="utf-8").splitlines() if line.strip()]
 
-        gsm8k_items = self._load_gsm8k_private_data()
-        if gsm8k_items:
-            return gsm8k_items
+        dataset_items = self._load_default_dataset_private_data()
+        if dataset_items:
+            return dataset_items
 
         return [
             f"{self.specialty} private sample: keep reusable solving strategy",
             f"{self.specialty} private sample: make the answer easy for evaluators to revise",
         ]
 
-    def _load_gsm8k_private_data(self) -> list[str]:
-        dataset = GSM8KDataset(self.data_dir / "gsm8k")
-        samples = dataset.load(split="train", limit=3)
-        return [sample.to_training_text() for sample in samples]
+    def _load_default_dataset_private_data(self) -> list[str]:
+        for dataset_name in ("TravelPlanner", "OpenAGI", "gsm8k"):
+            dataset = GSM8KDataset(self.data_dir / dataset_name)
+            samples = dataset.load(split="train", limit=3)
+            if samples:
+                return [sample.to_training_text() for sample in samples]
+        return []
 
     def _next_private_batch(self, private_items: list[str], batch_size: int | None) -> list[str]:
         if batch_size is None or batch_size <= 0 or batch_size >= len(private_items):
@@ -327,6 +346,7 @@ def _normalize_answer(text: str) -> str:
 
 
 def _strip_gold_annotations(task: str) -> str:
+    task = strip_hidden_retrieval_labels(task)
     lines = []
     in_gold_reasoning = False
     for line in task.splitlines():

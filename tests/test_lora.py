@@ -114,14 +114,54 @@ class LoraEvolutionTestCase(unittest.TestCase):
         self.assertNotIn("#### 2", example.input)
         self.assertIn("Question: q", example.input)
 
+    def test_verified_retrieval_label_trains_even_when_current_draft_is_not_grounded(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="b_magent_verified_retrieval_lora_test_") as temp:
+            trainer = FakeLoraTrainer()
+            manager = LoraEvolutionManager(
+                LoraTrainingConfig(
+                    base_model_path="models/Qwen2.5-VL-3B-Instruct",
+                    output_dir=Path(temp) / "lora",
+                    threshold=1,
+                ),
+                trainer=trainer,
+            )
+            task = (
+                "TravelPlanner information-retrieval task.\n"
+                "Task: Find a hotel.\n"
+                "Candidate reference information:\n[source-1] Harbor Hotel costs 100.\n\n"
+                "Gold retrieval targets:\nsource-1: Hotels\n\n"
+                "Gold reference response:\nStay at Harbor Hotel for 100."
+            )
+            draft = Draft("qwen_agent_1", "general", "unsupported draft", [], [], [], [])
+            review = PeerEvaluation(
+                "qwen_agent_3",
+                "qwen_agent_1",
+                ["use source-1"],
+                "ground the answer",
+                [],
+                EvaluationScores(correctness=1.0, safety=1.0, efficiency=1.0),
+            )
+            improvement = SelfImprovement("qwen_agent_1", ["use source-1"], "still unsupported", [])
+
+            updates = manager.update_from_round(task, [draft], [review], [improvement])
+
+            self.assertTrue(updates[0].trained)
+            row = json.loads(manager.dataset_path("qwen_agent_1").read_text(encoding="utf-8").strip())
+            self.assertIn("Summarize the evidence already retrieved by the server", row["instruction"])
+            self.assertNotIn("Gold reference response", row["input"])
+            self.assertIn("Relevant sources: source-1: Hotels", row["output"])
+            self.assertIn("Stay at Harbor Hotel for 100.", row["output"])
+            self.assertFalse(improvement.is_correct)
+
     def test_manager_accumulates_per_agent_datasets_and_trains_when_curated_examples_exist(self) -> None:
         with tempfile.TemporaryDirectory(prefix="b_magent_lora_test_") as temp:
             trainer = FakeLoraTrainer()
             manager = LoraEvolutionManager(
                 LoraTrainingConfig(
-                    base_model_path="models/Qwen2.5-1.5B-Instruct",
+                    base_model_path="models/Qwen2.5-VL-3B-Instruct",
                     output_dir=Path(temp) / "lora",
                     threshold=1,
+                    require_correct_answer=False,
                 ),
                 trainer=trainer,
             )
@@ -159,7 +199,7 @@ class LoraEvolutionTestCase(unittest.TestCase):
             trainer = FakeLoraTrainer()
             manager = LoraEvolutionManager(
                 LoraTrainingConfig(
-                    base_model_path="models/Qwen2.5-1.5B-Instruct",
+                    base_model_path="models/Qwen2.5-VL-3B-Instruct",
                     output_dir=Path(temp) / "lora",
                     threshold=1,
                 ),
@@ -183,7 +223,10 @@ class LoraEvolutionTestCase(unittest.TestCase):
                 reviews,
                 [SelfImprovement("qwen_agent_1", ["fix"], "still wrong #### 1", [])],
             )
-            self.assertEqual(bad_updates[0].reason, "improved answer failed gold-answer correctness gate")
+            self.assertEqual(
+                bad_updates[0].reason,
+                "improved answer did not pass a verifiable correctness or grounding gate",
+            )
             self.assertFalse(manager.dataset_path("qwen_agent_1").exists())
 
             good = SelfImprovement("qwen_agent_1", ["fix"], "now correct #### 2", [])
@@ -199,7 +242,7 @@ class LoraEvolutionTestCase(unittest.TestCase):
             trainer = FakeLoraTrainer()
             manager = LoraEvolutionManager(
                 LoraTrainingConfig(
-                    base_model_path="models/Qwen2.5-1.5B-Instruct",
+                    base_model_path="models/Qwen2.5-VL-3B-Instruct",
                     output_dir=Path(temp) / "lora",
                     threshold=2,
                 ),

@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-MODEL_PATH = PROJECT_ROOT / "models" / "Qwen2.5-1.5B-Instruct"
+MODEL_PATH = PROJECT_ROOT / "models" / "Qwen2.5-VL-3B-Instruct"
 GSM8K_DIR = PROJECT_ROOT / "data" / "gsm8k"
 
 
@@ -27,11 +27,16 @@ def main() -> int:
         ok = False
 
     print(f"model_path: {MODEL_PATH}")
-    model_files = ("config.json", "model.safetensors", "tokenizer.json", "tokenizer_config.json")
+    model_files = ("config.json", "tokenizer.json", "tokenizer_config.json")
     for filename in model_files:
         exists = (MODEL_PATH / filename).exists()
         print(f"model/{filename}: {'OK' if exists else 'MISSING'}")
         ok = ok and exists
+    weights_exist = (MODEL_PATH / "model.safetensors").exists() or (
+        MODEL_PATH / "model.safetensors.index.json"
+    ).exists()
+    print(f"model/weights: {'OK' if weights_exist else 'MISSING'}")
+    ok = ok and weights_exist
 
     for split in ("train", "test"):
         path = GSM8K_DIR / f"{split}.jsonl"

@@ -24,6 +24,9 @@ ROUTING_TAGS = (
     "boundary",
     "structure",
     "scoring",
+    "summarization",
+    "information-synthesis",
+    "constraint-preservation",
 )
 
 ROUTING_TAG_IMPORTANCE = {
@@ -33,6 +36,9 @@ ROUTING_TAG_IMPORTANCE = {
     "boundary": 0.50,
     "structure": 0.10,
     "scoring": 0.10,
+    "summarization": 1.25,
+    "information-synthesis": 1.25,
+    "constraint-preservation": 1.20,
 }
 
 _TAG_ALIASES = {
@@ -56,6 +62,18 @@ _TAG_ALIASES = {
     "boundary": ("boundary", "edge case", "condition", "边界", "条件"),
     "structure": ("structure", "step", "checklist", "结构", "清单", "步骤", "编号"),
     "scoring": ("scoring", "score", "correctness", "safety", "efficiency", "评分", "正确性"),
+    "summarization": (
+        "summarization", "summarize", "summary", "concise answer", "plan", "itinerary",
+        "总结", "摘要", "概括", "计划", "行程",
+    ),
+    "information-synthesis": (
+        "information synthesis", "synthesize", "integrate evidence", "combine information",
+        "信息整合", "综合信息", "整合证据", "合并信息",
+    ),
+    "constraint-preservation": (
+        "preserve constraints", "hard constraint", "satisfy constraints", "budget", "preference",
+        "保留约束", "硬约束", "满足约束", "预算", "偏好",
+    ),
 }
 
 _EQUATION_RE = re.compile(r"<<\s*(.+?)\s*=.+?>>")

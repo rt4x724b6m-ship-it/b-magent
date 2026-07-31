@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import shutil
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -21,6 +22,7 @@ from baseline.qwen_gsm8k import STANDARD_TEST_LIMIT, extract_numeric_answer, nor
 from b_magent.datasets import GSM8KDataset, GSM8KSample
 from b_magent.local_qwen import (
     DEFAULT_QWEN_MODEL,
+    GENERAL_TASK_INSTRUCTION,
     LocalQwenAgentModel,
     LocalQwenEngine,
     LocalQwenEvolutionBackend,
@@ -30,6 +32,9 @@ from b_magent.models import LibraryRecord
 from b_magent.seed import seed_agent_libraries
 from b_magent.tagging import ROUTING_TAGS, extract_math_task_tags, routing_tag_importance
 from b_magent.workflow import MultiAgentWorkflow, build_default_agents
+from b_magent.web import WebSearchResult, WebSearchService, build_web_search_service_from_env
+from b_magent.answer_validation import AnswerValidator, build_answer_validator_from_env
+from s_server import ServerKeyInformationStore
 
 
 AGENT_NAMES = ("qwen_agent_1", "qwen_agent_2", "qwen_agent_3", "qwen_agent_4")
@@ -123,6 +128,16 @@ class AgentVote:
 @dataclass
 class ServerRoutingAssessment:
     difficulty: str = "medium"
+    target: str = ""
+    entities: list[str] = field(default_factory=list)
+    facts: list[str] = field(default_factory=list)
+    constraints: list[str] = field(default_factory=list)
+    numbers: list[str] = field(default_factory=list)
+    units: list[str] = field(default_factory=list)
+    keywords: list[str] = field(default_factory=list)
+    search_queries: list[str] = field(default_factory=list)
+    requires_web_search: bool = False
+    web_cache_ttl_seconds: int = 86400
     key_steps: list[str] = field(default_factory=list)
     risk_steps: list[str] = field(default_factory=list)
     capability_tags: list[str] = field(default_factory=list)
@@ -142,6 +157,11 @@ class VotingPrediction:
     final_answer: str
     correct: bool
     server_diagnostic: str = ""
+    server_synthesis: str = ""
+    server_cache_hit: bool = False
+    cached_key_information: str = ""
+    web_search_cache_hit: bool = False
+    web_search_results: list[dict[str, object]] = field(default_factory=list)
     difficulty: str = ""
     key_steps: list[str] = field(default_factory=list)
     risk_steps: list[str] = field(default_factory=list)
@@ -149,6 +169,10 @@ class VotingPrediction:
     routing_tags: list[str] = field(default_factory=list)
     routing_scores: dict[str, float] = field(default_factory=dict)
     matched_tags: dict[str, list[str]] = field(default_factory=dict)
+    answer_validation_rationale: str = ""
+    requirements_met: list[str] = field(default_factory=list)
+    requirements_missed: list[str] = field(default_factory=list)
+    unsupported_claims: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -209,6 +233,7 @@ def run_b_magent_training_entry(
     on_round_end: Callable[[int, int, BMagentTrainingRound], None] | None = None,
     start_round: int = 0,
     preserve_private_datasets: bool = False,
+    answer_validator: AnswerValidator | None = None,
 ) -> BMagentTrainingReport:
     if rounds is not None and rounds <= 0:
         raise ValueError("rounds must be positive when explicitly set")
@@ -236,7 +261,11 @@ def run_b_magent_training_entry(
     base_participant_schedule = build_participant_schedule(private_dataset_counts, private_batch_size)
     effective_rounds = rounds or len(base_participant_schedule)
     participant_schedule = expand_participant_schedule(base_participant_schedule, effective_rounds)
-    agents = build_default_agents(data_dir.parent, backend=backend)
+    agents = build_default_agents(
+        data_dir.parent,
+        backend=backend,
+        answer_validator=answer_validator,
+    )
     seed_agent_libraries(agents)
     if start_round:
         for agent in agents:
@@ -492,6 +521,9 @@ def run_four_agent_voting_on_test(
     server_model: ServerRoutingModel | None = None,
     server_training_tag_records: list[LibraryRecord] | None = None,
     prior_global_evaluation_records: list[LibraryRecord] | None = None,
+    server_key_information_store: ServerKeyInformationStore | None = None,
+    web_search_service: WebSearchService | None = None,
+    answer_validator: AnswerValidator | None = None,
 ) -> VotingReport:
     dataset = GSM8KDataset(dataset_dir)
     test_samples = dataset.load("test", limit=limit)
@@ -500,6 +532,12 @@ def run_four_agent_voting_on_test(
     missing_agents = [agent_name for agent_name in agent_names if agent_name not in models]
     if missing_agents:
         raise ValueError(f"missing models for agents: {', '.join(missing_agents)}")
+    if server_model is not None and server_key_information_store is None:
+        server_key_information_store = ServerKeyInformationStore(
+            dataset_dir.parent / "qwen_server_agent" / "key_information_store.jsonl"
+        )
+    if server_model is not None and web_search_service is None:
+        web_search_service = build_web_search_service_from_env(dataset_dir.parent)
 
     tag_index = _build_agent_tag_index(server_training_tag_records or [])
     predictions: list[VotingPrediction] = []
@@ -518,15 +556,15 @@ def run_four_agent_voting_on_test(
                     prior_global_evaluation_records or [],
                 )
                 assessment = _parse_server_routing_assessment(server_diagnostic, sample.question)
+                routing_tags = assessment.routing_tags
                 selected_agents, matched_tags = select_agents_by_server_tags(
                     server_diagnostic,
                     tag_index,
                     agent_names,
-                    selected_count=3,
+                    selected_count=min(3, len(agent_names)),
                     question=sample.question,
                     assessment=assessment,
                 )
-                routing_tags = assessment.routing_tags
                 routing_scores = {
                     agent_name: _agent_routing_score(
                         tag_index.get(agent_name, {}),
@@ -535,33 +573,115 @@ def run_four_agent_voting_on_test(
                     )
                     for agent_name in agent_names
                 }
-            raw_predictions = executor.map(
-                lambda agent_name: _generate_with_server_guidance(
-                    models[agent_name],
+            cached_record = None
+            if server_key_information_store is not None:
+                cached_record = server_key_information_store.lookup(
                     sample.question,
-                    "",
-                ),
-                selected_agents,
-            )
-            votes = [
-                AgentVote(
-                    agent_name=agent_name,
-                    raw_prediction=raw_prediction,
-                    predicted_answer=extract_numeric_answer(raw_prediction),
-                    tag_match_score=routing_scores.get(agent_name, 0.0),
+                    key_facts=[
+                        assessment.target,
+                        *assessment.facts,
+                        *assessment.constraints,
+                        *assessment.entities,
+                    ],
+                    query_tags=assessment.routing_tags,
                 )
-                for agent_name, raw_prediction in zip(selected_agents, raw_predictions)
-            ]
-            final_answer = routed_vote(votes) if server_model is not None and tag_index else majority_vote(votes)
+            server_cache_hit = cached_record is not None
+            cached_key_information = cached_record.detail if cached_record is not None else ""
+            if server_cache_hit:
+                selected_agents = []
+                votes: list[AgentVote] = []
+                server_synthesis = cached_record.summary
+            else:
+                raw_predictions = executor.map(
+                    lambda agent_name: _generate_with_server_guidance(
+                        models[agent_name],
+                        sample.question,
+                        "",
+                    ),
+                    selected_agents,
+                )
+                votes = [
+                    AgentVote(
+                        agent_name=agent_name,
+                        raw_prediction=raw_prediction,
+                        predicted_answer=extract_numeric_answer(raw_prediction),
+                        tag_match_score=routing_scores.get(agent_name, 0.0),
+                    )
+                    for agent_name, raw_prediction in zip(selected_agents, raw_predictions)
+                ]
+                server_synthesis = ""
+            web_results: list[WebSearchResult] = []
+            web_search_cache_hit = False
+            if (
+                not server_cache_hit
+                and assessment.requires_web_search
+                and web_search_service is not None
+            ):
+                web_queries = assessment.search_queries or [assessment.target, sample.question]
+                web_results, web_search_cache_hit = web_search_service.search_and_fetch(
+                    sample.question,
+                    web_queries,
+                    ttl_seconds=assessment.web_cache_ttl_seconds,
+                )
+            if server_model is not None and not server_cache_hit:
+                relevant_global_records = _select_relevant_global_records(
+                    sample.question,
+                    prior_global_evaluation_records or [],
+                    assessment=assessment,
+                )
+                server_synthesis = _server_synthesize_agent_answers(
+                    server_model,
+                    sample.question,
+                    votes,
+                    assessment,
+                    relevant_global_records,
+                    web_results,
+                )
+            synthesized_answer = extract_numeric_answer(server_synthesis)
+            fallback_answer = (
+                routed_vote(votes)
+                if server_model is not None and tag_index
+                else majority_vote(votes)
+            )
+            final_answer = synthesized_answer or fallback_answer
             gold_answer = normalize_answer(sample.final_answer)
+            validation_rationale = ""
+            requirements_met: list[str] = []
+            requirements_missed: list[str] = []
+            unsupported_claims: list[str] = []
+            if answer_validator is not None:
+                answer_for_validation = server_synthesis or next(
+                    (
+                        vote.raw_prediction
+                        for vote in votes
+                        if vote.predicted_answer == final_answer
+                    ),
+                    final_answer,
+                )
+                validation = answer_validator.validate(
+                    format_answer_validation_task(sample),
+                    answer_for_validation,
+                )
+                correct = validation.correct
+                validation_rationale = validation.rationale
+                requirements_met = validation.requirements_met
+                requirements_missed = validation.requirements_missed
+                unsupported_claims = validation.unsupported_claims
+            else:
+                correct = final_answer == gold_answer
             prediction = VotingPrediction(
                 index=index,
                 question=sample.question,
                 gold_answer=gold_answer,
                 votes=votes,
                 final_answer=final_answer,
-                correct=final_answer == gold_answer,
+                correct=correct,
                 server_diagnostic=server_diagnostic,
+                server_synthesis=server_synthesis,
+                server_cache_hit=server_cache_hit,
+                cached_key_information=cached_key_information,
+                web_search_cache_hit=web_search_cache_hit,
+                web_search_results=[result.to_dict() for result in web_results],
                 difficulty=assessment.difficulty if server_diagnostic else "",
                 key_steps=assessment.key_steps,
                 risk_steps=assessment.risk_steps,
@@ -569,7 +689,23 @@ def run_four_agent_voting_on_test(
                 routing_tags=sorted(routing_tags),
                 routing_scores=routing_scores,
                 matched_tags=matched_tags,
+                answer_validation_rationale=validation_rationale,
+                requirements_met=requirements_met,
+                requirements_missed=requirements_missed,
+                unsupported_claims=unsupported_claims,
             )
+            if (
+                server_key_information_store is not None
+                and not server_cache_hit
+                and prediction.correct
+                and server_synthesis
+            ):
+                server_key_information_store.store_verified(
+                    sample.question,
+                    server_synthesis,
+                    final_answer,
+                    _assessment_key_information(assessment),
+                )
             predictions.append(prediction)
             if on_prediction is not None:
                 on_prediction(prediction, len(test_samples))
@@ -688,13 +824,79 @@ def _server_diagnose_question(
         "Use the relevant global evaluation experience to identify the likely failure points. "
         "Return JSON only with this schema: "
         '{"difficulty":"easy|medium|hard","key_steps":["..."],"risk_steps":["..."],'
-        '"capability_tags":["..."],"risk_tags":["..."]}. '
+        '"target":"...","entities":["..."],"facts":["..."],"constraints":["..."],'
+        '"numbers":["..."],"units":["..."],"keywords":["..."],'
+        '"search_queries":["..."],"requires_web_search":true|false,'
+        '"web_cache_ttl_seconds":86400,"capability_tags":["..."],"risk_tags":["..."]}. '
+        "Extract only information stated or directly requested by the question. search_queries "
+        "must be short retrieval phrases describing the goal and its important constraints. "
+        "Set requires_web_search=true only when the answer needs current or external facts that "
+        "are not supplied in the question or prior memory. Use a shorter cache TTL for volatile "
+        "facts such as prices, schedules, weather, or news. "
         "Select capability_tags and risk_tags only from: "
         "addition, subtraction, multiplication, division, fraction, percentage, ratio, rate, "
         "unit-conversion, money, time, geometry, counting, multi-step, arithmetic, final-answer, "
-        "verification, boundary, structure. key_steps and risk_steps must be short observable step "
+        "verification, boundary, structure, summarization, information-synthesis, "
+        "constraint-preservation. "
+        "For planning, research, and evidence-based answers, include the relevant summarization "
+        "capabilities because client specialization is trained for synthesis rather than search. "
+        "key_steps and risk_steps must be short observable step "
         "descriptions, not hidden chain-of-thought. Assess the whole problem rather than choosing one tag."
     )
+    return server_model.generate(prompt)
+
+
+def _server_synthesize_agent_answers(
+    server_model: ServerRoutingModel,
+    question: str,
+    votes: list[AgentVote],
+    assessment: ServerRoutingAssessment,
+    relevant_global_records: list[LibraryRecord],
+    web_results: list[WebSearchResult],
+) -> str:
+    agent_outputs = "\n\n".join(
+        f"[{vote.agent_name}]\n{vote.raw_prediction}"
+        for vote in votes
+    ) or "(none)"
+    global_memory = "\n".join(
+        f"- summary={record.summary}; detail={' '.join(record.detail.split())[:360]}; "
+        f"tags={', '.join(record.tags)}"
+        for record in relevant_global_records
+    ) or "(none)"
+    web_evidence = "\n\n".join(
+        f"[{index}] title={result.title}\nurl={result.url}\n"
+        f"retrieved_at={result.retrieved_at}\n"
+        f"images={', '.join(result.image_urls) or '(none)'}\n"
+        f"evidence={(result.content or result.snippet)[:2000]}"
+        for index, result in enumerate(web_results, start=1)
+    ) or "(none)"
+    prompt = (
+        "Server-side selected-agent synthesis.\n"
+        "Independently distill the useful facts, calculations, checks, and conclusions from every "
+        "selected agent response. Form their union, remove duplicates and contradictions, and solve "
+        "any remaining disagreement on the server. Read every selected response in full.\n\n"
+        f"Question:\n{question}\n\n"
+        f"Observable key steps:\n{json.dumps(assessment.key_steps, ensure_ascii=False)}\n\n"
+        f"Observable risk steps:\n{json.dumps(assessment.risk_steps, ensure_ascii=False)}\n\n"
+        f"Retrieved experience relevant to the target and constraints:\n{global_memory}\n\n"
+        f"Server-retrieved web evidence:\n{web_evidence}\n\n"
+        f"Selected agent responses:\n{agent_outputs}\n\n"
+        "Use web evidence only for claims it directly supports. Preserve source URLs when external "
+        "facts are used, and prefer official or more recently retrieved sources when they conflict. "
+        "Return a concise integrated solution followed by the final numeric answer in the exact "
+        "form `#### number`."
+    )
+    local_image_paths = list(
+        dict.fromkeys(
+            path
+            for result in web_results
+            for path in result.local_image_paths
+            if Path(path).is_file()
+        )
+    )
+    generate_multimodal = getattr(server_model, "generate_multimodal", None)
+    if local_image_paths and callable(generate_multimodal):
+        return generate_multimodal(prompt, local_image_paths)
     return server_model.generate(prompt)
 
 
@@ -754,6 +956,21 @@ def _parse_server_routing_assessment(text: str, question: str = "") -> ServerRou
             difficulty = "easy"
     return ServerRoutingAssessment(
         difficulty=difficulty,
+        target=" ".join(str(payload.get("target", "")).split())[:360],
+        entities=_string_list(payload.get("entities", []), limit=12),
+        facts=_string_list(payload.get("facts", []), limit=12),
+        constraints=_string_list(payload.get("constraints", []), limit=12),
+        numbers=_string_list(payload.get("numbers", []), limit=12),
+        units=_string_list(payload.get("units", []), limit=12),
+        keywords=_string_list(payload.get("keywords", []), limit=12),
+        search_queries=_string_list(payload.get("search_queries", []), limit=8),
+        requires_web_search=payload.get("requires_web_search") is True,
+        web_cache_ttl_seconds=_bounded_int(
+            payload.get("web_cache_ttl_seconds"),
+            default=86400,
+            minimum=300,
+            maximum=2_592_000,
+        ),
         key_steps=_string_list(payload.get("key_steps", [])),
         risk_steps=_string_list(payload.get("risk_steps", [])),
         capability_tags=sorted(set(capability_tags) | fallback_tags),
@@ -799,6 +1016,14 @@ def _string_list(value: object, limit: int = 6) -> list[str]:
     if not isinstance(value, list):
         return []
     return [" ".join(str(item).split())[:240] for item in value if str(item).strip()][:limit]
+
+
+def _bounded_int(value: object, *, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return min(max(parsed, minimum), maximum)
 
 
 def _format_server_guidance(assessment: ServerRoutingAssessment) -> str:
@@ -848,26 +1073,79 @@ def _select_relevant_global_records(
     question: str,
     records: list[LibraryRecord],
     limit: int = 5,
+    assessment: ServerRoutingAssessment | None = None,
 ) -> list[LibraryRecord]:
-    question_tags = _extract_routing_tags(question)
-    question_words = set(_routing_words(question))
+    assessment = assessment or ServerRoutingAssessment()
+    queries = _unique_nonempty(
+        [question, assessment.target, *assessment.search_queries, *assessment.keywords]
+    )
+    key_facts = _unique_nonempty(
+        [*assessment.facts, *assessment.constraints, *assessment.entities, *assessment.numbers, *assessment.units]
+    )
+    query_tags = assessment.routing_tags or _extract_routing_tags(question)
+    query_terms = set().union(*(_retrieval_terms(query) for query in queries)) if queries else set()
+    fact_terms = [_retrieval_terms(fact) for fact in key_facts]
     ranked = sorted(
         enumerate(records),
         key=lambda indexed_record: (
-            len(
-                question_tags
-                & (
-                    _extract_routing_tags(indexed_record[1].source_task)
-                    | _extract_routing_tags(indexed_record[1].summary)
-                    | _extract_routing_tags(" ".join(indexed_record[1].tags))
-                )
-            ),
-            len(question_words & set(_routing_words(indexed_record[1].source_task))),
+            _global_record_relevance(indexed_record[1], query_terms, fact_terms, query_tags),
             indexed_record[0],
         ),
         reverse=True,
     )
     return [record for _, record in ranked[:limit]]
+
+
+def _global_record_relevance(
+    record: LibraryRecord,
+    query_terms: set[str],
+    fact_terms: list[set[str]],
+    query_tags: set[str],
+) -> float:
+    record_text = f"{record.source_task} {record.summary} {record.detail} {' '.join(record.tags)}"
+    record_terms = _retrieval_terms(record_text)
+    record_tags = _extract_routing_tags(record_text)
+    lexical = len(query_terms & record_terms) / len(query_terms) if query_terms else 0.0
+    facts = max(
+        (len(terms & record_terms) / len(terms) for terms in fact_terms if terms),
+        default=0.0,
+    )
+    tags = len(query_tags & record_tags) / len(query_tags) if query_tags else 0.0
+    quality = _training_evidence_value(record)
+    return round(lexical * 0.35 + facts * 0.30 + tags * 0.25 + quality * 0.10, 6)
+
+
+def _retrieval_terms(text: str) -> set[str]:
+    lower = str(text).lower()
+    terms = set(_routing_words(lower))
+    for sequence in re.findall(r"[\u4e00-\u9fff]+", lower):
+        if len(sequence) >= 2:
+            terms.add(sequence)
+            terms.update(sequence[index : index + 2] for index in range(len(sequence) - 1))
+    terms.update(re.findall(r"\d+(?:\.\d+)?%?", lower))
+    return terms
+
+
+def _unique_nonempty(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(value.strip() for value in values if str(value).strip()))
+
+
+def _assessment_key_information(assessment: ServerRoutingAssessment) -> dict[str, object]:
+    return {
+        "target": assessment.target,
+        "entities": assessment.entities,
+        "facts": assessment.facts,
+        "constraints": assessment.constraints,
+        "numbers": assessment.numbers,
+        "units": assessment.units,
+        "keywords": assessment.keywords,
+        "search_queries": assessment.search_queries,
+        "requires_web_search": assessment.requires_web_search,
+        "web_cache_ttl_seconds": assessment.web_cache_ttl_seconds,
+        "key_steps": assessment.key_steps,
+        "risk_steps": assessment.risk_steps,
+        "routing_tags": sorted(assessment.routing_tags),
+    }
 
 
 def _routing_words(text: str) -> list[str]:
@@ -991,9 +1269,10 @@ def reset_b_magent_training_state(
     lora_output_dir: Path | None = Path("data/lora_adapters"),
     agent_names: tuple[str, ...] = AGENT_NAMES,
     reset_evaluation_libraries: bool = True,
+    reset_key_information_store: bool = False,
     report_files: tuple[Path, ...] = (),
 ) -> None:
-    """Remove all generated experience and results before a fresh b_magent run."""
+    """Remove training state while preserving verified server key information by default."""
     for agent_name in agent_names:
         agent_dir = data_dir / agent_name
         for file_name in ("professional_library.jsonl", "private_data.jsonl"):
@@ -1004,6 +1283,8 @@ def reset_b_magent_training_state(
     server_dir = data_dir / "qwen_server_agent"
     for file_name in ("global_evaluation_library.jsonl", "agent_training_tags.jsonl"):
         (server_dir / file_name).unlink(missing_ok=True)
+    if reset_key_information_store:
+        (server_dir / "key_information_store.jsonl").unlink(missing_ok=True)
     shutil.rmtree(server_dir / "agent_training_tags", ignore_errors=True)
 
     if lora_output_dir is not None:
@@ -1061,12 +1342,28 @@ def _extract_global_source_id(detail: str) -> str:
 
 
 def format_gsm8k_training_task(sample: GSM8KSample) -> str:
-    return (
-        "Solve this GSM8K training problem and preserve reusable solving lessons.\n"
-        f"Question: {sample.question}\n"
-        f"Gold reasoning: {sample.answer}\n"
-        f"Gold final answer: {sample.final_answer}"
+    task = (
+        f"Complete this {sample.task_type} evidence summarization task.\n"
+        "The second-layer server has already retrieved the candidate evidence. Synthesize the useful "
+        "facts, remove duplication and conflicts, preserve every user constraint, and produce a concise "
+        "evidence-grounded final answer. Do not perform another search.\n"
+        f"Task: {sample.question}"
     )
+    if sample.reference_information:
+        task += f"\n\nCandidate reference information:\n{sample.reference_information}"
+    if sample.retrieval_targets:
+        task += f"\n\nGold retrieval targets:\n{'; '.join(sample.retrieval_targets)}"
+    task += f"\n\nGold reference response:\n{sample.answer}"
+    if sample.final_answer:
+        task += f"\nGold final answer: {sample.final_answer}"
+    return task
+
+
+def format_answer_validation_task(sample: GSM8KSample) -> str:
+    task = f"Task: {sample.question}"
+    if sample.reference_information:
+        task += f"\n\nCandidate reference information:\n{sample.reference_information}"
+    return task
 
 
 def format_voting_prediction_detail(prediction: VotingPrediction, total: int) -> str:
@@ -1097,7 +1394,7 @@ def print_voting_prediction_detail(prediction: VotingPrediction, total: int) -> 
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Training entry for b_magent agents and GSM8K runners.")
+    parser = argparse.ArgumentParser(description="Training entry for b_magent agents and benchmark runners.")
     parser.add_argument(
         "--mode",
         choices=["b-magent", "placeholder", "local-qwen-vote"],
@@ -1113,7 +1410,7 @@ def parse_args() -> argparse.Namespace:
         default="local-qwen",
         help="Backend for --mode b-magent. local-qwen calls the configured local model; demo is deterministic smoke test logic.",
     )
-    parser.add_argument("--dataset-dir", type=Path, default=Path("data/gsm8k"))
+    parser.add_argument("--dataset-dir", type=Path, default=Path("data/TravelPlanner"))
     parser.add_argument(
         "--rounds",
         type=int,
@@ -1168,7 +1465,7 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_LORA_THRESHOLD,
         help="Number of newly accepted samples accumulated per agent before one LoRA refresh.",
     )
-    parser.add_argument("--lora-max-seq-length", type=int, default=1024)
+    parser.add_argument("--lora-max-seq-length", type=int, default=4096)
     parser.add_argument("--lora-train-batch-size", type=int, default=4)
     parser.add_argument("--lora-gradient-accumulation-steps", type=int, default=1)
     parser.add_argument("--lora-epochs", type=float, default=1.0)
@@ -1178,6 +1475,15 @@ def parse_args() -> argparse.Namespace:
         "--allow-uncorrect-lora-labels",
         action="store_true",
         help="Allow LoRA SFT examples even when a gold final answer is present and the reflected answer does not match it.",
+    )
+    parser.add_argument(
+        "--answer-validator",
+        choices=["gpt-5.6-sol", "local"],
+        default="gpt-5.6-sol",
+        help=(
+            "Correctness judge for evolved answers. gpt-5.6-sol requires OPENAI_API_KEY; "
+            "local keeps the deterministic fallback used by offline tests."
+        ),
     )
     args = parser.parse_args()
     args.dataset_dir = resolve_project_path(args.dataset_dir)
@@ -1196,7 +1502,10 @@ def resolve_project_path(path: Path) -> Path:
 def build_b_magent_backend(args: argparse.Namespace) -> object | None:
     if args.backend == "demo":
         return None
-    engine = LocalQwenEngine(model_name_or_path=args.model_path)
+    engine = LocalQwenEngine(
+        model_name_or_path=args.model_path,
+        system_prompt=GENERAL_TASK_INSTRUCTION,
+    )
     return LocalQwenEvolutionBackend(
         engine,
         lora_output_dir=args.lora_output_dir if args.enable_lora else None,
@@ -1273,6 +1582,11 @@ def main() -> None:
             on_round_end=print_training_round_end,
             start_round=start_round,
             preserve_private_datasets=args.resume,
+            answer_validator=(
+                build_answer_validator_from_env()
+                if args.answer_validator == "gpt-5.6-sol"
+                else None
+            ),
         )
         export_json_report(report, args.output)
         print(f"b_magent agents: {', '.join(report.agents)}")
@@ -1297,6 +1611,11 @@ def main() -> None:
             models,
             limit=args.test_limit,
             on_prediction=print_voting_prediction_detail,
+            answer_validator=(
+                build_answer_validator_from_env()
+                if args.answer_validator == "gpt-5.6-sol"
+                else None
+            ),
         )
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(
