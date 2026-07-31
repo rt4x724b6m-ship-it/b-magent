@@ -14,10 +14,45 @@ from b_magent.datasets import GSM8KDataset
 from b_magent.models import Draft, PeerEvaluation
 from b_magent.seed import seed_agent_libraries
 from b_magent.trajectory import mask_draft_for_evaluation
-from b_magent.workflow import MultiAgentWorkflow, build_default_agents
+from b_magent.workflow import MultiAgentWorkflow, _build_visual_completeness_record, build_default_agents
 
 
 class WorkflowTestCase(unittest.TestCase):
+    def test_visual_completeness_record_scores_full_image_inventory(self) -> None:
+        elements = {
+            "summary": "A red car dashboard",
+            "visible_text": ["Revenue 42"],
+            "objects": ["red car"],
+            "layout": "title above car",
+            "colors": ["red"],
+        }
+        task = (
+            "Image: /tmp/example.png\nQuestion: What is shown?\n"
+            f"Gold image elements: {json.dumps(elements)}\n"
+            'Gold reasoning: ["The visible object is a car."]\n'
+            "Gold final answer: car"
+        )
+        draft = Draft(
+            "qwen_agent_1",
+            "vision",
+            json.dumps({"final_answer": "car", "recognized_elements": elements}),
+            [], [], [], [],
+        )
+
+        record = _build_visual_completeness_record(task, draft)
+
+        self.assertIsNotNone(record)
+        assert record is not None
+        self.assertEqual(record.library_type, "visual_completeness")
+        self.assertIn("visual_completeness_score=1.0000", record.detail)
+        self.assertIn("ocr_coverage_score=1.0000", record.detail)
+        self.assertIn("object_coverage_score=1.0000", record.detail)
+        self.assertIn("layout_coverage_score=1.0000", record.detail)
+        self.assertEqual(
+            record.tags,
+            ["visual-content-completeness", "ocr-coverage", "object-coverage", "layout-coverage"],
+        )
+
     def test_masked_trajectory_keeps_answer_quality_signals(self) -> None:
         draft = Draft(
             "qwen_agent_1",

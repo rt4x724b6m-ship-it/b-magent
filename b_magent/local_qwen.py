@@ -28,10 +28,18 @@ MULTIMODAL_ANSWER_INSTRUCTION = (
 )
 
 VISUAL_OUTPUT_INSTRUCTION = (
-    "Return valid JSON only with this exact top-level shape: "
-    '{"image_elements":{"summary":"...","objects":[],"visible_text":[],"layout":"...","colors":[]},'
-    '"final_answer":"..."}. Inspect the full image, include salient visible elements, and keep final_answer '
-    "brief and directly responsive to the question."
+    "Return valid JSON only. Put final_answer first, using this compact shape: "
+    '{"final_answer":"...","evidence":["..."]}. '
+    "final_answer must be brief and directly answer the question. Include at most three short visible-image "
+    "evidence strings; do not transcribe the full image or repeat unrelated text."
+)
+
+TRAINING_VISUAL_OUTPUT_INSTRUCTION = (
+    "Return valid JSON only with final_answer first and this shape: "
+    '{"final_answer":"...","recognized_elements":{"visible_text":[],"objects":[],'
+    '"layout":"...","colors":[]},"evidence":["..."]}. '
+    "For recognized_elements, inspect the entire image and include all readable text, distinct objects, "
+    "important layout regions, and colors, including content not directly needed for the final answer."
 )
 
 
@@ -54,6 +62,7 @@ class LocalQwenEngine:
         generation_config: QwenGenerationConfig | None = None,
         local_files_only: bool = True,
         system_prompt: str | None = MULTIMODAL_ANSWER_INSTRUCTION,
+        max_image_pixels: int = 1024 * 28 * 28,
     ) -> None:
         self.model_name_or_path = str(model_name_or_path)
         self.device_map = device_map
@@ -61,6 +70,7 @@ class LocalQwenEngine:
         self.generation_config = generation_config or QwenGenerationConfig()
         self.local_files_only = local_files_only
         self.system_prompt = system_prompt
+        self.max_image_pixels = max_image_pixels
         self._tokenizer: Any | None = None
         self._model: Any | None = None
         self._is_vision_model = False
@@ -103,6 +113,8 @@ class LocalQwenEngine:
         model = self._model
         if adapter_path is not None and _is_lora_adapter_ready(Path(adapter_path)):
             model = self._load_adapter_model(Path(adapter_path))
+        elif self._adapter_models:
+            self._clear_adapter_models()
         messages: list[dict[str, Any]] = []
         if self.system_prompt:
             messages.append({"role": "system", "content": self.system_prompt})
@@ -155,11 +167,7 @@ class LocalQwenEngine:
         with self._adapter_lock:
             if key in self._adapter_models:
                 return self._adapter_models[key]
-            self._adapter_models = {
-                cached_key: cached_model
-                for cached_key, cached_model in self._adapter_models.items()
-                if cached_key[0] != resolved_path
-            }
+            self._clear_adapter_models(lock_held=True)
             try:
                 from peft import PeftModel
             except ImportError as exc:
@@ -171,10 +179,14 @@ class LocalQwenEngine:
             self._adapter_models[key] = adapter_model
             return adapter_model
 
-    def unload(self) -> None:
+    def _clear_adapter_models(self, lock_held: bool = False) -> None:
+        if not lock_held:
+            with self._adapter_lock:
+                self._clear_adapter_models(lock_held=True)
+            return
+        if not self._adapter_models:
+            return
         self._adapter_models.clear()
-        self._model = None
-        self._tokenizer = None
         gc.collect()
         try:
             import torch
@@ -237,9 +249,13 @@ class LocalQwenEngine:
         if self._is_vision_model:
             loader = transformers.Qwen2_5_VLForConditionalGeneration
             processor_loader = AutoProcessor
+        processor_kwargs = {"local_files_only": self.local_files_only}
+        if self._is_vision_model:
+            processor_kwargs["use_fast"] = True
+            processor_kwargs["max_pixels"] = self.max_image_pixels
         self._tokenizer = processor_loader.from_pretrained(
             self.model_name_or_path,
-            local_files_only=self.local_files_only,
+            **processor_kwargs,
         )
         self._model = loader.from_pretrained(
             self.model_name_or_path,
@@ -358,8 +374,7 @@ class LocalQwenEvolutionBackend:
             f"{_format_context(evaluation_alerts)}\n\n"
             "Inspect the supplied image before answering. Verify OCR text, object attributes, spatial "
             "relations, and counts when relevant; do not infer details that are not visible. "
-            "Produce valid JSON with top-level keys image_elements and final_answer. image_elements must contain "
-            "summary, objects, visible_text, layout, and colors. final_answer must answer the question briefly."
+            f"{TRAINING_VISUAL_OUTPUT_INSTRUCTION}"
         )
         answer = self.engine.generate(prompt, adapter_path=self._adapter_path(agent_name))
         thought_trace = [

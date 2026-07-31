@@ -4,6 +4,10 @@ import re
 
 
 ROUTING_TAGS = (
+    "visual-content-completeness",
+    "ocr-coverage",
+    "object-coverage",
+    "layout-coverage",
     "ocr",
     "chart-reading",
     "table-reading",
@@ -37,6 +41,10 @@ ROUTING_TAGS = (
 )
 
 ROUTING_TAG_IMPORTANCE = {
+    "visual-content-completeness": 2.0,
+    "ocr-coverage": 1.6,
+    "object-coverage": 1.5,
+    "layout-coverage": 1.3,
     "ocr": 1.25,
     "visual-grounding": 1.25,
     "fine-grained-detail": 1.15,
@@ -49,6 +57,10 @@ ROUTING_TAG_IMPORTANCE = {
 }
 
 _TAG_ALIASES = {
+    "visual-content-completeness": ("visual content completeness", "complete image content", "图像内容完整度", "完整识别"),
+    "ocr-coverage": ("ocr coverage", "text coverage", "文字覆盖率", "文本完整度"),
+    "object-coverage": ("object coverage", "object completeness", "物体覆盖率", "物体完整度"),
+    "layout-coverage": ("layout coverage", "layout completeness", "布局覆盖率", "布局完整度"),
     "ocr": ("ocr", "read the text", "scene text", "written", "label", "文字识别", "读取文字", "文本"),
     "chart-reading": ("chart", "graph", "plot", "infographic", "图表", "信息图", "趋势图"),
     "table-reading": ("table", "row", "column", "表格", "行", "列"),

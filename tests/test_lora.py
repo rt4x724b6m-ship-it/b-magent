@@ -14,6 +14,7 @@ from b_magent.lora import (
     LoraTrainingConfig,
     LoraUpdate,
     build_lora_example,
+    build_visual_supervision_target,
     tokenize_lora_row,
 )
 from b_magent.models import Draft, EvaluationScores, PeerEvaluation, SelfImprovement
@@ -138,6 +139,18 @@ class LoraEvolutionTestCase(unittest.TestCase):
         self.assertNotIn("second hidden line", example.input)
         self.assertNotIn("#### 2", example.input)
         self.assertIn("Question: q", example.input)
+
+    def test_visual_target_preserves_complete_elements_reasoning_and_answer_first(self) -> None:
+        target = build_visual_supervision_target(
+            'Question: q\nGold image elements: {"text":["A"],"numbers":["42"]}\n'
+            'Gold reasoning: ["Read A", "Connect A to 42"]\nGold final answer: 42 | forty two'
+        )
+
+        payload = json.loads(target)
+        self.assertEqual(list(payload), ["final_answer", "image_elements", "reasoning"])
+        self.assertEqual(payload["final_answer"], "42")
+        self.assertEqual(payload["image_elements"]["numbers"], ["42"])
+        self.assertEqual(payload["reasoning"], ["Read A", "Connect A to 42"])
 
     def test_manager_accumulates_per_agent_datasets_and_trains_when_curated_examples_exist(self) -> None:
         with tempfile.TemporaryDirectory(prefix="b_magent_lora_test_") as temp:

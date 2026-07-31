@@ -35,6 +35,8 @@ from b_magent.workflow import MultiAgentWorkflow, build_default_agents
 
 AGENT_NAMES = ("qwen_agent_1", "qwen_agent_2", "qwen_agent_3", "qwen_agent_4")
 STANDARD_PRIVATE_TRAIN_SIZE = 200
+MIN_ROUTING_TAG_EVIDENCE = 5
+MAX_ROUTING_TAG_CONTRIBUTION = 2.0
 
 
 class TrainableQwenModel(Protocol):
@@ -180,6 +182,7 @@ class BMagentTrainingRound:
     evaluation_evolutions: int
     global_downlinks: int = 0
     global_uploads: int = 0
+    visual_completeness_metrics: dict[str, dict[str, float]] = field(default_factory=dict)
     lora_updates: list[LoraUpdate] = field(default_factory=list)
 
 
@@ -196,6 +199,7 @@ class BMagentTrainingReport:
     curated_success_records: dict[str, int]
     error_reflection_records: dict[str, int]
     evaluation_records: dict[str, int]
+    visual_completeness_metrics: dict[str, dict[str, float]] = field(default_factory=dict)
     lora_enabled: bool = False
     lora_updates: dict[str, int] = field(default_factory=dict)
 
@@ -288,6 +292,14 @@ def run_b_magent_training_entry(
             workflow.server_agent,
         )
         report = workflow.run(task, participant_names=participant_schedule[index])
+        round_visual_metrics = collect_visual_completeness_metrics(report.server_training_tag_updates)
+        if is_vision_training and isinstance(sample, VisionQASample) and sample.image_elements:
+            missing_metrics = sorted(set(report.participants) - set(round_visual_metrics))
+            if missing_metrics:
+                raise RuntimeError(
+                    "visual training did not generate completeness tags for: "
+                    + ", ".join(missing_metrics)
+                )
         global_uploads = len(report.global_experience.global_updates) if report.global_experience else 0
         lora_updates = []
         if lora_manager is not None:
@@ -311,6 +323,7 @@ def run_b_magent_training_entry(
             evaluation_evolutions=len(report.evaluation_evolutions),
             global_downlinks=global_downlinks,
             global_uploads=global_uploads,
+            visual_completeness_metrics=round_visual_metrics,
             lora_updates=lora_updates,
         )
         training_rounds.append(round_report)
@@ -349,6 +362,7 @@ def run_b_magent_training_entry(
             agent.name: len(agent.evaluation_library.all_records()) - evaluation_before[agent.name]
             for agent in agents
         },
+        visual_completeness_metrics=aggregate_visual_completeness_metrics(training_rounds),
         lora_enabled=lora_manager is not None,
         lora_updates={
             agent.name: sum(
@@ -364,6 +378,48 @@ def run_b_magent_training_entry(
 
 def count_new_records_with_tag(records: list[LibraryRecord], start_index: int, tag: str) -> int:
     return sum(1 for record in records[start_index:] if tag in record.tags)
+
+
+def collect_visual_completeness_metrics(
+    records: list[LibraryRecord],
+) -> dict[str, dict[str, float]]:
+    metrics: dict[str, dict[str, float]] = {}
+    score_names = (
+        "visual_completeness_score",
+        "ocr_coverage_score",
+        "object_coverage_score",
+        "layout_coverage_score",
+    )
+    for record in records:
+        if _source_library_type(record) != "visual_completeness" or not record.agent_name:
+            continue
+        parsed: dict[str, float] = {}
+        for score_name in score_names:
+            match = re.search(rf"{score_name}=([0-9.]+)", record.detail)
+            if match:
+                parsed[score_name] = max(0.0, min(float(match.group(1)), 1.0))
+        if len(parsed) == len(score_names):
+            metrics[record.agent_name] = parsed
+    return metrics
+
+
+def aggregate_visual_completeness_metrics(
+    rounds: list[BMagentTrainingRound],
+) -> dict[str, dict[str, float]]:
+    values: dict[str, dict[str, list[float]]] = {}
+    for round_report in rounds:
+        for agent_name, metrics in round_report.visual_completeness_metrics.items():
+            agent_values = values.setdefault(agent_name, {})
+            for score_name, score in metrics.items():
+                agent_values.setdefault(score_name, []).append(score)
+    return {
+        agent_name: {
+            score_name: round(sum(scores) / len(scores), 4)
+            for score_name, scores in metric_values.items()
+            if scores
+        }
+        for agent_name, metric_values in values.items()
+    }
 
 
 def count_jsonl_lines(path: Path) -> int:
@@ -677,6 +733,7 @@ def build_four_local_qwen_agents(
 
 
 def majority_vote(votes: list[AgentVote]) -> str:
+    votes = _usable_votes(votes)
     counts: dict[str, int] = {}
     for vote in votes:
         counts[vote.predicted_answer] = counts.get(vote.predicted_answer, 0) + 1
@@ -692,6 +749,7 @@ def majority_vote(votes: list[AgentVote]) -> str:
 
 def routed_vote(votes: list[AgentVote]) -> str:
     """Use the most tag-matched agent unless the 2nd and 3rd agree."""
+    votes = _usable_votes(votes)
     if not votes:
         return ""
     ranked_votes = sorted(
@@ -703,6 +761,20 @@ def routed_vote(votes: list[AgentVote]) -> str:
     if len(ranked) >= 3 and ranked[1].predicted_answer == ranked[2].predicted_answer:
         return ranked[1].predicted_answer
     return ranked[0].predicted_answer
+
+
+def _usable_votes(votes: list[AgentVote]) -> list[AgentVote]:
+    usable = [vote for vote in votes if _is_plausible_answer(vote.predicted_answer)]
+    return usable or votes
+
+
+def _is_plausible_answer(answer: str) -> bool:
+    candidate = str(answer).strip()
+    if not candidate or len(candidate) > 160 or len(candidate.split()) > 24:
+        return False
+    if candidate.startswith(("{", "[", '"')) or '"final_answer"' in candidate:
+        return False
+    return True
 
 
 def select_agents_by_server_tags(
@@ -782,21 +854,33 @@ def _build_agent_tag_index(records: list[LibraryRecord]) -> dict[str, dict[str, 
         semantic_tags.update(extract_math_task_tags(record.source_task))
         semantic_tags.add("overall-reliability")
         task_key = record.source_task.strip() or record.created_at
-        value = _training_evidence_value(record)
         agent_evidence = evidence.setdefault(record.agent_name, {})
         for tag in semantic_tags:
+            value = _training_evidence_value(record, tag)
             task_evidence = agent_evidence.setdefault(tag, {})
             task_evidence[task_key] = max(task_evidence.get(task_key, 0.0), value)
 
     index: dict[str, dict[str, float]] = {}
     for agent_name, tag_evidence in evidence.items():
-        index[agent_name] = {}
-        for tag, task_values in tag_evidence.items():
+        reliability_values = list(tag_evidence.get("overall-reliability", {}).values())
+        reliability = _evidence_quality(reliability_values)
+        index[agent_name] = {
+            "overall-reliability": reliability,
+            "__evidence_count__": float(len(reliability_values)),
+        }
+        for tag in ROUTING_TAGS:
+            task_values = tag_evidence.get(tag, {})
             values = list(task_values.values())
-            quality = (1.0 + sum(values)) / (2.0 + len(values))
-            evidence_bonus = 1.0 + min(math.log1p(len(values)) / 10.0, 0.35)
-            index[agent_name][tag] = round(quality * evidence_bonus, 4)
+            if len(values) < MIN_ROUTING_TAG_EVIDENCE:
+                continue
+            index[agent_name][tag] = _evidence_quality(values)
     return index
+
+
+def _evidence_quality(values: list[float]) -> float:
+    quality = (1.0 + sum(values)) / (2.0 + len(values))
+    evidence_bonus = 1.0 + min(math.log1p(len(values)) / 10.0, 0.35)
+    return round(quality * evidence_bonus, 4)
 
 
 def _extract_routing_tags(text: str) -> set[str]:
@@ -811,6 +895,11 @@ def _parse_server_routing_assessment(text: str, question: str = "") -> ServerRou
     if not capability_tags:
         capability_tags = sorted(_extract_routing_tags(question))
     combined_tags = set(capability_tags) | set(risk_tags) | fallback_tags
+    if "Image:" in question:
+        capability_tags = sorted(
+            set(capability_tags)
+            | {"visual-content-completeness", "ocr-coverage", "object-coverage", "layout-coverage"}
+        )
     difficulty = str(payload.get("difficulty", "")).strip().lower()
     if difficulty not in {"easy", "medium", "hard"}:
         specific_tags = combined_tags - {"arithmetic", "final-answer", "verification", "structure"}
@@ -896,7 +985,10 @@ def _tag_match_score(profile: set[str] | dict[str, float], routing_tags: set[str
     if isinstance(profile, set):
         return sum(routing_tag_importance(tag) for tag in profile & routing_tags)
     return round(
-        sum(profile.get(tag, 0.0) * routing_tag_importance(tag) for tag in routing_tags),
+        sum(
+            min(profile.get(tag, 0.0) * routing_tag_importance(tag), MAX_ROUTING_TAG_CONTRIBUTION)
+            for tag in routing_tags
+        ),
         4,
     )
 
@@ -955,7 +1047,16 @@ def _source_library_type(record: LibraryRecord) -> str:
     return record.library_type
 
 
-def _training_evidence_value(record: LibraryRecord) -> float:
+def _training_evidence_value(record: LibraryRecord, tag: str = "") -> float:
+    if _source_library_type(record) == "visual_completeness":
+        score_name = {
+            "ocr-coverage": "ocr_coverage_score",
+            "object-coverage": "object_coverage_score",
+            "layout-coverage": "layout_coverage_score",
+        }.get(tag, "visual_completeness_score")
+        match = re.search(rf"{score_name}=([0-9.]+)", record.detail)
+        if match:
+            return max(0.0, min(float(match.group(1)), 1.0))
     tags = set(record.tags)
     if "curated-success-experience" in tags:
         return 1.0
@@ -1131,12 +1232,14 @@ def _extract_global_source_id(detail: str) -> str:
 def format_training_task(sample: GSM8KSample | VisionQASample) -> str:
     if isinstance(sample, VisionQASample):
         accepted = " | ".join(sample.answers or (sample.final_answer,))
+        visual_reasoning = build_visual_gold_reasoning(sample)
         return (
-            "Answer this visual question and preserve reusable visual reasoning lessons.\n"
+            "Inspect the complete image, answer the question, and preserve grounded visual reasoning.\n"
             f"Dataset: {sample.dataset}\n"
             f"Image: {sample.image_path}\n"
             f"Question: {sample.question}\n"
             f"Gold image elements: {json.dumps(sample.image_elements, ensure_ascii=False)}\n"
+            f"Gold reasoning: {json.dumps(visual_reasoning, ensure_ascii=False)}\n"
             f"Gold final answer: {accepted}"
         )
     return (
@@ -1150,11 +1253,28 @@ def format_training_task(sample: GSM8KSample | VisionQASample) -> str:
 format_gsm8k_training_task = format_training_task
 
 
+def build_visual_gold_reasoning(sample: VisionQASample) -> list[str]:
+    """Create grounded reasoning supervision without using a model prediction."""
+    annotated_sections = [
+        name for name, value in sample.image_elements.items()
+        if value not in (None, "", [], {})
+    ]
+    evidence_source = ", ".join(annotated_sections) or "the complete image"
+    return [
+        f"Inspect {evidence_source} for evidence relevant to: {sample.question}",
+        "Resolve the answer only from the annotated visual evidence and its relationships.",
+        f"The visual evidence supports the answer: {sample.final_answer}",
+    ]
+
+
 def format_inference_question(sample: GSM8KSample | VisionQASample) -> str:
     if isinstance(sample, VisionQASample):
         return (
             f"Image: {sample.image_path}\nQuestion: {sample.question}\n"
-            "Return JSON with image_elements and final_answer."
+            'Return JSON only in this order: {"final_answer":"...",'
+            '"image_elements":{...},"reasoning":["..."]}. '
+            "First give the answer, then record all visible text, numbers, objects, layout, colors, "
+            "and relationships, followed by reasoning grounded in those elements."
         )
     return sample.question
 
@@ -1168,11 +1288,29 @@ def extract_prediction_answer(text: str, sample: GSM8KSample | VisionQASample) -
             return normalize_vision_answer(str(payload["final_answer"]))
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
+    json_answer = _extract_json_string_field(text, "final_answer")
+    if json_answer:
+        return normalize_vision_answer(json_answer)
     matches = re.findall(r"####\s*([^\n]+)", text)
     if matches:
         return normalize_vision_answer(matches[-1])
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     return normalize_vision_answer(lines[-1]) if lines else ""
+
+
+def _extract_json_string_field(text: str, field_name: str) -> str:
+    match = re.search(
+        rf'"{re.escape(field_name)}"\s*:\s*"((?:\\.|[^"\\])*)',
+        str(text),
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return ""
+    encoded_value = match.group(1)
+    try:
+        return json.loads(f'"{encoded_value}"')
+    except json.JSONDecodeError:
+        return encoded_value.replace(r'\"', '"').replace(r"\\", "\\")
 
 
 def _strip_json_fence(text: str) -> str:
@@ -1343,11 +1481,11 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_LORA_THRESHOLD,
         help="Number of newly accepted samples accumulated per agent before one LoRA refresh.",
     )
-    parser.add_argument("--lora-max-seq-length", type=int, default=1024)
-    parser.add_argument("--lora-train-batch-size", type=int, default=4)
-    parser.add_argument("--lora-gradient-accumulation-steps", type=int, default=1)
+    parser.add_argument("--lora-max-seq-length", type=int, default=4096)
+    parser.add_argument("--lora-train-batch-size", type=int, default=1)
+    parser.add_argument("--lora-gradient-accumulation-steps", type=int, default=4)
     parser.add_argument("--lora-epochs", type=float, default=1.0)
-    parser.add_argument("--lora-learning-rate", type=float, default=2e-4)
+    parser.add_argument("--lora-learning-rate", type=float, default=5e-5)
     parser.add_argument("--lora-min-evaluation-score", type=float, default=0.6)
     parser.add_argument(
         "--allow-uncorrect-lora-labels",
@@ -1405,11 +1543,16 @@ def print_training_round_start(round_index: int, rounds: int, question: str) -> 
 
 
 def print_training_round_end(round_index: int, rounds: int, report: BMagentTrainingRound) -> None:
+    completeness = ", ".join(
+        f"{agent_name}={metrics.get('visual_completeness_score', 0.0):.4f}"
+        for agent_name, metrics in report.visual_completeness_metrics.items()
+    ) or "none"
     print(
         f"[{round_index}/{rounds}] 完成: drafts={report.drafts} "
         f"evaluations={report.peer_reviews} professional_evolutions={report.self_improvements} "
         f"evaluation_evolutions={report.evaluation_evolutions} "
-        f"global_downlinks={report.global_downlinks} global_uploads={report.global_uploads}",
+        f"global_downlinks={report.global_downlinks} global_uploads={report.global_uploads} "
+        f"visual_completeness=({completeness})",
         flush=True,
     )
 
@@ -1491,6 +1634,16 @@ def main() -> None:
                 f"evaluation_records={evaluation_count} "
                 f"lora_updates={report.lora_updates.get(agent_name, 0)}"
             )
+        if report.visual_completeness_metrics:
+            print("visual completeness averages:")
+            for agent_name in report.agents:
+                metrics = report.visual_completeness_metrics.get(agent_name, {})
+                print(
+                    f"{agent_name}: overall={metrics.get('visual_completeness_score', 0.0):.4f} "
+                    f"ocr={metrics.get('ocr_coverage_score', 0.0):.4f} "
+                    f"objects={metrics.get('object_coverage_score', 0.0):.4f} "
+                    f"layout={metrics.get('layout_coverage_score', 0.0):.4f}"
+                )
     elif mode == "local-qwen-vote":
         models = build_four_local_qwen_agents(
             args.model_path,

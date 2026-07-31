@@ -22,10 +22,10 @@ class LoraTrainingConfig:
     threshold: int = DEFAULT_LORA_THRESHOLD
     require_correct_answer: bool = True
     min_evaluation_score: float = 0.6
-    max_seq_length: int = 1024
-    per_device_train_batch_size: int = 4
-    gradient_accumulation_steps: int = 1
-    learning_rate: float = 2e-4
+    max_seq_length: int = 4096
+    per_device_train_batch_size: int = 1
+    gradient_accumulation_steps: int = 4
+    learning_rate: float = 5e-5
     num_train_epochs: float = 1.0
     lora_r: int = 8
     lora_alpha: int = 16
@@ -35,9 +35,6 @@ class LoraTrainingConfig:
         "k_proj",
         "v_proj",
         "o_proj",
-        "gate_proj",
-        "up_proj",
-        "down_proj",
     )
 
     def __post_init__(self) -> None:
@@ -131,6 +128,9 @@ class PeftSFTLoraTrainer:
             local_files_only=True,
         )
         model.config.use_cache = False
+        model.gradient_checkpointing_enable()
+        if hasattr(model, "enable_input_require_grads"):
+            model.enable_input_require_grads()
         peft_config = LoraConfig(
             task_type=TaskType.CAUSAL_LM,
             r=config.lora_r,
@@ -167,6 +167,7 @@ class PeftSFTLoraTrainer:
             save_strategy="no",
             report_to=[],
             fp16=torch.cuda.is_available(),
+            gradient_checkpointing=True,
             label_names=["labels"],
             remove_unused_columns=False,
         )
@@ -232,10 +233,20 @@ class VisionLoraCollator:
             with Image.open(image_path) as source:
                 image = ImageOps.exif_transpose(source).convert("RGB")
                 encoded = self.processor(
-                    text=[rendered], images=[image], padding=False, return_tensors="pt"
+                    text=[rendered],
+                    images=[image],
+                    padding=False,
+                    truncation=True,
+                    max_length=self.max_length,
+                    return_tensors="pt",
                 )
                 prefix_encoded = self.processor(
-                    text=[rendered_prefix], images=[image], padding=False, return_tensors="pt"
+                    text=[rendered_prefix],
+                    images=[image],
+                    padding=False,
+                    truncation=True,
+                    max_length=self.max_length,
+                    return_tensors="pt",
                 )
             input_ids = encoded["input_ids"][0]
             attention_mask = encoded["attention_mask"][0]
@@ -479,7 +490,12 @@ def build_lora_example(
         )
     return LoraSFTExample(
         agent_name=draft.agent_name,
-        instruction="Solve the task, reflect on evaluator feedback, and produce the improved final answer.",
+        instruction=(
+            "Inspect the entire image, reason from the recognized evidence, and return JSON with "
+            "final_answer first, followed by complete image_elements and grounded reasoning."
+            if image
+            else "Solve the task, reflect on evaluator feedback, and produce the improved final answer."
+        ),
         input=input_text,
         output=target_output,
         image=image,
@@ -501,14 +517,39 @@ def build_visual_supervision_target(task: str) -> str:
                 elements = parsed
         except json.JSONDecodeError:
             pass
+    reasoning = extract_gold_reasoning(task)
     return json.dumps(
         {
-            "image_elements": elements,
+            # Keep the answer first so it remains available even if generation
+            # reaches its token limit after describing the full image.
             "final_answer": extract_gold_final_answer(task) or "",
+            "image_elements": elements,
+            "reasoning": reasoning,
         },
         ensure_ascii=False,
         separators=(",", ":"),
     )
+
+
+def extract_gold_reasoning(task: str) -> list[str]:
+    match = re.search(
+        r"(?ms)^Gold reasoning:\s*(.*?)(?=^Gold final answer:|\Z)",
+        task,
+    )
+    if not match:
+        return []
+    raw = match.group(1).strip()
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, list):
+        return [str(item).strip() for item in parsed if str(item).strip()]
+    if isinstance(parsed, str) and parsed.strip():
+        return [parsed.strip()]
+    return [line.strip().lstrip("- ") for line in raw.splitlines() if line.strip()]
 
 
 def _shorten_for_visual_sft(text: str, limit: int = 800) -> str:

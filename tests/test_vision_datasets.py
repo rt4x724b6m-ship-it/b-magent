@@ -15,10 +15,13 @@ from b_magent.datasets import MultimodalBenchmarkDataset, VisionQADataset, Visio
 from b_magent.local_qwen import _extract_image_path
 from b_magent.lora import is_improved_answer_correct
 from train.four_agent_private_train import (
+    AgentVote,
     extract_prediction_answer,
     format_inference_question,
     format_training_task,
     infographic_anls,
+    majority_vote,
+    routed_vote,
 )
 from scripts.prepare_vision_datasets import normalized_split_name
 
@@ -90,6 +93,7 @@ class VisionDatasetTest(unittest.TestCase):
         self.assertIn("Image: /tmp/example.png", task)
         self.assertIn("Gold final answer: 2 | two", task)
         self.assertIn("Gold image elements:", task)
+        self.assertIn("Gold reasoning:", task)
 
     def test_extracts_only_existing_task_image(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -103,12 +107,33 @@ class VisionDatasetTest(unittest.TestCase):
             question="Is the light on?", answer="yes", final_answer="yes", answers=("yes",),
             image_path="/tmp/example.png", dataset="mm-vet",
         )
-        self.assertIn("Return JSON with image_elements and final_answer.", format_inference_question(sample))
+        inference_prompt = format_inference_question(sample)
+        self.assertIn('"final_answer":"..."', inference_prompt)
+        self.assertIn('"image_elements":{...}', inference_prompt)
+        self.assertIn('"reasoning":["..."]', inference_prompt)
         self.assertEqual(extract_prediction_answer("Final answer: Yes.", sample), "yes")
         self.assertEqual(
             extract_prediction_answer('{"image_elements":{},"final_answer":"Yes."}', sample),
             "yes",
         )
+
+    def test_extracts_final_answer_from_truncated_or_fenced_json(self) -> None:
+        sample = VisionQASample(
+            question="Which platform?", answer="Pinterest", final_answer="Pinterest",
+            answers=("Pinterest",), image_path="/tmp/example.png", dataset="infographicsvqa",
+        )
+        truncated = '```json\n{"final_answer":"Pinterest","evidence":["heavy female audience"'
+        self.assertEqual(extract_prediction_answer(truncated, sample), "pinterest")
+
+    def test_voting_ignores_overlong_malformed_answers(self) -> None:
+        bad_answer = "unrelated paragraph " * 30
+        votes = [
+            AgentVote("agent_1", "", "pinterest", 1.0),
+            AgentVote("agent_2", "", bad_answer, 3.0),
+            AgentVote("agent_3", "", bad_answer, 2.0),
+        ]
+        self.assertEqual(majority_vote(votes), "pinterest")
+        self.assertEqual(routed_vote(votes), "pinterest")
 
     def test_lora_quality_gate_accepts_any_visual_reference(self) -> None:
         task = "Question: What is shown?\nGold final answer: bicycle | bike"

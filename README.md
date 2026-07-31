@@ -274,8 +274,8 @@ python -m train.four_agent_private_train \
 - `--lora-output-dir`：每个智能体的 LoRA SFT 数据集和 adapter 输出目录，默认 `data/lora_adapters`
 - `--lora-threshold`：每个智能体累计多少条新精选样本后刷新一次 LoRA，默认 `10`；训练结束会刷新不足阈值的剩余样本
 - `--lora-max-seq-length`：LoRA 训练最大序列长度，默认 `1024`
-- `--lora-train-batch-size`：单卡 LoRA batch size，默认 `4`
-- `--lora-gradient-accumulation-steps`：LoRA 梯度累积步数，默认 `1`
+- `--lora-train-batch-size`：单卡 LoRA batch size，默认 `1`
+- `--lora-gradient-accumulation-steps`：LoRA 梯度累积步数，默认 `4`
 - `--lora-epochs`：每次 LoRA SFT 的 epoch 数，默认 `1.0`
 - `--lora-learning-rate`：LoRA 学习率，默认 `2e-4`
 - `--lora-min-evaluation-score`：接受 LoRA 样本所需的最低评价分数，默认 `0.6`

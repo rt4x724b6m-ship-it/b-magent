@@ -3,6 +3,9 @@ __pycache__/
 *$py.class
 .env
 
+logs/
+backups/
+
 .qoder/
 
 models/

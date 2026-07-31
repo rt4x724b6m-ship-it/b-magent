@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -13,18 +14,21 @@ from _project_path import add_project_root_to_sys_path
 
 add_project_root_to_sys_path()
 
-from baseline.qwen_gsm8k import STANDARD_TEST_LIMIT, run_qwen_gsm8k_baseline
+from baseline.qwen_gsm8k import STANDARD_TEST_LIMIT, normalize_answer, run_qwen_gsm8k_baseline
 from b_magent.library import EvolutionLibrary
 from b_magent.local_qwen import (
     DEFAULT_QWEN_MODEL,
     LocalQwenAgentModel,
     LocalQwenEngine,
     NUMERIC_ANSWER_INSTRUCTION,
+    VISUAL_OUTPUT_INSTRUCTION,
 )
 from b_magent.models import LibraryRecord
 from train.four_agent_private_train import (
     AGENT_NAMES,
+    VotingPrediction,
     format_voting_prediction_detail,
+    normalize_vision_answer,
     print_voting_prediction_detail,
     reset_b_magent_training_state,
     run_four_agent_voting_on_test,
@@ -151,7 +155,7 @@ class KnowledgeLibraryVoteModel:
             f"{question}\n\n"
             "Server evaluation guidance:\n"
             f"{server_guidance or '(none)'}\n\n"
-            f"Output constraint:\n{NUMERIC_ANSWER_INSTRUCTION}"
+            f"Output constraint:\n{VISUAL_OUTPUT_INSTRUCTION}"
         )
         return self.engine.generate(prompt, adapter_path=self.adapter_path)
 
@@ -198,6 +202,30 @@ def _load_library_records(path: Path) -> list[LibraryRecord]:
             continue
         records.append(LibraryRecord.from_dict(json.loads(line)))
     return records
+
+
+def _repeat_tag_evidence(records: list[LibraryRecord], count: int = 5) -> list[LibraryRecord]:
+    repeated: list[LibraryRecord] = []
+    for record in records:
+        for index in range(count):
+            payload = record.to_dict()
+            payload["source_task"] = f"{record.source_task}-{index}"
+            repeated.append(LibraryRecord.from_dict(payload))
+    return repeated
+
+
+def _print_real_test_prediction(prediction: VotingPrediction, total: int) -> None:
+    result = "正确" if prediction.correct else "错误"
+    normalize = normalize_vision_answer if prediction.dataset != "gsm8k" else normalize_answer
+    gold_answer = normalize(prediction.gold_answer)
+    agent_results = ", ".join(
+        f"{vote.agent_name}={'正确' if normalize(vote.predicted_answer) == gold_answer else '错误'}"
+        for vote in prediction.votes
+    )
+    print(
+        f"[{prediction.index + 1}/{total}] 最终={result} | 选中智能体: {agent_results}",
+        flush=True,
+    )
 
 
 class FourAgentVotingTestCase(unittest.TestCase):
@@ -343,18 +371,87 @@ class FourAgentVotingTestCase(unittest.TestCase):
             )
 
         profiles = _build_agent_tag_index(
-            [
+            _repeat_tag_evidence([
                 record("qwen_agent_1", "error-reflection-experience"),
                 record("qwen_agent_2", "evaluated-experience"),
                 record("qwen_agent_3", "private-training"),
                 record("qwen_agent_4", "curated-success-experience"),
-            ]
+            ])
         )
 
         selected, _ = select_agents_by_server_tags(
             "money arithmetic",
             profiles,
             question="The price is $20.",
+        )
+
+        self.assertEqual(selected, ["qwen_agent_2", "qwen_agent_3", "qwen_agent_4"])
+
+    def test_sparse_routing_tag_is_discounted_by_evidence_count(self) -> None:
+        from train.four_agent_private_train import _build_agent_tag_index
+
+        records = [
+            LibraryRecord(
+                agent_name=agent_name,
+                library_type="agent_training_tags",
+                source_task=f"task-{agent_name}-{index}",
+                summary="training tags",
+                detail="source_library_type=professional",
+                tags=[
+                    agent_name,
+                    "agent-training-tags",
+                    "professional",
+                    "private-training",
+                    *(["fine-grained-detail"] if agent_name == "qwen_agent_3" and index < 2 else []),
+                ],
+            )
+            for agent_name in AGENT_NAMES
+            for index in range(5)
+        ]
+
+        profiles = _build_agent_tag_index(records)
+
+        self.assertNotIn("fine-grained-detail", profiles["qwen_agent_1"])
+        self.assertNotIn("fine-grained-detail", profiles["qwen_agent_2"])
+        self.assertNotIn("fine-grained-detail", profiles["qwen_agent_4"])
+        self.assertNotIn("fine-grained-detail", profiles["qwen_agent_3"])
+
+    def test_routing_selects_three_agents_with_highest_visual_completeness(self) -> None:
+        from train.four_agent_private_train import _build_agent_tag_index, select_agents_by_server_tags
+
+        completeness = {
+            "qwen_agent_1": 0.1,
+            "qwen_agent_2": 0.4,
+            "qwen_agent_3": 0.7,
+            "qwen_agent_4": 0.9,
+        }
+        records = [
+            LibraryRecord(
+                agent_name=agent_name,
+                library_type="agent_training_tags",
+                source_task=f"visual-task-{index}",
+                summary="full-image recognition coverage",
+                detail=(
+                    "source_library_type=visual_completeness | "
+                    f"visual_completeness_score={score} | ocr_coverage_score={score} | "
+                    f"object_coverage_score={score} | layout_coverage_score={score}"
+                ),
+                tags=[
+                    "visual-content-completeness",
+                    "ocr-coverage",
+                    "object-coverage",
+                    "layout-coverage",
+                ],
+            )
+            for agent_name, score in completeness.items()
+            for index in range(5)
+        ]
+        profiles = _build_agent_tag_index(records)
+
+        selected, _ = select_agents_by_server_tags(
+            "visual content completeness ocr coverage object coverage layout coverage",
+            profiles,
+            question="Image: /tmp/example.png\nQuestion: What is shown?",
         )
 
         self.assertEqual(selected, ["qwen_agent_2", "qwen_agent_3", "qwen_agent_4"])
@@ -382,6 +479,37 @@ class FourAgentVotingTestCase(unittest.TestCase):
 
             self.assertIs(first, second)
             self.assertEqual(loaded_paths, [str(adapter_path.resolve())])
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_local_qwen_adapter_cache_keeps_only_one_active_adapter(self) -> None:
+        import torch  # noqa: F401 - keep the native module outside the sys.modules patch
+
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_single_adapter_cache_test_"))
+        try:
+            first_path = temp_dir / "adapter-1"
+            second_path = temp_dir / "adapter-2"
+            for adapter_path in (first_path, second_path):
+                adapter_path.mkdir()
+                (adapter_path / "adapter_config.json").write_text("{}", encoding="utf-8")
+                (adapter_path / "adapter_model.safetensors").write_text(
+                    adapter_path.name,
+                    encoding="utf-8",
+                )
+            engine = LocalQwenEngine()
+            engine._model = object()
+
+            class FakePeftModel:
+                @staticmethod
+                def from_pretrained(model: object, path: object) -> object:
+                    return {"model": model, "path": path}
+
+            with patch.dict("sys.modules", {"peft": type("FakePeftModule", (), {"PeftModel": FakePeftModel})}):
+                engine._load_adapter_model(first_path)
+                engine._load_adapter_model(second_path)
+
+            self.assertEqual(len(engine._adapter_models), 1)
+            self.assertEqual(next(iter(engine._adapter_models))[0], str(second_path.resolve()))
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -591,7 +719,7 @@ class FourAgentVotingTestCase(unittest.TestCase):
                 dataset_dir,
                 models=models,
                 server_model=server_model,
-                server_training_tag_records=server_tag_records,
+                server_training_tag_records=_repeat_tag_evidence(server_tag_records),
                 prior_global_evaluation_records=prior_global_records,
             )
 
@@ -667,7 +795,7 @@ class FourAgentVotingTestCase(unittest.TestCase):
                 dataset_dir,
                 models=models,
                 server_model=server_model,
-                server_training_tag_records=server_tag_records,
+                server_training_tag_records=_repeat_tag_evidence(server_tag_records),
             )
 
             prediction = report.predictions[0]
@@ -823,15 +951,22 @@ class FourAgentVotingTestCase(unittest.TestCase):
 
 
 class KnowledgeLibraryFourAgentVotingIntegrationTestCase(unittest.TestCase):
-    def test_four_agents_vote_with_lora_tuned_models_on_first_100_test_questions(self) -> None:
+    def test_four_agents_vote_with_lora_tuned_models_on_infographicsvqa_test_set(self) -> None:
         project_root = Path(__file__).resolve().parent.parent
-        dataset_dir = project_root / "data" / "gsm8k"
+        dataset_dir = project_root / "data" / "infographicsvqa"
         model_path = project_root / DEFAULT_QWEN_MODEL
         data_dir = project_root / "data"
         lora_output_dir = data_dir / "lora_adapters"
+        test_limit = max(
+            1,
+            min(
+                int(os.environ.get("B_MAGENT_TEST_LIMIT", str(STANDARD_TEST_LIMIT))),
+                STANDARD_TEST_LIMIT,
+            ),
+        )
 
         if not (dataset_dir / "test.jsonl").exists():
-            self.skipTest(f"missing GSM8K test split: {dataset_dir / 'test.jsonl'}")
+            self.skipTest(f"missing InfographicsVQA test split: {dataset_dir / 'test.jsonl'}")
         if not model_path.exists():
             self.skipTest(f"missing local Qwen model: {model_path}")
 
@@ -869,29 +1004,48 @@ class KnowledgeLibraryFourAgentVotingIntegrationTestCase(unittest.TestCase):
         }
         server_tag_records = _load_library_records(server_tag_file)
         prior_global_records = _load_library_records(global_eval_file) if global_eval_file.exists() else []
+        print(
+            "\nStarting real InfographicsVQA test-set evaluation\n"
+            f"dataset: {dataset_dir / 'test.jsonl'}\n"
+            f"model: {model_path}\n"
+            f"samples: {test_limit}\n"
+            f"agents: {', '.join(AGENT_NAMES)}",
+            flush=True,
+        )
         try:
             report = run_four_agent_voting_on_test(
                 dataset_dir=dataset_dir,
                 models=models,
-                limit=STANDARD_TEST_LIMIT,
-                on_prediction=print_voting_prediction_detail,
+                limit=test_limit,
+                on_prediction=_print_real_test_prediction,
                 server_model=KnowledgeServerRoutingModel(engine),
                 server_training_tag_records=server_tag_records,
                 prior_global_evaluation_records=prior_global_records,
+                split="test",
             )
         except RuntimeError as exc:
             if "_spropack" in str(exc):
                 self.skipTest(f"local scipy/transformers environment cannot load Qwen: {exc}")
             raise
-        output_file = project_root / "train" / "four_agent_lora_voting_100_report.json"
+        output_file = project_root / "train" / "four_agent_lora_infographicsvqa_test_report.json"
         output_file.parent.mkdir(parents=True, exist_ok=True)
         output_file.write_text(
             json.dumps(report.to_dict(), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        print(
+            "\n" + "#" * 100 + "\n"
+            "InfographicsVQA test-set evaluation complete\n"
+            f"total: {report.total}\n"
+            f"exact_correct: {report.correct}\n"
+            f"exact_accuracy: {report.accuracy:.4f} ({report.accuracy * 100:.2f}%)\n"
+            f"ANLS: {report.anls if report.anls is not None else 'N/A'}\n"
+            f"report: {output_file}",
+            flush=True,
+        )
 
-        self.assertEqual(report.total, STANDARD_TEST_LIMIT)
-        self.assertEqual(len(report.predictions), STANDARD_TEST_LIMIT)
+        self.assertEqual(report.total, test_limit)
+        self.assertEqual(len(report.predictions), test_limit)
         self.assertEqual(len(report.predictions[0].votes), 3)
         self.assertEqual(report.predictions[0].votes[0].agent_name, report.predictions[0].selected_agents[0])
         self.assertTrue(report.predictions[0].server_diagnostic)

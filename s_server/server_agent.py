@@ -49,6 +49,11 @@ class ServerAgent:
             tags = _unique([*record.tags, *learned_tags])
             if not record.agent_name or not tags:
                 continue
+            metric_detail = (
+                f" | completeness_metrics={record.detail}"
+                if record.library_type == "visual_completeness"
+                else ""
+            )
             update = LibraryRecord(
                 agent_name=record.agent_name,
                 library_type="agent_training_tags",
@@ -58,7 +63,7 @@ class ServerAgent:
                     f"source_agent={record.agent_name} | "
                     f"source_library_type={record.library_type} | "
                     f"source_summary={_shorten(record.summary)} | "
-                    f"tags={', '.join(tags)}"
+                    f"tags={', '.join(tags)}{metric_detail}"
                 ),
                 tags=[
                     record.agent_name,
