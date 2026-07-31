@@ -167,4 +167,3 @@ python -m train.four_agent_private_train \
 4. 放好 GSM8K 数据
 5. 跑 `scripts/check_setup.py`
 6. 再启动对应入口
-

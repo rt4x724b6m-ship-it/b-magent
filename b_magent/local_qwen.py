@@ -21,25 +21,10 @@ NUMERIC_ANSWER_INSTRUCTION = (
     "Do not include units, explanations, or full sentences after ####."
 )
 
-MULTIMODAL_ANSWER_INSTRUCTION = (
-    "You are a careful visual question answering assistant. Inspect the image itself before answering. "
-    "Use OCR, layout, objects, attributes, spatial relations, charts, and arithmetic only when relevant. "
-    "Give a concise answer grounded in visible evidence and do not invent unreadable details."
-)
-
-VISUAL_OUTPUT_INSTRUCTION = (
-    "Return valid JSON only. Put final_answer first, using this compact shape: "
-    '{"final_answer":"...","evidence":["..."]}. '
-    "final_answer must be brief and directly answer the question. Include at most three short visible-image "
-    "evidence strings; do not transcribe the full image or repeat unrelated text."
-)
-
-TRAINING_VISUAL_OUTPUT_INSTRUCTION = (
-    "Return valid JSON only with final_answer first and this shape: "
-    '{"final_answer":"...","recognized_elements":{"visible_text":[],"objects":[],'
-    '"layout":"...","colors":[]},"evidence":["..."]}. '
-    "For recognized_elements, inspect the entire image and include all readable text, distinct objects, "
-    "important layout regions, and colors, including content not directly needed for the final answer."
+GENERAL_TASK_INSTRUCTION = (
+    "You are a careful research and planning assistant. Follow every explicit constraint, "
+    "separate verified facts from assumptions, and produce a structured, auditable answer. "
+    "Never invent citations, prices, schedules, distances, or availability."
 )
 
 
@@ -52,7 +37,7 @@ class QwenGenerationConfig:
 
 
 class LocalQwenEngine:
-    """Lazy Transformers loader for local Qwen text and vision-language models."""
+    """Lazy Transformers loader for a local Qwen2.5-VL model."""
 
     def __init__(
         self,
@@ -61,8 +46,7 @@ class LocalQwenEngine:
         torch_dtype: str = "float16",
         generation_config: QwenGenerationConfig | None = None,
         local_files_only: bool = True,
-        system_prompt: str | None = MULTIMODAL_ANSWER_INSTRUCTION,
-        max_image_pixels: int = 1024 * 28 * 28,
+        system_prompt: str | None = NUMERIC_ANSWER_INSTRUCTION,
     ) -> None:
         self.model_name_or_path = str(model_name_or_path)
         self.device_map = device_map
@@ -70,10 +54,8 @@ class LocalQwenEngine:
         self.generation_config = generation_config or QwenGenerationConfig()
         self.local_files_only = local_files_only
         self.system_prompt = system_prompt
-        self.max_image_pixels = max_image_pixels
         self._tokenizer: Any | None = None
         self._model: Any | None = None
-        self._is_vision_model = False
         self._adapter_models: dict[tuple[str, int], Any] = {}
         self._load_lock = threading.Lock()
         self._adapter_lock = threading.Lock()
@@ -93,57 +75,32 @@ class LocalQwenEngine:
         with self._generation_lock:
             return self._generate_unlocked(prompt, adapter_path=adapter_path)
 
-    def unload(self) -> None:
-        """Release inference and adapter models before an in-process LoRA refresh."""
+    def generate_multimodal(
+        self,
+        prompt: str,
+        image_paths: list[str | Path],
+        adapter_path: str | Path | None = None,
+    ) -> str:
+        if not image_paths:
+            return self.generate(prompt, adapter_path=adapter_path)
         with self._generation_lock:
-            self._adapter_models.clear()
-            self._model = None
-            self._tokenizer = None
-            self._is_vision_model = False
-            gc.collect()
-            try:
-                import torch
-            except ImportError:
-                return
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            return self._generate_multimodal_unlocked(prompt, image_paths, adapter_path=adapter_path)
 
     def _generate_unlocked(self, prompt: str, adapter_path: str | Path | None = None) -> str:
         self._load()
         model = self._model
         if adapter_path is not None and _is_lora_adapter_ready(Path(adapter_path)):
             model = self._load_adapter_model(Path(adapter_path))
-        elif self._adapter_models:
-            self._clear_adapter_models()
-        messages: list[dict[str, Any]] = []
+        messages = []
         if self.system_prompt:
             messages.append({"role": "system", "content": self.system_prompt})
-        image_path = _extract_image_path(prompt)
-        if self._is_vision_model and image_path is not None:
-            messages.append({
-                "role": "user",
-                "content": [
-                    {"type": "image", "image": str(image_path)},
-                    {"type": "text", "text": prompt},
-                ],
-            })
-        else:
-            messages.append({"role": "user", "content": prompt})
+        messages.append({"role": "user", "content": prompt})
         text = self._tokenizer.apply_chat_template(
             messages,
             tokenize=False,
             add_generation_prompt=True,
         )
-        if self._is_vision_model and image_path is not None:
-            from PIL import Image, ImageOps
-
-            with Image.open(image_path) as image:
-                image = ImageOps.exif_transpose(image).convert("RGB")
-                inputs = self._tokenizer(
-                    text=[text], images=[image], padding=True, return_tensors="pt"
-                ).to(model.device)
-        else:
-            inputs = self._tokenizer(text=[text], padding=True, return_tensors="pt").to(model.device)
+        inputs = self._tokenizer(text=[text], return_tensors="pt").to(model.device)
         generation_kwargs = {
             "max_new_tokens": self.generation_config.max_new_tokens,
             "do_sample": self.generation_config.do_sample,
@@ -161,13 +118,69 @@ class LocalQwenEngine:
         ]
         return self._tokenizer.batch_decode(completion_ids, skip_special_tokens=True)[0].strip()
 
+    def _generate_multimodal_unlocked(
+        self,
+        prompt: str,
+        image_paths: list[str | Path],
+        adapter_path: str | Path | None = None,
+    ) -> str:
+        self._load()
+        model = self._model
+        if adapter_path is not None and _is_lora_adapter_ready(Path(adapter_path)):
+            model = self._load_adapter_model(Path(adapter_path))
+        try:
+            from PIL import Image
+        except ImportError as exc:
+            raise RuntimeError("Multimodal generation requires Pillow.") from exc
+        images = []
+        for image_path in image_paths:
+            with Image.open(image_path) as image:
+                images.append(image.convert("RGB").copy())
+        messages = []
+        if self.system_prompt:
+            messages.append({"role": "system", "content": self.system_prompt})
+        user_content = [
+            {"type": "image", "image": str(Path(image_path).resolve())}
+            for image_path in image_paths
+        ]
+        user_content.append({"type": "text", "text": prompt})
+        messages.append({"role": "user", "content": user_content})
+        text = self._tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        inputs = self._tokenizer(
+            text=[text],
+            images=images,
+            padding=True,
+            return_tensors="pt",
+        ).to(model.device)
+        generation_kwargs = {
+            "max_new_tokens": self.generation_config.max_new_tokens,
+            "do_sample": self.generation_config.do_sample,
+        }
+        if self.generation_config.do_sample:
+            generation_kwargs["temperature"] = self.generation_config.temperature
+            generation_kwargs["top_p"] = self.generation_config.top_p
+        generated_ids = model.generate(**inputs, **generation_kwargs)
+        completion_ids = [
+            output_ids[len(input_ids) :]
+            for input_ids, output_ids in zip(inputs.input_ids, generated_ids)
+        ]
+        return self._tokenizer.batch_decode(completion_ids, skip_special_tokens=True)[0].strip()
+
     def _load_adapter_model(self, adapter_path: Path) -> Any:
         resolved_path = str(adapter_path.resolve())
         key = (resolved_path, _adapter_fingerprint(adapter_path))
         with self._adapter_lock:
             if key in self._adapter_models:
                 return self._adapter_models[key]
-            self._clear_adapter_models(lock_held=True)
+            self._adapter_models = {
+                cached_key: cached_model
+                for cached_key, cached_model in self._adapter_models.items()
+                if cached_key[0] != resolved_path
+            }
             try:
                 from peft import PeftModel
             except ImportError as exc:
@@ -179,14 +192,9 @@ class LocalQwenEngine:
             self._adapter_models[key] = adapter_model
             return adapter_model
 
-    def _clear_adapter_models(self, lock_held: bool = False) -> None:
-        if not lock_held:
-            with self._adapter_lock:
-                self._clear_adapter_models(lock_held=True)
-            return
-        if not self._adapter_models:
-            return
+    def unload(self) -> None:
         self._adapter_models.clear()
+        self._model = None
         gc.collect()
         try:
             import torch
@@ -223,41 +231,28 @@ class LocalQwenEngine:
             raise RuntimeError(
                 "Local Qwen model directory was not found. "
                 f"Expected: {model_path.resolve()}. "
-                "Pass --model-path /path/to/Qwen2.5-VL-3B-Instruct or place the model under "
-                "models/Qwen2.5-VL-3B-Instruct."
+                "Pass --model-path /path/to/Qwen2.5-VL-3B-Instruct or place the model under models/Qwen2.5-VL-3B-Instruct."
             )
         try:
             import transformers
 
-            AutoConfig = transformers.AutoConfig
-            AutoModelForCausalLM = transformers.AutoModelForCausalLM
-            AutoProcessor = transformers.AutoProcessor
-            AutoTokenizer = transformers.AutoTokenizer
+            AutoProcessor = getattr(transformers, "AutoProcessor", None)
+            Qwen2_5_VLForConditionalGeneration = getattr(
+                transformers, "Qwen2_5_VLForConditionalGeneration", None
+            )
+            if AutoProcessor is None or Qwen2_5_VLForConditionalGeneration is None:
+                raise ImportError("installed transformers does not support Qwen2.5-VL")
         except ImportError as exc:
             raise RuntimeError(
                 "Local Qwen requires transformers. Install transformers and torch, "
-                "then pass a local Qwen2.5 or Qwen2.5-VL model path."
+                "then pass a local Qwen2.5-VL-3B-Instruct model path."
             ) from exc
 
-        config = AutoConfig.from_pretrained(
+        self._tokenizer = AutoProcessor.from_pretrained(
             self.model_name_or_path,
             local_files_only=self.local_files_only,
         )
-        self._is_vision_model = getattr(config, "model_type", "") == "qwen2_5_vl"
-        loader = AutoModelForCausalLM
-        processor_loader = AutoTokenizer
-        if self._is_vision_model:
-            loader = transformers.Qwen2_5_VLForConditionalGeneration
-            processor_loader = AutoProcessor
-        processor_kwargs = {"local_files_only": self.local_files_only}
-        if self._is_vision_model:
-            processor_kwargs["use_fast"] = True
-            processor_kwargs["max_pixels"] = self.max_image_pixels
-        self._tokenizer = processor_loader.from_pretrained(
-            self.model_name_or_path,
-            **processor_kwargs,
-        )
-        self._model = loader.from_pretrained(
+        self._model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             self.model_name_or_path,
             torch_dtype=self._resolve_torch_dtype(),
             device_map=self._resolve_device_map(),
@@ -316,18 +311,15 @@ class LocalQwenAgentModel:
 
     def generate_with_server_guidance(self, question: str, server_guidance: str) -> str:
         context = "\n".join(self.training_examples[-4:])
-        output_instruction = (
-            VISUAL_OUTPUT_INSTRUCTION if _extract_image_path(question) is not None else NUMERIC_ANSWER_INSTRUCTION
-        )
         prompt = (
             f"Agent: {self.agent_name}\n"
             f"Private examples:\n{context or '(none)'}\n\n"
             f"Question:\n{question}\n\n"
             "Server evaluation guidance:\n"
             f"{server_guidance or '(none)'}\n\n"
-            "Answer independently while applying the server's observable risk checks. "
-            "Treat guidance as verification advice, not as a proposed answer.\n\n"
-            f"Output constraint:\n{output_instruction}"
+            "Solve independently while applying the server's risk checks. "
+            "Do not treat the guidance as a proposed numeric answer.\n\n"
+            f"Output constraint:\n{NUMERIC_ANSWER_INSTRUCTION}"
         )
         adapter_path = self._adapter_path()
         if adapter_path is None:
@@ -372,9 +364,7 @@ class LocalQwenEvolutionBackend:
             f"{_format_context(professional_memory)}\n\n"
             "Evaluation evolution library checks:\n"
             f"{_format_context(evaluation_alerts)}\n\n"
-            "Inspect the supplied image before answering. Verify OCR text, object attributes, spatial "
-            "relations, and counts when relevant; do not infer details that are not visible. "
-            f"{TRAINING_VISUAL_OUTPUT_INSTRUCTION}"
+            "Produce a complete answer and include reusable lessons that this agent can absorb."
         )
         answer = self.engine.generate(prompt, adapter_path=self._adapter_path(agent_name))
         thought_trace = [
@@ -403,13 +393,9 @@ class LocalQwenEvolutionBackend:
             f"{_format_context(target_draft.thought_trace)}\n\n"
             "Private evaluation-library memories:\n"
             f"{_format_context(evaluation_memory)}\n\n"
-            "Inspect whether the response is grounded in the image, including OCR, layout, object attributes, "
-            "spatial relations, counts, and calculations when relevant. "
-            "Return 1 to 3 concrete suggestions; if the answer is already correct, suggest only concise verification. "
-            "Score correctness, safety, and efficiency from 0 to 1, where 1 means fully correct/safe/concise, "
-            "0.5 means materially incomplete, and 0 means wrong or unusable. Harmless visual QA answers should "
-            "normally receive safety=1. Return only one valid JSON object with keys suggestions, correctness, "
-            "safety, efficiency, rationale. "
+            "Return 3 to 5 concrete improvement suggestions. Do not assign a score."
+            " Also evaluate the answer on correctness, safety, and efficiency using numbers from 0 to 1. "
+            "Prefer JSON with keys suggestions, correctness, safety, efficiency, rationale. "
             "The rationale must use exactly this section order separated by a line containing ↓: "
             "Task, Observed Error, Evaluation Decision, Confidence, Improvement Pattern."
         )
@@ -461,8 +447,8 @@ class LocalQwenEvolutionBackend:
             "Evaluation evolution library checks:\n"
             f"{_format_context(evaluation_alerts)}\n\n"
             "Rewrite the answer from scratch as the ideal final answer. "
-            "Reinspect the image, apply the feedback concretely, remove unsupported visual claims, "
-            "and preserve a concise answer format appropriate to the question."
+            "Apply the feedback concretely, remove unsupported claims, include verification, "
+            "and preserve the required final-answer format when the task is numeric."
         )
         revised_answer = self.engine.generate(prompt, adapter_path=self._adapter_path(agent_name))
         reflection = (
@@ -491,10 +477,11 @@ class LocalQwenEvolutionBackend:
             f"Evaluator suggestions:\n{_format_context(suggestions)}\n\n"
             f"Reflection:\n{reflection}\n\n"
             "Choose 1 to 8 concise semantic tags that capture the actual operation and problem type. "
-            "Use these visual tags first when applicable: ocr, chart-reading, table-reading, "
-            "object-recognition, attribute-recognition, spatial-relation, visual-counting, "
-            "fine-grained-detail, scene-understanding, visual-grounding. For questions requiring calculation, "
-            "also use addition, subtraction, multiplication, division, percentage, ratio, money, or arithmetic. "
+            "Use these stable tags when applicable: addition, subtraction, multiplication, division, "
+            "fraction, percentage, ratio, rate, unit-conversion, money, time, geometry, counting, "
+            "multi-step, arithmetic, final-answer, verification, boundary, structure. "
+            "For evidence-based planning and research, prefer summarization, information-synthesis, "
+            "and constraint-preservation when those capabilities were actually used. "
             "You may create a more specific reusable tag when none fits. "
             "Use lowercase kebab-case. Do not use names, numbers, agent roles, or lifecycle/status tags. "
             'Return JSON only in this exact shape: {"tags": ["tag-one", "tag-two"]}.'
@@ -556,8 +543,6 @@ class LocalQwenEvolutionBackend:
             "Improvement Pattern. "
             "Synthesize common failure modes, useful review checks, score/rationale patterns, "
             "and how future evaluators should inspect federated answer summaries and FoT-style trajectories. "
-            "For visual tasks, preserve reusable checks for OCR fidelity, visual grounding, spatial relations, "
-            "counting, fine-grained attributes, and unsupported visual claims. "
             "Do not expose private training data."
         )
         raw_response = self.engine.generate(prompt)

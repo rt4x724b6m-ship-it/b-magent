@@ -16,7 +16,7 @@
             "args": [
                 "--mode", "b-magent",
                 "--backend", "local-qwen",
-                "--model-path", "${workspaceFolder}/models/Qwen2.5-1.5B-Instruct",
+                "--model-path", "${workspaceFolder}/models/Qwen2.5-VL-3B-Instruct",
                 "--dataset-dir", "${workspaceFolder}/data/gsm8k",
                 "--rounds", "200",
                 "--output", "${workspaceFolder}/train/b_magent_training_report.json"
@@ -46,7 +46,7 @@
             "console": "integratedTerminal",
             "args": [
                 "--model-path",
-                "${workspaceFolder}/models/Qwen2.5-1.5B-Instruct",
+                "${workspaceFolder}/models/Qwen2.5-VL-3B-Instruct",
                 "--output",
                 "baseline/qwen_gsm8k_report.json"
             ]

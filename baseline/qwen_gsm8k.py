@@ -177,7 +177,7 @@ def parse_args() -> argparse.Namespace:
         "--model-path",
         type=Path,
         default=DEFAULT_LOCAL_QWEN_MODEL,
-        help="Local path for Qwen2.5-VL-3B.",
+        help="Local path for Qwen2.5-VL-3B-Instruct.",
     )
     return parser.parse_args()
 

@@ -19,9 +19,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from baseline.qwen_gsm8k import STANDARD_TEST_LIMIT, extract_numeric_answer, normalize_answer
-from b_magent.datasets import GSM8KSample, VisionQASample, load_project_dataset
+from b_magent.datasets import GSM8KDataset, GSM8KSample
 from b_magent.local_qwen import (
     DEFAULT_QWEN_MODEL,
+    GENERAL_TASK_INSTRUCTION,
     LocalQwenAgentModel,
     LocalQwenEngine,
     LocalQwenEvolutionBackend,
@@ -31,12 +32,13 @@ from b_magent.models import LibraryRecord
 from b_magent.seed import seed_agent_libraries
 from b_magent.tagging import ROUTING_TAGS, extract_math_task_tags, routing_tag_importance
 from b_magent.workflow import MultiAgentWorkflow, build_default_agents
+from b_magent.web import WebSearchResult, WebSearchService, build_web_search_service_from_env
+from b_magent.answer_validation import AnswerValidator, build_answer_validator_from_env
+from s_server import ServerKeyInformationStore
 
 
 AGENT_NAMES = ("qwen_agent_1", "qwen_agent_2", "qwen_agent_3", "qwen_agent_4")
 STANDARD_PRIVATE_TRAIN_SIZE = 200
-MIN_ROUTING_TAG_EVIDENCE = 5
-MAX_ROUTING_TAG_CONTRIBUTION = 2.0
 
 
 class TrainableQwenModel(Protocol):
@@ -126,6 +128,16 @@ class AgentVote:
 @dataclass
 class ServerRoutingAssessment:
     difficulty: str = "medium"
+    target: str = ""
+    entities: list[str] = field(default_factory=list)
+    facts: list[str] = field(default_factory=list)
+    constraints: list[str] = field(default_factory=list)
+    numbers: list[str] = field(default_factory=list)
+    units: list[str] = field(default_factory=list)
+    keywords: list[str] = field(default_factory=list)
+    search_queries: list[str] = field(default_factory=list)
+    requires_web_search: bool = False
+    web_cache_ttl_seconds: int = 86400
     key_steps: list[str] = field(default_factory=list)
     risk_steps: list[str] = field(default_factory=list)
     capability_tags: list[str] = field(default_factory=list)
@@ -144,10 +156,12 @@ class VotingPrediction:
     votes: list[AgentVote]
     final_answer: str
     correct: bool
-    dataset: str = ""
-    sample_id: str = ""
-    anls: float | None = None
     server_diagnostic: str = ""
+    server_synthesis: str = ""
+    server_cache_hit: bool = False
+    cached_key_information: str = ""
+    web_search_cache_hit: bool = False
+    web_search_results: list[dict[str, object]] = field(default_factory=list)
     difficulty: str = ""
     key_steps: list[str] = field(default_factory=list)
     risk_steps: list[str] = field(default_factory=list)
@@ -155,6 +169,10 @@ class VotingPrediction:
     routing_tags: list[str] = field(default_factory=list)
     routing_scores: dict[str, float] = field(default_factory=dict)
     matched_tags: dict[str, list[str]] = field(default_factory=dict)
+    answer_validation_rationale: str = ""
+    requirements_met: list[str] = field(default_factory=list)
+    requirements_missed: list[str] = field(default_factory=list)
+    unsupported_claims: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -163,8 +181,6 @@ class VotingReport:
     correct: int
     accuracy: float
     predictions: list[VotingPrediction]
-    anls: float | None = None
-    evaluation_split: str = "test"
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -182,7 +198,6 @@ class BMagentTrainingRound:
     evaluation_evolutions: int
     global_downlinks: int = 0
     global_uploads: int = 0
-    visual_completeness_metrics: dict[str, dict[str, float]] = field(default_factory=dict)
     lora_updates: list[LoraUpdate] = field(default_factory=list)
 
 
@@ -199,7 +214,6 @@ class BMagentTrainingReport:
     curated_success_records: dict[str, int]
     error_reflection_records: dict[str, int]
     evaluation_records: dict[str, int]
-    visual_completeness_metrics: dict[str, dict[str, float]] = field(default_factory=dict)
     lora_enabled: bool = False
     lora_updates: dict[str, int] = field(default_factory=dict)
 
@@ -219,35 +233,17 @@ def run_b_magent_training_entry(
     on_round_end: Callable[[int, int, BMagentTrainingRound], None] | None = None,
     start_round: int = 0,
     preserve_private_datasets: bool = False,
+    answer_validator: AnswerValidator | None = None,
 ) -> BMagentTrainingReport:
     if rounds is not None and rounds <= 0:
         raise ValueError("rounds must be positive when explicitly set")
     if private_batch_size <= 0:
         raise ValueError("private_batch_size must be positive")
 
-    dataset = load_project_dataset(dataset_dir)
+    dataset = GSM8KDataset(dataset_dir)
     train_samples = dataset.load("train")
     if not train_samples:
-        expected_path = (
-            dataset_dir / "infographicsvqa" / "train.jsonl"
-            if dataset_dir.name.lower() not in {"gsm8k", "infographicsvqa"}
-            else dataset_dir / "train.jsonl"
-        )
-        raise ValueError(
-            f"no training samples found at {expected_path}. "
-            "Prepare the official InfographicsVQA train split with: "
-            "python scripts/prepare_vision_datasets.py --dataset infographicsvqa --output-dir data"
-        )
-    is_vision_training = isinstance(train_samples[0], VisionQASample)
-    if is_vision_training:
-        required_samples = len(AGENT_NAMES) * STANDARD_PRIVATE_TRAIN_SIZE
-        if len(train_samples) < required_samples:
-            raise ValueError(
-                f"need at least {required_samples} InfographicsVQA training samples for "
-                f"{len(AGENT_NAMES)} agents with {STANDARD_PRIVATE_TRAIN_SIZE} samples each; "
-                f"found {len(train_samples)}"
-            )
-        train_samples = train_samples[:required_samples]
+        raise ValueError(f"no training samples found at {dataset_dir / 'train.jsonl'}")
 
     if start_round < 0:
         raise ValueError("start_round must not be negative")
@@ -265,7 +261,11 @@ def run_b_magent_training_entry(
     base_participant_schedule = build_participant_schedule(private_dataset_counts, private_batch_size)
     effective_rounds = rounds or len(base_participant_schedule)
     participant_schedule = expand_participant_schedule(base_participant_schedule, effective_rounds)
-    agents = build_default_agents(data_dir.parent, backend=backend)
+    agents = build_default_agents(
+        data_dir.parent,
+        backend=backend,
+        answer_validator=answer_validator,
+    )
     seed_agent_libraries(agents)
     if start_round:
         for agent in agents:
@@ -283,7 +283,7 @@ def run_b_magent_training_entry(
 
     for index in range(start_round, effective_rounds):
         sample = train_samples[index % len(train_samples)]
-        task = format_training_task(sample)
+        task = format_gsm8k_training_task(sample)
         if on_round_start is not None:
             on_round_start(index + 1, effective_rounds, sample.question)
         global_downlinks = downlink_global_evaluation_experience(
@@ -292,14 +292,6 @@ def run_b_magent_training_entry(
             workflow.server_agent,
         )
         report = workflow.run(task, participant_names=participant_schedule[index])
-        round_visual_metrics = collect_visual_completeness_metrics(report.server_training_tag_updates)
-        if is_vision_training and isinstance(sample, VisionQASample) and sample.image_elements:
-            missing_metrics = sorted(set(report.participants) - set(round_visual_metrics))
-            if missing_metrics:
-                raise RuntimeError(
-                    "visual training did not generate completeness tags for: "
-                    + ", ".join(missing_metrics)
-                )
         global_uploads = len(report.global_experience.global_updates) if report.global_experience else 0
         lora_updates = []
         if lora_manager is not None:
@@ -323,7 +315,6 @@ def run_b_magent_training_entry(
             evaluation_evolutions=len(report.evaluation_evolutions),
             global_downlinks=global_downlinks,
             global_uploads=global_uploads,
-            visual_completeness_metrics=round_visual_metrics,
             lora_updates=lora_updates,
         )
         training_rounds.append(round_report)
@@ -362,7 +353,6 @@ def run_b_magent_training_entry(
             agent.name: len(agent.evaluation_library.all_records()) - evaluation_before[agent.name]
             for agent in agents
         },
-        visual_completeness_metrics=aggregate_visual_completeness_metrics(training_rounds),
         lora_enabled=lora_manager is not None,
         lora_updates={
             agent.name: sum(
@@ -378,48 +368,6 @@ def run_b_magent_training_entry(
 
 def count_new_records_with_tag(records: list[LibraryRecord], start_index: int, tag: str) -> int:
     return sum(1 for record in records[start_index:] if tag in record.tags)
-
-
-def collect_visual_completeness_metrics(
-    records: list[LibraryRecord],
-) -> dict[str, dict[str, float]]:
-    metrics: dict[str, dict[str, float]] = {}
-    score_names = (
-        "visual_completeness_score",
-        "ocr_coverage_score",
-        "object_coverage_score",
-        "layout_coverage_score",
-    )
-    for record in records:
-        if _source_library_type(record) != "visual_completeness" or not record.agent_name:
-            continue
-        parsed: dict[str, float] = {}
-        for score_name in score_names:
-            match = re.search(rf"{score_name}=([0-9.]+)", record.detail)
-            if match:
-                parsed[score_name] = max(0.0, min(float(match.group(1)), 1.0))
-        if len(parsed) == len(score_names):
-            metrics[record.agent_name] = parsed
-    return metrics
-
-
-def aggregate_visual_completeness_metrics(
-    rounds: list[BMagentTrainingRound],
-) -> dict[str, dict[str, float]]:
-    values: dict[str, dict[str, list[float]]] = {}
-    for round_report in rounds:
-        for agent_name, metrics in round_report.visual_completeness_metrics.items():
-            agent_values = values.setdefault(agent_name, {})
-            for score_name, score in metrics.items():
-                agent_values.setdefault(score_name, []).append(score)
-    return {
-        agent_name: {
-            score_name: round(sum(scores) / len(scores), 4)
-            for score_name, scores in metric_values.items()
-            if scores
-        }
-        for agent_name, metric_values in values.items()
-    }
 
 
 def count_jsonl_lines(path: Path) -> int:
@@ -441,31 +389,6 @@ def infer_completed_training_rounds(data_dir: Path) -> int:
             if "self-evolution" in payload.get("tags", []):
                 completed_improvements += 1
     return completed_improvements // 2
-
-
-def load_training_progress(progress_file: Path) -> int:
-    if not progress_file.exists():
-        return 0
-    payload = json.loads(progress_file.read_text(encoding="utf-8"))
-    return max(0, int(payload.get("completed_rounds", 0)))
-
-
-def save_training_progress(progress_file: Path, completed_rounds: int, total_rounds: int) -> None:
-    progress_file.parent.mkdir(parents=True, exist_ok=True)
-    temporary_file = progress_file.with_suffix(progress_file.suffix + ".tmp")
-    temporary_file.write_text(
-        json.dumps(
-            {
-                "completed_rounds": completed_rounds,
-                "total_rounds": total_rounds,
-                "complete": completed_rounds >= total_rounds,
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-    temporary_file.replace(progress_file)
 
 
 def downlink_global_evaluation_experience(
@@ -543,10 +466,9 @@ def run_four_agent_private_training(
     if private_train_size <= 0:
         raise ValueError("private_train_size must be positive")
 
-    dataset = load_project_dataset(dataset_dir)
+    dataset = GSM8KDataset(dataset_dir)
     train_samples = dataset.load("train")
-    effective_test_limit = STANDARD_TEST_LIMIT if test_limit is None else min(test_limit, STANDARD_TEST_LIMIT)
-    test_samples = dataset.load("test", limit=effective_test_limit)
+    test_samples = dataset.load("test", limit=test_limit)
     if not train_samples:
         raise ValueError(f"no training samples found at {dataset_dir / 'train.jsonl'}")
     if not test_samples:
@@ -599,22 +521,28 @@ def run_four_agent_voting_on_test(
     server_model: ServerRoutingModel | None = None,
     server_training_tag_records: list[LibraryRecord] | None = None,
     prior_global_evaluation_records: list[LibraryRecord] | None = None,
-    split: str = "test",
+    server_key_information_store: ServerKeyInformationStore | None = None,
+    web_search_service: WebSearchService | None = None,
+    answer_validator: AnswerValidator | None = None,
 ) -> VotingReport:
-    dataset = load_project_dataset(dataset_dir)
-    effective_limit = STANDARD_TEST_LIMIT if limit is None else min(limit, STANDARD_TEST_LIMIT)
-    test_samples = dataset.load(split, limit=effective_limit)
+    dataset = GSM8KDataset(dataset_dir)
+    test_samples = dataset.load("test", limit=limit)
     if not test_samples:
-        raise ValueError(f"no {split} samples found under {dataset_dir}")
+        raise ValueError(f"no test samples found at {dataset_dir / 'test.jsonl'}")
     missing_agents = [agent_name for agent_name in agent_names if agent_name not in models]
     if missing_agents:
         raise ValueError(f"missing models for agents: {', '.join(missing_agents)}")
+    if server_model is not None and server_key_information_store is None:
+        server_key_information_store = ServerKeyInformationStore(
+            dataset_dir.parent / "qwen_server_agent" / "key_information_store.jsonl"
+        )
+    if server_model is not None and web_search_service is None:
+        web_search_service = build_web_search_service_from_env(dataset_dir.parent)
 
     tag_index = _build_agent_tag_index(server_training_tag_records or [])
     predictions: list[VotingPrediction] = []
     with ThreadPoolExecutor(max_workers=len(agent_names), thread_name_prefix="voting-agent") as executor:
         for index, sample in enumerate(test_samples):
-            model_question = format_inference_question(sample)
             server_diagnostic = ""
             selected_agents = list(agent_names)
             routing_tags: set[str] = set()
@@ -624,19 +552,19 @@ def run_four_agent_voting_on_test(
             if server_model is not None and tag_index:
                 server_diagnostic = _server_diagnose_question(
                     server_model,
-                    model_question,
+                    sample.question,
                     prior_global_evaluation_records or [],
                 )
-                assessment = _parse_server_routing_assessment(server_diagnostic, model_question)
+                assessment = _parse_server_routing_assessment(server_diagnostic, sample.question)
+                routing_tags = assessment.routing_tags
                 selected_agents, matched_tags = select_agents_by_server_tags(
                     server_diagnostic,
                     tag_index,
                     agent_names,
-                    selected_count=3,
-                    question=model_question,
+                    selected_count=min(3, len(agent_names)),
+                    question=sample.question,
                     assessment=assessment,
                 )
-                routing_tags = assessment.routing_tags
                 routing_scores = {
                     agent_name: _agent_routing_score(
                         tag_index.get(agent_name, {}),
@@ -645,46 +573,115 @@ def run_four_agent_voting_on_test(
                     )
                     for agent_name in agent_names
                 }
-            raw_predictions = executor.map(
-                lambda agent_name: _generate_with_server_guidance(
-                    models[agent_name],
-                    model_question,
-                    "",
-                ),
-                selected_agents,
-            )
-            votes = [
-                AgentVote(
-                    agent_name=agent_name,
-                    raw_prediction=raw_prediction,
-                    predicted_answer=extract_prediction_answer(raw_prediction, sample),
-                    tag_match_score=routing_scores.get(agent_name, 0.0),
+            cached_record = None
+            if server_key_information_store is not None:
+                cached_record = server_key_information_store.lookup(
+                    sample.question,
+                    key_facts=[
+                        assessment.target,
+                        *assessment.facts,
+                        *assessment.constraints,
+                        *assessment.entities,
+                    ],
+                    query_tags=assessment.routing_tags,
                 )
-                for agent_name, raw_prediction in zip(selected_agents, raw_predictions)
-            ]
-            final_answer = routed_vote(votes) if server_model is not None and tag_index else majority_vote(votes)
-            normalize_sample_answer = (
-                normalize_vision_answer if isinstance(sample, VisionQASample) else normalize_answer
+            server_cache_hit = cached_record is not None
+            cached_key_information = cached_record.detail if cached_record is not None else ""
+            if server_cache_hit:
+                selected_agents = []
+                votes: list[AgentVote] = []
+                server_synthesis = cached_record.summary
+            else:
+                raw_predictions = executor.map(
+                    lambda agent_name: _generate_with_server_guidance(
+                        models[agent_name],
+                        sample.question,
+                        "",
+                    ),
+                    selected_agents,
+                )
+                votes = [
+                    AgentVote(
+                        agent_name=agent_name,
+                        raw_prediction=raw_prediction,
+                        predicted_answer=extract_numeric_answer(raw_prediction),
+                        tag_match_score=routing_scores.get(agent_name, 0.0),
+                    )
+                    for agent_name, raw_prediction in zip(selected_agents, raw_predictions)
+                ]
+                server_synthesis = ""
+            web_results: list[WebSearchResult] = []
+            web_search_cache_hit = False
+            if (
+                not server_cache_hit
+                and assessment.requires_web_search
+                and web_search_service is not None
+            ):
+                web_queries = assessment.search_queries or [assessment.target, sample.question]
+                web_results, web_search_cache_hit = web_search_service.search_and_fetch(
+                    sample.question,
+                    web_queries,
+                    ttl_seconds=assessment.web_cache_ttl_seconds,
+                )
+            if server_model is not None and not server_cache_hit:
+                relevant_global_records = _select_relevant_global_records(
+                    sample.question,
+                    prior_global_evaluation_records or [],
+                    assessment=assessment,
+                )
+                server_synthesis = _server_synthesize_agent_answers(
+                    server_model,
+                    sample.question,
+                    votes,
+                    assessment,
+                    relevant_global_records,
+                    web_results,
+                )
+            synthesized_answer = extract_numeric_answer(server_synthesis)
+            fallback_answer = (
+                routed_vote(votes)
+                if server_model is not None and tag_index
+                else majority_vote(votes)
             )
-            accepted_answers = tuple(
-                normalize_sample_answer(answer)
-                for answer in getattr(sample, "answers", ()) or (sample.final_answer,)
-            )
-            gold_answer = accepted_answers[0]
-            sample_anls = None
-            if isinstance(sample, VisionQASample) and sample.dataset == "infographicsvqa":
-                sample_anls = infographic_anls(final_answer, accepted_answers)
+            final_answer = synthesized_answer or fallback_answer
+            gold_answer = normalize_answer(sample.final_answer)
+            validation_rationale = ""
+            requirements_met: list[str] = []
+            requirements_missed: list[str] = []
+            unsupported_claims: list[str] = []
+            if answer_validator is not None:
+                answer_for_validation = server_synthesis or next(
+                    (
+                        vote.raw_prediction
+                        for vote in votes
+                        if vote.predicted_answer == final_answer
+                    ),
+                    final_answer,
+                )
+                validation = answer_validator.validate(
+                    format_answer_validation_task(sample),
+                    answer_for_validation,
+                )
+                correct = validation.correct
+                validation_rationale = validation.rationale
+                requirements_met = validation.requirements_met
+                requirements_missed = validation.requirements_missed
+                unsupported_claims = validation.unsupported_claims
+            else:
+                correct = final_answer == gold_answer
             prediction = VotingPrediction(
                 index=index,
                 question=sample.question,
                 gold_answer=gold_answer,
                 votes=votes,
                 final_answer=final_answer,
-                correct=normalize_sample_answer(final_answer) in accepted_answers,
-                dataset=getattr(sample, "dataset", "gsm8k"),
-                sample_id=getattr(sample, "sample_id", ""),
-                anls=sample_anls,
+                correct=correct,
                 server_diagnostic=server_diagnostic,
+                server_synthesis=server_synthesis,
+                server_cache_hit=server_cache_hit,
+                cached_key_information=cached_key_information,
+                web_search_cache_hit=web_search_cache_hit,
+                web_search_results=[result.to_dict() for result in web_results],
                 difficulty=assessment.difficulty if server_diagnostic else "",
                 key_steps=assessment.key_steps,
                 risk_steps=assessment.risk_steps,
@@ -692,21 +689,34 @@ def run_four_agent_voting_on_test(
                 routing_tags=sorted(routing_tags),
                 routing_scores=routing_scores,
                 matched_tags=matched_tags,
+                answer_validation_rationale=validation_rationale,
+                requirements_met=requirements_met,
+                requirements_missed=requirements_missed,
+                unsupported_claims=unsupported_claims,
             )
+            if (
+                server_key_information_store is not None
+                and not server_cache_hit
+                and prediction.correct
+                and server_synthesis
+            ):
+                server_key_information_store.store_verified(
+                    sample.question,
+                    server_synthesis,
+                    final_answer,
+                    _assessment_key_information(assessment),
+                )
             predictions.append(prediction)
             if on_prediction is not None:
                 on_prediction(prediction, len(test_samples))
 
     correct = sum(1 for prediction in predictions if prediction.correct)
     total = len(predictions)
-    anls_values = [prediction.anls for prediction in predictions if prediction.anls is not None]
     return VotingReport(
         total=total,
         correct=correct,
         accuracy=correct / total,
         predictions=predictions,
-        anls=sum(anls_values) / len(anls_values) if anls_values else None,
-        evaluation_split=split,
     )
 
 
@@ -733,7 +743,6 @@ def build_four_local_qwen_agents(
 
 
 def majority_vote(votes: list[AgentVote]) -> str:
-    votes = _usable_votes(votes)
     counts: dict[str, int] = {}
     for vote in votes:
         counts[vote.predicted_answer] = counts.get(vote.predicted_answer, 0) + 1
@@ -749,7 +758,6 @@ def majority_vote(votes: list[AgentVote]) -> str:
 
 def routed_vote(votes: list[AgentVote]) -> str:
     """Use the most tag-matched agent unless the 2nd and 3rd agree."""
-    votes = _usable_votes(votes)
     if not votes:
         return ""
     ranked_votes = sorted(
@@ -761,20 +769,6 @@ def routed_vote(votes: list[AgentVote]) -> str:
     if len(ranked) >= 3 and ranked[1].predicted_answer == ranked[2].predicted_answer:
         return ranked[1].predicted_answer
     return ranked[0].predicted_answer
-
-
-def _usable_votes(votes: list[AgentVote]) -> list[AgentVote]:
-    usable = [vote for vote in votes if _is_plausible_answer(vote.predicted_answer)]
-    return usable or votes
-
-
-def _is_plausible_answer(answer: str) -> bool:
-    candidate = str(answer).strip()
-    if not candidate or len(candidate) > 160 or len(candidate.split()) > 24:
-        return False
-    if candidate.startswith(("{", "[", '"')) or '"final_answer"' in candidate:
-        return False
-    return True
 
 
 def select_agents_by_server_tags(
@@ -830,11 +824,79 @@ def _server_diagnose_question(
         "Use the relevant global evaluation experience to identify the likely failure points. "
         "Return JSON only with this schema: "
         '{"difficulty":"easy|medium|hard","key_steps":["..."],"risk_steps":["..."],'
-        '"capability_tags":["..."],"risk_tags":["..."]}. '
+        '"target":"...","entities":["..."],"facts":["..."],"constraints":["..."],'
+        '"numbers":["..."],"units":["..."],"keywords":["..."],'
+        '"search_queries":["..."],"requires_web_search":true|false,'
+        '"web_cache_ttl_seconds":86400,"capability_tags":["..."],"risk_tags":["..."]}. '
+        "Extract only information stated or directly requested by the question. search_queries "
+        "must be short retrieval phrases describing the goal and its important constraints. "
+        "Set requires_web_search=true only when the answer needs current or external facts that "
+        "are not supplied in the question or prior memory. Use a shorter cache TTL for volatile "
+        "facts such as prices, schedules, weather, or news. "
         "Select capability_tags and risk_tags only from: "
-        f"{', '.join(ROUTING_TAGS)}. key_steps and risk_steps must be short observable step "
+        "addition, subtraction, multiplication, division, fraction, percentage, ratio, rate, "
+        "unit-conversion, money, time, geometry, counting, multi-step, arithmetic, final-answer, "
+        "verification, boundary, structure, summarization, information-synthesis, "
+        "constraint-preservation. "
+        "For planning, research, and evidence-based answers, include the relevant summarization "
+        "capabilities because client specialization is trained for synthesis rather than search. "
+        "key_steps and risk_steps must be short observable step "
         "descriptions, not hidden chain-of-thought. Assess the whole problem rather than choosing one tag."
     )
+    return server_model.generate(prompt)
+
+
+def _server_synthesize_agent_answers(
+    server_model: ServerRoutingModel,
+    question: str,
+    votes: list[AgentVote],
+    assessment: ServerRoutingAssessment,
+    relevant_global_records: list[LibraryRecord],
+    web_results: list[WebSearchResult],
+) -> str:
+    agent_outputs = "\n\n".join(
+        f"[{vote.agent_name}]\n{vote.raw_prediction}"
+        for vote in votes
+    ) or "(none)"
+    global_memory = "\n".join(
+        f"- summary={record.summary}; detail={' '.join(record.detail.split())[:360]}; "
+        f"tags={', '.join(record.tags)}"
+        for record in relevant_global_records
+    ) or "(none)"
+    web_evidence = "\n\n".join(
+        f"[{index}] title={result.title}\nurl={result.url}\n"
+        f"retrieved_at={result.retrieved_at}\n"
+        f"images={', '.join(result.image_urls) or '(none)'}\n"
+        f"evidence={(result.content or result.snippet)[:2000]}"
+        for index, result in enumerate(web_results, start=1)
+    ) or "(none)"
+    prompt = (
+        "Server-side selected-agent synthesis.\n"
+        "Independently distill the useful facts, calculations, checks, and conclusions from every "
+        "selected agent response. Form their union, remove duplicates and contradictions, and solve "
+        "any remaining disagreement on the server. Read every selected response in full.\n\n"
+        f"Question:\n{question}\n\n"
+        f"Observable key steps:\n{json.dumps(assessment.key_steps, ensure_ascii=False)}\n\n"
+        f"Observable risk steps:\n{json.dumps(assessment.risk_steps, ensure_ascii=False)}\n\n"
+        f"Retrieved experience relevant to the target and constraints:\n{global_memory}\n\n"
+        f"Server-retrieved web evidence:\n{web_evidence}\n\n"
+        f"Selected agent responses:\n{agent_outputs}\n\n"
+        "Use web evidence only for claims it directly supports. Preserve source URLs when external "
+        "facts are used, and prefer official or more recently retrieved sources when they conflict. "
+        "Return a concise integrated solution followed by the final numeric answer in the exact "
+        "form `#### number`."
+    )
+    local_image_paths = list(
+        dict.fromkeys(
+            path
+            for result in web_results
+            for path in result.local_image_paths
+            if Path(path).is_file()
+        )
+    )
+    generate_multimodal = getattr(server_model, "generate_multimodal", None)
+    if local_image_paths and callable(generate_multimodal):
+        return generate_multimodal(prompt, local_image_paths)
     return server_model.generate(prompt)
 
 
@@ -854,33 +916,21 @@ def _build_agent_tag_index(records: list[LibraryRecord]) -> dict[str, dict[str, 
         semantic_tags.update(extract_math_task_tags(record.source_task))
         semantic_tags.add("overall-reliability")
         task_key = record.source_task.strip() or record.created_at
+        value = _training_evidence_value(record)
         agent_evidence = evidence.setdefault(record.agent_name, {})
         for tag in semantic_tags:
-            value = _training_evidence_value(record, tag)
             task_evidence = agent_evidence.setdefault(tag, {})
             task_evidence[task_key] = max(task_evidence.get(task_key, 0.0), value)
 
     index: dict[str, dict[str, float]] = {}
     for agent_name, tag_evidence in evidence.items():
-        reliability_values = list(tag_evidence.get("overall-reliability", {}).values())
-        reliability = _evidence_quality(reliability_values)
-        index[agent_name] = {
-            "overall-reliability": reliability,
-            "__evidence_count__": float(len(reliability_values)),
-        }
-        for tag in ROUTING_TAGS:
-            task_values = tag_evidence.get(tag, {})
+        index[agent_name] = {}
+        for tag, task_values in tag_evidence.items():
             values = list(task_values.values())
-            if len(values) < MIN_ROUTING_TAG_EVIDENCE:
-                continue
-            index[agent_name][tag] = _evidence_quality(values)
+            quality = (1.0 + sum(values)) / (2.0 + len(values))
+            evidence_bonus = 1.0 + min(math.log1p(len(values)) / 10.0, 0.35)
+            index[agent_name][tag] = round(quality * evidence_bonus, 4)
     return index
-
-
-def _evidence_quality(values: list[float]) -> float:
-    quality = (1.0 + sum(values)) / (2.0 + len(values))
-    evidence_bonus = 1.0 + min(math.log1p(len(values)) / 10.0, 0.35)
-    return round(quality * evidence_bonus, 4)
 
 
 def _extract_routing_tags(text: str) -> set[str]:
@@ -895,11 +945,6 @@ def _parse_server_routing_assessment(text: str, question: str = "") -> ServerRou
     if not capability_tags:
         capability_tags = sorted(_extract_routing_tags(question))
     combined_tags = set(capability_tags) | set(risk_tags) | fallback_tags
-    if "Image:" in question:
-        capability_tags = sorted(
-            set(capability_tags)
-            | {"visual-content-completeness", "ocr-coverage", "object-coverage", "layout-coverage"}
-        )
     difficulty = str(payload.get("difficulty", "")).strip().lower()
     if difficulty not in {"easy", "medium", "hard"}:
         specific_tags = combined_tags - {"arithmetic", "final-answer", "verification", "structure"}
@@ -911,6 +956,21 @@ def _parse_server_routing_assessment(text: str, question: str = "") -> ServerRou
             difficulty = "easy"
     return ServerRoutingAssessment(
         difficulty=difficulty,
+        target=" ".join(str(payload.get("target", "")).split())[:360],
+        entities=_string_list(payload.get("entities", []), limit=12),
+        facts=_string_list(payload.get("facts", []), limit=12),
+        constraints=_string_list(payload.get("constraints", []), limit=12),
+        numbers=_string_list(payload.get("numbers", []), limit=12),
+        units=_string_list(payload.get("units", []), limit=12),
+        keywords=_string_list(payload.get("keywords", []), limit=12),
+        search_queries=_string_list(payload.get("search_queries", []), limit=8),
+        requires_web_search=payload.get("requires_web_search") is True,
+        web_cache_ttl_seconds=_bounded_int(
+            payload.get("web_cache_ttl_seconds"),
+            default=86400,
+            minimum=300,
+            maximum=2_592_000,
+        ),
         key_steps=_string_list(payload.get("key_steps", [])),
         risk_steps=_string_list(payload.get("risk_steps", [])),
         capability_tags=sorted(set(capability_tags) | fallback_tags),
@@ -958,9 +1018,17 @@ def _string_list(value: object, limit: int = 6) -> list[str]:
     return [" ".join(str(item).split())[:240] for item in value if str(item).strip()][:limit]
 
 
+def _bounded_int(value: object, *, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return min(max(parsed, minimum), maximum)
+
+
 def _format_server_guidance(assessment: ServerRoutingAssessment) -> str:
-    key_steps = "; ".join(assessment.key_steps) or "Inspect the relevant image regions before answering."
-    risk_steps = "; ".join(assessment.risk_steps) or "Verify OCR, visual grounding, and the final answer."
+    key_steps = "; ".join(assessment.key_steps) or "Follow the required mathematical steps."
+    risk_steps = "; ".join(assessment.risk_steps) or "Verify intermediate and final calculations."
     return (
         f"Difficulty: {assessment.difficulty}\n"
         f"Key steps to cover: {key_steps}\n"
@@ -985,10 +1053,7 @@ def _tag_match_score(profile: set[str] | dict[str, float], routing_tags: set[str
     if isinstance(profile, set):
         return sum(routing_tag_importance(tag) for tag in profile & routing_tags)
     return round(
-        sum(
-            min(profile.get(tag, 0.0) * routing_tag_importance(tag), MAX_ROUTING_TAG_CONTRIBUTION)
-            for tag in routing_tags
-        ),
+        sum(profile.get(tag, 0.0) * routing_tag_importance(tag) for tag in routing_tags),
         4,
     )
 
@@ -1008,26 +1073,79 @@ def _select_relevant_global_records(
     question: str,
     records: list[LibraryRecord],
     limit: int = 5,
+    assessment: ServerRoutingAssessment | None = None,
 ) -> list[LibraryRecord]:
-    question_tags = _extract_routing_tags(question)
-    question_words = set(_routing_words(question))
+    assessment = assessment or ServerRoutingAssessment()
+    queries = _unique_nonempty(
+        [question, assessment.target, *assessment.search_queries, *assessment.keywords]
+    )
+    key_facts = _unique_nonempty(
+        [*assessment.facts, *assessment.constraints, *assessment.entities, *assessment.numbers, *assessment.units]
+    )
+    query_tags = assessment.routing_tags or _extract_routing_tags(question)
+    query_terms = set().union(*(_retrieval_terms(query) for query in queries)) if queries else set()
+    fact_terms = [_retrieval_terms(fact) for fact in key_facts]
     ranked = sorted(
         enumerate(records),
         key=lambda indexed_record: (
-            len(
-                question_tags
-                & (
-                    _extract_routing_tags(indexed_record[1].source_task)
-                    | _extract_routing_tags(indexed_record[1].summary)
-                    | _extract_routing_tags(" ".join(indexed_record[1].tags))
-                )
-            ),
-            len(question_words & set(_routing_words(indexed_record[1].source_task))),
+            _global_record_relevance(indexed_record[1], query_terms, fact_terms, query_tags),
             indexed_record[0],
         ),
         reverse=True,
     )
     return [record for _, record in ranked[:limit]]
+
+
+def _global_record_relevance(
+    record: LibraryRecord,
+    query_terms: set[str],
+    fact_terms: list[set[str]],
+    query_tags: set[str],
+) -> float:
+    record_text = f"{record.source_task} {record.summary} {record.detail} {' '.join(record.tags)}"
+    record_terms = _retrieval_terms(record_text)
+    record_tags = _extract_routing_tags(record_text)
+    lexical = len(query_terms & record_terms) / len(query_terms) if query_terms else 0.0
+    facts = max(
+        (len(terms & record_terms) / len(terms) for terms in fact_terms if terms),
+        default=0.0,
+    )
+    tags = len(query_tags & record_tags) / len(query_tags) if query_tags else 0.0
+    quality = _training_evidence_value(record)
+    return round(lexical * 0.35 + facts * 0.30 + tags * 0.25 + quality * 0.10, 6)
+
+
+def _retrieval_terms(text: str) -> set[str]:
+    lower = str(text).lower()
+    terms = set(_routing_words(lower))
+    for sequence in re.findall(r"[\u4e00-\u9fff]+", lower):
+        if len(sequence) >= 2:
+            terms.add(sequence)
+            terms.update(sequence[index : index + 2] for index in range(len(sequence) - 1))
+    terms.update(re.findall(r"\d+(?:\.\d+)?%?", lower))
+    return terms
+
+
+def _unique_nonempty(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(value.strip() for value in values if str(value).strip()))
+
+
+def _assessment_key_information(assessment: ServerRoutingAssessment) -> dict[str, object]:
+    return {
+        "target": assessment.target,
+        "entities": assessment.entities,
+        "facts": assessment.facts,
+        "constraints": assessment.constraints,
+        "numbers": assessment.numbers,
+        "units": assessment.units,
+        "keywords": assessment.keywords,
+        "search_queries": assessment.search_queries,
+        "requires_web_search": assessment.requires_web_search,
+        "web_cache_ttl_seconds": assessment.web_cache_ttl_seconds,
+        "key_steps": assessment.key_steps,
+        "risk_steps": assessment.risk_steps,
+        "routing_tags": sorted(assessment.routing_tags),
+    }
 
 
 def _routing_words(text: str) -> list[str]:
@@ -1047,16 +1165,7 @@ def _source_library_type(record: LibraryRecord) -> str:
     return record.library_type
 
 
-def _training_evidence_value(record: LibraryRecord, tag: str = "") -> float:
-    if _source_library_type(record) == "visual_completeness":
-        score_name = {
-            "ocr-coverage": "ocr_coverage_score",
-            "object-coverage": "object_coverage_score",
-            "layout-coverage": "layout_coverage_score",
-        }.get(tag, "visual_completeness_score")
-        match = re.search(rf"{score_name}=([0-9.]+)", record.detail)
-        if match:
-            return max(0.0, min(float(match.group(1)), 1.0))
+def _training_evidence_value(record: LibraryRecord) -> float:
     tags = set(record.tags)
     if "curated-success-experience" in tags:
         return 1.0
@@ -1160,9 +1269,10 @@ def reset_b_magent_training_state(
     lora_output_dir: Path | None = Path("data/lora_adapters"),
     agent_names: tuple[str, ...] = AGENT_NAMES,
     reset_evaluation_libraries: bool = True,
+    reset_key_information_store: bool = False,
     report_files: tuple[Path, ...] = (),
 ) -> None:
-    """Remove all generated experience and results before a fresh b_magent run."""
+    """Remove training state while preserving verified server key information by default."""
     for agent_name in agent_names:
         agent_dir = data_dir / agent_name
         for file_name in ("professional_library.jsonl", "private_data.jsonl"):
@@ -1173,6 +1283,8 @@ def reset_b_magent_training_state(
     server_dir = data_dir / "qwen_server_agent"
     for file_name in ("global_evaluation_library.jsonl", "agent_training_tags.jsonl"):
         (server_dir / file_name).unlink(missing_ok=True)
+    if reset_key_information_store:
+        (server_dir / "key_information_store.jsonl").unlink(missing_ok=True)
     shutil.rmtree(server_dir / "agent_training_tags", ignore_errors=True)
 
     if lora_output_dir is not None:
@@ -1229,146 +1341,29 @@ def _extract_global_source_id(detail: str) -> str:
     return source_id.split(" | ", 1)[0].strip()
 
 
-def format_training_task(sample: GSM8KSample | VisionQASample) -> str:
-    if isinstance(sample, VisionQASample):
-        accepted = " | ".join(sample.answers or (sample.final_answer,))
-        visual_reasoning = build_visual_gold_reasoning(sample)
-        return (
-            "Inspect the complete image, answer the question, and preserve grounded visual reasoning.\n"
-            f"Dataset: {sample.dataset}\n"
-            f"Image: {sample.image_path}\n"
-            f"Question: {sample.question}\n"
-            f"Gold image elements: {json.dumps(sample.image_elements, ensure_ascii=False)}\n"
-            f"Gold reasoning: {json.dumps(visual_reasoning, ensure_ascii=False)}\n"
-            f"Gold final answer: {accepted}"
-        )
-    return (
-        "Solve this GSM8K training problem and preserve reusable solving lessons.\n"
-        f"Question: {sample.question}\n"
-        f"Gold reasoning: {sample.answer}\n"
-        f"Gold final answer: {sample.final_answer}"
+def format_gsm8k_training_task(sample: GSM8KSample) -> str:
+    task = (
+        f"Complete this {sample.task_type} evidence summarization task.\n"
+        "The second-layer server has already retrieved the candidate evidence. Synthesize the useful "
+        "facts, remove duplication and conflicts, preserve every user constraint, and produce a concise "
+        "evidence-grounded final answer. Do not perform another search.\n"
+        f"Task: {sample.question}"
     )
+    if sample.reference_information:
+        task += f"\n\nCandidate reference information:\n{sample.reference_information}"
+    if sample.retrieval_targets:
+        task += f"\n\nGold retrieval targets:\n{'; '.join(sample.retrieval_targets)}"
+    task += f"\n\nGold reference response:\n{sample.answer}"
+    if sample.final_answer:
+        task += f"\nGold final answer: {sample.final_answer}"
+    return task
 
 
-format_gsm8k_training_task = format_training_task
-
-
-def build_visual_gold_reasoning(sample: VisionQASample) -> list[str]:
-    """Create grounded reasoning supervision without using a model prediction."""
-    annotated_sections = [
-        name for name, value in sample.image_elements.items()
-        if value not in (None, "", [], {})
-    ]
-    evidence_source = ", ".join(annotated_sections) or "the complete image"
-    return [
-        f"Inspect {evidence_source} for evidence relevant to: {sample.question}",
-        "Resolve the answer only from the annotated visual evidence and its relationships.",
-        f"The visual evidence supports the answer: {sample.final_answer}",
-    ]
-
-
-def format_inference_question(sample: GSM8KSample | VisionQASample) -> str:
-    if isinstance(sample, VisionQASample):
-        return (
-            f"Image: {sample.image_path}\nQuestion: {sample.question}\n"
-            'Return JSON only in this order: {"final_answer":"...",'
-            '"image_elements":{...},"reasoning":["..."]}. '
-            "First give the answer, then record all visible text, numbers, objects, layout, colors, "
-            "and relationships, followed by reasoning grounded in those elements."
-        )
-    return sample.question
-
-
-def extract_prediction_answer(text: str, sample: GSM8KSample | VisionQASample) -> str:
-    if not isinstance(sample, VisionQASample):
-        return extract_numeric_answer(text)
-    try:
-        payload = json.loads(_strip_json_fence(text))
-        if isinstance(payload, dict) and "final_answer" in payload:
-            return normalize_vision_answer(str(payload["final_answer"]))
-    except (json.JSONDecodeError, TypeError, ValueError):
-        pass
-    json_answer = _extract_json_string_field(text, "final_answer")
-    if json_answer:
-        return normalize_vision_answer(json_answer)
-    matches = re.findall(r"####\s*([^\n]+)", text)
-    if matches:
-        return normalize_vision_answer(matches[-1])
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    return normalize_vision_answer(lines[-1]) if lines else ""
-
-
-def _extract_json_string_field(text: str, field_name: str) -> str:
-    match = re.search(
-        rf'"{re.escape(field_name)}"\s*:\s*"((?:\\.|[^"\\])*)',
-        str(text),
-        flags=re.IGNORECASE,
-    )
-    if not match:
-        return ""
-    encoded_value = match.group(1)
-    try:
-        return json.loads(f'"{encoded_value}"')
-    except json.JSONDecodeError:
-        return encoded_value.replace(r'\"', '"').replace(r"\\", "\\")
-
-
-def _strip_json_fence(text: str) -> str:
-    candidate = str(text).strip()
-    if candidate.startswith("```"):
-        candidate = candidate.split("\n", 1)[-1]
-        candidate = candidate.rsplit("```", 1)[0].strip()
-    return candidate
-
-
-def normalize_vision_answer(text: str) -> str:
-    cleaned = re.sub(r"^(?:final answer|answer)\s*:\s*", "", str(text).strip(), flags=re.IGNORECASE)
-    return " ".join(cleaned.rstrip(".。").casefold().split())
-
-
-def infographic_anls(prediction: str, references: tuple[str, ...]) -> float:
-    """Official-style ANLS with the 0.5 normalized-distance threshold."""
-    predicted = normalize_vision_answer(prediction)
-    best = 0.0
-    for reference in references:
-        expected = normalize_vision_answer(reference)
-        denominator = max(len(predicted), len(expected))
-        if denominator == 0:
-            similarity = 1.0
-        else:
-            normalized_distance = _levenshtein_distance(predicted, expected) / denominator
-            similarity = 1.0 - normalized_distance if normalized_distance < 0.5 else 0.0
-        best = max(best, similarity)
-    return best
-
-
-def _levenshtein_distance(left: str, right: str) -> int:
-    if len(left) < len(right):
-        left, right = right, left
-    previous = list(range(len(right) + 1))
-    for row, left_character in enumerate(left, start=1):
-        current = [row]
-        for column, right_character in enumerate(right, start=1):
-            current.append(min(
-                current[-1] + 1,
-                previous[column] + 1,
-                previous[column - 1] + (left_character != right_character),
-            ))
-        previous = current
-    return previous[-1]
-
-
-def export_mmvet_predictions(report: VotingReport, output_path: Path) -> None:
-    """Write the question-id to answer mapping consumed by MM-Vet's evaluator."""
-    predictions = {
-        prediction.sample_id: prediction.final_answer
-        for prediction in report.predictions
-        if prediction.dataset == "mm-vet" and prediction.sample_id
-    }
-    if not predictions:
-        raise ValueError("voting report contains no MM-Vet predictions with sample ids")
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(predictions, ensure_ascii=False, indent=2), encoding="utf-8")
+def format_answer_validation_task(sample: GSM8KSample) -> str:
+    task = f"Task: {sample.question}"
+    if sample.reference_information:
+        task += f"\n\nCandidate reference information:\n{sample.reference_information}"
+    return task
 
 
 def format_voting_prediction_detail(prediction: VotingPrediction, total: int) -> str:
@@ -1399,7 +1394,7 @@ def print_voting_prediction_detail(prediction: VotingPrediction, total: int) -> 
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Training entry for MM-Vet and InfographicsVQA runners.")
+    parser = argparse.ArgumentParser(description="Training entry for b_magent agents and benchmark runners.")
     parser.add_argument(
         "--mode",
         choices=["b-magent", "placeholder", "local-qwen-vote"],
@@ -1415,12 +1410,12 @@ def parse_args() -> argparse.Namespace:
         default="local-qwen",
         help="Backend for --mode b-magent. local-qwen calls the configured local model; demo is deterministic smoke test logic.",
     )
-    parser.add_argument("--dataset-dir", type=Path, default=Path("data"))
+    parser.add_argument("--dataset-dir", type=Path, default=Path("data/TravelPlanner"))
     parser.add_argument(
         "--rounds",
         type=int,
-        default=0,
-        help="Training rounds. Default 0 auto-covers all 200 private samples per agent.",
+        default=200,
+        help="Training rounds. Use 0 to auto-cover the evenly split private training data.",
     )
     parser.add_argument(
         "--private-batch-size",
@@ -1431,18 +1426,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batches-per-round", type=int, default=32)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--private-train-size", type=int, default=STANDARD_PRIVATE_TRAIN_SIZE)
-    parser.add_argument(
-        "--test-limit",
-        type=int,
-        default=STANDARD_TEST_LIMIT,
-        help="Evaluation sample count, capped at the first 100 official samples.",
-    )
-    parser.add_argument(
-        "--eval-split",
-        choices=["validation", "test"],
-        default="test",
-        help="Official split used by local-qwen-vote; use validation for labeled InfographicsVQA evaluation.",
-    )
+    parser.add_argument("--test-limit", type=int, default=STANDARD_TEST_LIMIT)
     parser.add_argument(
         "--local-qwen",
         action="store_true",
@@ -1454,7 +1438,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--resume",
         action="store_true",
-        help="Resume from the last completed round without deleting libraries, datasets, or LoRA state.",
+        help="Keep existing libraries/LoRA state and continue until --rounds total rounds.",
     )
     parser.add_argument(
         "--enable-lora",
@@ -1482,15 +1466,24 @@ def parse_args() -> argparse.Namespace:
         help="Number of newly accepted samples accumulated per agent before one LoRA refresh.",
     )
     parser.add_argument("--lora-max-seq-length", type=int, default=4096)
-    parser.add_argument("--lora-train-batch-size", type=int, default=1)
-    parser.add_argument("--lora-gradient-accumulation-steps", type=int, default=4)
+    parser.add_argument("--lora-train-batch-size", type=int, default=4)
+    parser.add_argument("--lora-gradient-accumulation-steps", type=int, default=1)
     parser.add_argument("--lora-epochs", type=float, default=1.0)
-    parser.add_argument("--lora-learning-rate", type=float, default=5e-5)
+    parser.add_argument("--lora-learning-rate", type=float, default=2e-4)
     parser.add_argument("--lora-min-evaluation-score", type=float, default=0.6)
     parser.add_argument(
         "--allow-uncorrect-lora-labels",
         action="store_true",
         help="Allow LoRA SFT examples even when a gold final answer is present and the reflected answer does not match it.",
+    )
+    parser.add_argument(
+        "--answer-validator",
+        choices=["gpt-5.6-sol", "local"],
+        default="gpt-5.6-sol",
+        help=(
+            "Correctness judge for evolved answers. gpt-5.6-sol requires OPENAI_API_KEY; "
+            "local keeps the deterministic fallback used by offline tests."
+        ),
     )
     args = parser.parse_args()
     args.dataset_dir = resolve_project_path(args.dataset_dir)
@@ -1509,17 +1502,17 @@ def resolve_project_path(path: Path) -> Path:
 def build_b_magent_backend(args: argparse.Namespace) -> object | None:
     if args.backend == "demo":
         return None
-    engine = LocalQwenEngine(model_name_or_path=args.model_path)
+    engine = LocalQwenEngine(
+        model_name_or_path=args.model_path,
+        system_prompt=GENERAL_TASK_INSTRUCTION,
+    )
     return LocalQwenEvolutionBackend(
         engine,
         lora_output_dir=args.lora_output_dir if args.enable_lora else None,
     )
 
 
-def build_lora_manager(
-    args: argparse.Namespace,
-    before_train: Callable[[], None] | None = None,
-) -> LoraEvolutionManager | None:
+def build_lora_manager(args: argparse.Namespace) -> LoraEvolutionManager | None:
     if not args.enable_lora:
         return None
     config = LoraTrainingConfig(
@@ -1534,7 +1527,7 @@ def build_lora_manager(
         num_train_epochs=args.lora_epochs,
         learning_rate=args.lora_learning_rate,
     )
-    return LoraEvolutionManager(config, before_train=before_train)
+    return LoraEvolutionManager(config)
 
 
 def print_training_round_start(round_index: int, rounds: int, question: str) -> None:
@@ -1543,16 +1536,11 @@ def print_training_round_start(round_index: int, rounds: int, question: str) -> 
 
 
 def print_training_round_end(round_index: int, rounds: int, report: BMagentTrainingRound) -> None:
-    completeness = ", ".join(
-        f"{agent_name}={metrics.get('visual_completeness_score', 0.0):.4f}"
-        for agent_name, metrics in report.visual_completeness_metrics.items()
-    ) or "none"
     print(
         f"[{round_index}/{rounds}] 完成: drafts={report.drafts} "
         f"evaluations={report.peer_reviews} professional_evolutions={report.self_improvements} "
         f"evaluation_evolutions={report.evaluation_evolutions} "
-        f"global_downlinks={report.global_downlinks} global_uploads={report.global_uploads} "
-        f"visual_completeness=({completeness})",
+        f"global_downlinks={report.global_downlinks} global_uploads={report.global_uploads}",
         flush=True,
     )
 
@@ -1563,63 +1551,42 @@ def main() -> None:
     if mode == "b-magent":
         print(f"backend: {args.backend}", flush=True)
         print(f"model: {args.model_path}", flush=True)
-        training_dataset = load_project_dataset(args.dataset_dir)
-        if not training_dataset.load("train", limit=1):
-            expected_path = args.dataset_dir / "infographicsvqa" / "train.jsonl"
-            if args.dataset_dir.name.lower() in {"gsm8k", "infographicsvqa"}:
-                expected_path = args.dataset_dir / "train.jsonl"
-            raise ValueError(
-                f"no training samples found at {expected_path}; training state was not cleared. "
-                "Run: python scripts/prepare_vision_datasets.py "
-                "--dataset infographicsvqa --output-dir data"
-            )
-        progress_file = PROJECT_ROOT / "data" / "training_progress.json"
-        report_files = (
-            args.output,
-            progress_file,
-            PROJECT_ROOT / "data" / "latest_report.json",
-            PROJECT_ROOT / "outputs" / "latest_report.json",
-            PROJECT_ROOT / "outputs" / "demo_report.json",
-            PROJECT_ROOT / "train" / "four_agent_lora_voting_100_report.json",
-        )
+        start_round = 0
         if args.resume:
-            start_round = load_training_progress(progress_file)
-            if start_round == 0:
-                start_round = infer_completed_training_rounds(PROJECT_ROOT / "data")
-            print(f"从第 {start_round + 1} 轮继续训练（已完成 {start_round} 轮）", flush=True)
+            start_round = infer_completed_training_rounds(PROJECT_ROOT / "data")
+            print(f"保留已有训练成果，从第 {start_round + 1} 轮继续", flush=True)
         else:
             reset_b_magent_training_state(
                 PROJECT_ROOT / "data",
                 lora_output_dir=args.lora_output_dir,
                 reset_evaluation_libraries=True,
-                report_files=report_files,
+                report_files=(
+                    args.output,
+                    PROJECT_ROOT / "data" / "latest_report.json",
+                    PROJECT_ROOT / "outputs" / "latest_report.json",
+                    PROJECT_ROOT / "outputs" / "demo_report.json",
+                    PROJECT_ROOT / "train" / "four_agent_lora_voting_100_report.json",
+                ),
             )
-            start_round = 0
             print("已清空之前的训练存储", flush=True)
         print("开始训练", flush=True)
-        backend = build_b_magent_backend(args)
-        engine = getattr(backend, "engine", None)
-        unload_inference_model = getattr(engine, "unload", None)
-
-        def on_round_end(round_index: int, total_rounds: int, round_report: BMagentTrainingRound) -> None:
-            save_training_progress(progress_file, round_index, total_rounds)
-            print_training_round_end(round_index, total_rounds, round_report)
-
         report = run_b_magent_training_entry(
             dataset_dir=args.dataset_dir,
             data_dir=PROJECT_ROOT / "data",
             rounds=args.rounds if args.rounds > 0 else None,
             private_batch_size=args.private_batch_size,
             random_seed=args.seed,
-            backend=backend,
-            lora_manager=build_lora_manager(
-                args,
-                before_train=unload_inference_model if callable(unload_inference_model) else None,
-            ),
+            backend=build_b_magent_backend(args),
+            lora_manager=build_lora_manager(args),
             on_round_start=print_training_round_start,
-            on_round_end=on_round_end,
+            on_round_end=print_training_round_end,
             start_round=start_round,
             preserve_private_datasets=args.resume,
+            answer_validator=(
+                build_answer_validator_from_env()
+                if args.answer_validator == "gpt-5.6-sol"
+                else None
+            ),
         )
         export_json_report(report, args.output)
         print(f"b_magent agents: {', '.join(report.agents)}")
@@ -1634,16 +1601,6 @@ def main() -> None:
                 f"evaluation_records={evaluation_count} "
                 f"lora_updates={report.lora_updates.get(agent_name, 0)}"
             )
-        if report.visual_completeness_metrics:
-            print("visual completeness averages:")
-            for agent_name in report.agents:
-                metrics = report.visual_completeness_metrics.get(agent_name, {})
-                print(
-                    f"{agent_name}: overall={metrics.get('visual_completeness_score', 0.0):.4f} "
-                    f"ocr={metrics.get('ocr_coverage_score', 0.0):.4f} "
-                    f"objects={metrics.get('object_coverage_score', 0.0):.4f} "
-                    f"layout={metrics.get('layout_coverage_score', 0.0):.4f}"
-                )
     elif mode == "local-qwen-vote":
         models = build_four_local_qwen_agents(
             args.model_path,
@@ -1654,7 +1611,11 @@ def main() -> None:
             models,
             limit=args.test_limit,
             on_prediction=print_voting_prediction_detail,
-            split=args.eval_split,
+            answer_validator=(
+                build_answer_validator_from_env()
+                if args.answer_validator == "gpt-5.6-sol"
+                else None
+            ),
         )
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(
@@ -1668,12 +1629,6 @@ def main() -> None:
             f"accuracy={voting_report.correct}/{voting_report.total}="
             f"{voting_report.accuracy:.4f} ({accuracy_percent:.2f}%)"
         )
-        if voting_report.anls is not None:
-            print(f"anls={voting_report.anls:.4f}")
-        if any(prediction.dataset == "mm-vet" for prediction in voting_report.predictions):
-            mmvet_output = args.output.with_name(f"{args.output.stem}_mmvet.json")
-            export_mmvet_predictions(voting_report, mmvet_output)
-            print(f"mm-vet predictions: {mmvet_output}")
     elif mode == "placeholder":
         report = run_four_agent_private_training(
             dataset_dir=args.dataset_dir,

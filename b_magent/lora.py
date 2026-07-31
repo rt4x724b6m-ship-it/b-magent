@@ -7,9 +7,14 @@ from decimal import Decimal, InvalidOperation
 from dataclasses import asdict, dataclass, field
 from hashlib import sha256
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Protocol
 
 from .models import Draft, PeerEvaluation, SelfImprovement
+from .retrieval_training import (
+    build_verified_retrieval_output,
+    is_retrieval_summary_grounded,
+    strip_hidden_retrieval_labels,
+)
 
 
 DEFAULT_LORA_THRESHOLD = 10
@@ -23,9 +28,9 @@ class LoraTrainingConfig:
     require_correct_answer: bool = True
     min_evaluation_score: float = 0.6
     max_seq_length: int = 4096
-    per_device_train_batch_size: int = 1
-    gradient_accumulation_steps: int = 4
-    learning_rate: float = 5e-5
+    per_device_train_batch_size: int = 4
+    gradient_accumulation_steps: int = 1
+    learning_rate: float = 2e-4
     num_train_epochs: float = 1.0
     lora_r: int = 8
     lora_alpha: int = 16
@@ -35,6 +40,9 @@ class LoraTrainingConfig:
         "k_proj",
         "v_proj",
         "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
     )
 
     def __post_init__(self) -> None:
@@ -58,7 +66,6 @@ class LoraSFTExample:
     instruction: str
     input: str
     output: str
-    image: str = ""
 
     def to_dict(self) -> dict[str, str]:
         return asdict(self)
@@ -102,8 +109,13 @@ class PeftSFTLoraTrainer:
             import torch
             from datasets import Dataset
             from peft import LoraConfig, TaskType, get_peft_model
-            import transformers
-            from transformers import AutoConfig, AutoModelForCausalLM, AutoProcessor, AutoTokenizer, DataCollatorForSeq2Seq, Trainer, TrainingArguments
+            from transformers import (
+                AutoProcessor,
+                DataCollatorForSeq2Seq,
+                Qwen2_5_VLForConditionalGeneration,
+                Trainer,
+                TrainingArguments,
+            )
         except ImportError as exc:
             raise RuntimeError(
                 "LoRA training requires peft plus torch, datasets, and transformers. "
@@ -114,23 +126,16 @@ class PeftSFTLoraTrainer:
         if not rows:
             raise ValueError(f"LoRA dataset is empty: {dataset_path}")
 
-        tokenizer = AutoTokenizer.from_pretrained(config.base_model_path, local_files_only=True)
+        tokenizer = AutoProcessor.from_pretrained(config.base_model_path, local_files_only=True)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
 
-        model_config = AutoConfig.from_pretrained(config.base_model_path, local_files_only=True)
-        model_loader = AutoModelForCausalLM
-        if getattr(model_config, "model_type", "") == "qwen2_5_vl":
-            model_loader = transformers.Qwen2_5_VLForConditionalGeneration
-        model = model_loader.from_pretrained(
+        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             config.base_model_path,
             torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
             local_files_only=True,
         )
         model.config.use_cache = False
-        model.gradient_checkpointing_enable()
-        if hasattr(model, "enable_input_require_grads"):
-            model.enable_input_require_grads()
         peft_config = LoraConfig(
             task_type=TaskType.CAUSAL_LM,
             r=config.lora_r,
@@ -141,22 +146,11 @@ class PeftSFTLoraTrainer:
         model = get_peft_model(model, peft_config)
 
         dataset = Dataset.from_list(rows)
-        has_images = any(str(row.get("image", "")).strip() for row in rows)
-        if has_images:
-            processor = AutoProcessor.from_pretrained(config.base_model_path, local_files_only=True)
-            train_dataset = dataset
-            data_collator = VisionLoraCollator(processor, config.max_seq_length)
-        else:
-            def tokenize(row: dict[str, str]) -> dict[str, list[int]]:
-                return tokenize_lora_row(tokenizer, row, config.max_seq_length)
 
-            train_dataset = dataset.map(tokenize, remove_columns=dataset.column_names)
-            data_collator = DataCollatorForSeq2Seq(
-                tokenizer=tokenizer,
-                model=model,
-                padding=True,
-                label_pad_token_id=-100,
-            )
+        def tokenize(row: dict[str, str]) -> dict[str, list[int]]:
+            return tokenize_lora_row(tokenizer, row, config.max_seq_length)
+
+        tokenized_dataset = dataset.map(tokenize, remove_columns=dataset.column_names)
         training_args = TrainingArguments(
             output_dir=str(adapter_path / "trainer_state"),
             per_device_train_batch_size=config.per_device_train_batch_size,
@@ -167,9 +161,7 @@ class PeftSFTLoraTrainer:
             save_strategy="no",
             report_to=[],
             fp16=torch.cuda.is_available(),
-            gradient_checkpointing=True,
             label_names=["labels"],
-            remove_unused_columns=False,
         )
 
         # Use the real optimizer implementation.  Overriding ``train``/``eval``
@@ -179,8 +171,13 @@ class PeftSFTLoraTrainer:
         trainer = Trainer(
             model=model,
             args=training_args,
-            train_dataset=train_dataset,
-            data_collator=data_collator,
+            train_dataset=tokenized_dataset,
+            data_collator=DataCollatorForSeq2Seq(
+                tokenizer=tokenizer,
+                model=model,
+                padding=True,
+                label_pad_token_id=-100,
+            ),
             optimizers=(optimizer, None),
         )
         trainer.train()
@@ -195,96 +192,10 @@ class PeftSFTLoraTrainer:
             torch.cuda.empty_cache()
 
 
-class VisionLoraCollator:
-    """Build Qwen-VL batches while masking prompt and visual tokens from loss."""
-
-    def __init__(self, processor: object, max_length: int) -> None:
-        self.processor = processor
-        self.max_length = max_length
-        image_processor = getattr(processor, "image_processor", None)
-        if image_processor is not None:
-            # Infographics are often extremely tall. Bound visual tokens so a
-            # 3B model plus optimizer fits on a 32 GB training GPU.
-            image_processor.max_pixels = 512 * 28 * 28
-
-    def __call__(self, rows: list[dict[str, str]]) -> dict[str, object]:
-        import torch
-        from PIL import Image, ImageOps
-
-        features = []
-        for row in rows:
-            image_path = Path(str(row.get("image", "")))
-            if not image_path.is_file():
-                raise FileNotFoundError(f"visual LoRA image not found: {image_path}")
-            prefix = format_lora_prompt(row["instruction"], row["input"], output="")
-            full_text = prefix + row["output"]
-            messages = [{"role": "user", "content": [
-                {"type": "image"},
-                {"type": "text", "text": full_text},
-            ]}]
-            rendered = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
-            prefix_messages = [{"role": "user", "content": [
-                {"type": "image"},
-                {"type": "text", "text": prefix},
-            ]}]
-            rendered_prefix = self.processor.apply_chat_template(
-                prefix_messages, tokenize=False, add_generation_prompt=False
-            )
-            with Image.open(image_path) as source:
-                image = ImageOps.exif_transpose(source).convert("RGB")
-                encoded = self.processor(
-                    text=[rendered],
-                    images=[image],
-                    padding=False,
-                    truncation=True,
-                    max_length=self.max_length,
-                    return_tensors="pt",
-                )
-                prefix_encoded = self.processor(
-                    text=[rendered_prefix],
-                    images=[image],
-                    padding=False,
-                    truncation=True,
-                    max_length=self.max_length,
-                    return_tensors="pt",
-                )
-            input_ids = encoded["input_ids"][0]
-            attention_mask = encoded["attention_mask"][0]
-            prefix_length = prefix_encoded["input_ids"].shape[1]
-            labels = input_ids.clone()
-            labels[: min(prefix_length, labels.shape[0])] = -100
-            features.append({
-                "input_ids": input_ids,
-                "attention_mask": attention_mask,
-                "labels": labels,
-                "pixel_values": encoded["pixel_values"],
-                "image_grid_thw": encoded["image_grid_thw"],
-            })
-
-        padded = self.processor.tokenizer.pad(
-            [{key: item[key] for key in ("input_ids", "attention_mask")} for item in features],
-            return_tensors="pt",
-        )
-        max_length = padded["input_ids"].shape[1]
-        padded["labels"] = torch.stack([
-            torch.nn.functional.pad(item["labels"], (0, max_length - item["labels"].shape[0]), value=-100)
-            for item in features
-        ])
-        padded["pixel_values"] = torch.cat([item["pixel_values"] for item in features], dim=0)
-        padded["image_grid_thw"] = torch.cat([item["image_grid_thw"] for item in features], dim=0)
-        return padded
-
-
 class LoraEvolutionManager:
-    def __init__(
-        self,
-        config: LoraTrainingConfig,
-        trainer: LoraTrainer | None = None,
-        before_train: Callable[[], None] | None = None,
-    ) -> None:
+    def __init__(self, config: LoraTrainingConfig, trainer: LoraTrainer | None = None) -> None:
         self.config = config
         self.trainer = trainer or PeftSFTLoraTrainer()
-        self.before_train = before_train
         self.config.output_dir.mkdir(parents=True, exist_ok=True)
 
     def update_from_round(
@@ -347,24 +258,16 @@ class LoraEvolutionManager:
         state = self.load_state(draft.agent_name)
         if not evaluations:
             return False, "no evaluator report"
-        correct = is_improved_answer_correct(task, improvement.revised_answer)
-        improvement.is_correct = correct
-        if self.config.require_correct_answer and correct is False:
-            return False, "improved answer failed gold-answer correctness gate"
-        if correct is None:
-            low_scores = [
-                evaluation
-                for evaluation in evaluations
-                if not evaluation.scores.is_usable_for_lora(self.config.min_evaluation_score)
-            ]
-        else:
-            low_scores = [
-                evaluation
-                for evaluation in evaluations
-                if evaluation.scores.safety < self.config.min_evaluation_score
-            ]
+        low_scores = [evaluation for evaluation in evaluations if not evaluation.scores.is_usable_for_lora(self.config.min_evaluation_score)]
         if low_scores:
             return False, "evaluation scores below LoRA quality threshold"
+        correct = improvement.is_correct
+        if correct is None:
+            correct = is_improved_answer_correct(task, improvement.revised_answer)
+        improvement.is_correct = correct
+        has_verified_retrieval_label = build_verified_retrieval_output(task) is not None
+        if self.config.require_correct_answer and correct is not True and not has_verified_retrieval_label:
+            return False, "improved answer did not pass a verifiable correctness or grounding gate"
         digest = hash_lora_example(example)
         if digest in state.example_hashes:
             return False, "duplicate SFT example"
@@ -383,8 +286,6 @@ class LoraEvolutionManager:
         state = self.load_state(agent_name)
         examples = count_jsonl_rows(dataset_path)
 
-        if self.before_train is not None:
-            self.before_train()
         self.trainer.train(agent_name, dataset_path, adapter_path, self.config)
         state.version += 1
         state.trained_examples = state.examples
@@ -474,87 +375,20 @@ def build_lora_example(
 ) -> LoraSFTExample:
     evaluation_report = format_evaluation_report(evaluations)
     trajectory = format_trajectory(draft)
-    image = extract_task_image_path(task)
-    gold_answer = extract_gold_final_answer(task)
-    target_output = build_visual_supervision_target(task) if image else improvement.revised_answer
-    if image:
-        input_text = (
-            f"Task:\n{strip_gold_annotations(task)}\n\n"
-            f"Evaluator checks:\n{_shorten_for_visual_sft(evaluation_report)}"
-        )
-    else:
-        input_text = (
-            f"Task:\n{strip_gold_annotations(task)}\n\n"
-            f"Trajectory:\n{trajectory}\n\n"
-            f"Evaluation Report:\n{evaluation_report}"
-        )
+    verified_output = build_verified_retrieval_output(task)
     return LoraSFTExample(
         agent_name=draft.agent_name,
         instruction=(
-            "Inspect the entire image, reason from the recognized evidence, and return JSON with "
-            "final_answer first, followed by complete image_elements and grounded reasoning."
-            if image
-            else "Solve the task, reflect on evaluator feedback, and produce the improved final answer."
+            "Summarize the evidence already retrieved by the server. Preserve the user's target and "
+            "hard constraints, remove duplication and conflicts, and produce a concise grounded answer."
         ),
-        input=input_text,
-        output=target_output,
-        image=image,
+        input=(
+            f"Task:\n{strip_gold_annotations(task)}\n\n"
+            f"Trajectory:\n{trajectory}\n\n"
+            f"Evaluation Report:\n{evaluation_report}"
+        ),
+        output=verified_output or improvement.revised_answer,
     )
-
-
-def extract_task_image_path(task: str) -> str:
-    match = re.search(r"(?m)^Image:\s*(.+?)\s*$", task)
-    return match.group(1).strip() if match else ""
-
-
-def build_visual_supervision_target(task: str) -> str:
-    elements_match = re.search(r"(?m)^Gold image elements:\s*(\{.*\})\s*$", task)
-    elements: dict[str, object] = {}
-    if elements_match:
-        try:
-            parsed = json.loads(elements_match.group(1))
-            if isinstance(parsed, dict):
-                elements = parsed
-        except json.JSONDecodeError:
-            pass
-    reasoning = extract_gold_reasoning(task)
-    return json.dumps(
-        {
-            # Keep the answer first so it remains available even if generation
-            # reaches its token limit after describing the full image.
-            "final_answer": extract_gold_final_answer(task) or "",
-            "image_elements": elements,
-            "reasoning": reasoning,
-        },
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-
-
-def extract_gold_reasoning(task: str) -> list[str]:
-    match = re.search(
-        r"(?ms)^Gold reasoning:\s*(.*?)(?=^Gold final answer:|\Z)",
-        task,
-    )
-    if not match:
-        return []
-    raw = match.group(1).strip()
-    if not raw:
-        return []
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        parsed = None
-    if isinstance(parsed, list):
-        return [str(item).strip() for item in parsed if str(item).strip()]
-    if isinstance(parsed, str) and parsed.strip():
-        return [parsed.strip()]
-    return [line.strip().lstrip("- ") for line in raw.splitlines() if line.strip()]
-
-
-def _shorten_for_visual_sft(text: str, limit: int = 800) -> str:
-    cleaned = " ".join(str(text).split())
-    return cleaned if len(cleaned) <= limit else cleaned[: limit - 3] + "..."
 
 
 def format_trajectory(draft: Draft) -> str:
@@ -677,62 +511,33 @@ def hash_lora_example(example: LoraSFTExample) -> str:
 
 
 def is_improved_answer_correct(task: str, improved_answer: str) -> bool | None:
-    gold_answers = extract_gold_final_answers(task)
-    if not gold_answers:
+    retrieval_correct = is_retrieval_summary_grounded(task, improved_answer)
+    if retrieval_correct is not None:
+        return retrieval_correct
+    gold = extract_gold_final_answer(task)
+    if gold is None:
         return None
     predicted = extract_final_answer(improved_answer)
-    if any(_answer_equal(predicted, gold) for gold in gold_answers):
-        return True
-    normalized_response = " ".join(normalize_answer(improved_answer).casefold().split())
-    for gold in gold_answers:
-        normalized_gold = " ".join(normalize_answer(gold).casefold().split())
-        if re.fullmatch(r"-?\d+(?:\.\d+)?", normalized_gold):
-            continue
-        if normalized_gold and re.search(rf"(?<!\w){re.escape(normalized_gold)}(?!\w)", normalized_response):
-            return True
-    return False
+    return _numeric_equal(predicted, gold)
 
 
 def extract_gold_final_answer(task: str) -> str | None:
-    answers = extract_gold_final_answers(task)
-    return answers[0] if answers else None
-
-
-def extract_gold_final_answers(task: str) -> tuple[str, ...]:
     match = re.search(r"Gold final answer:\s*([^\n]+)", task)
     if not match:
-        return ()
-    return tuple(
-        answer
-        for item in match.group(1).split(" | ")
-        if (answer := normalize_answer(item))
-    )
+        return None
+    return normalize_answer(match.group(1))
 
 
 def extract_final_answer(text: str) -> str:
-    try:
-        candidate = str(text).strip()
-        if candidate.startswith("```"):
-            candidate = candidate.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-        payload = json.loads(candidate)
-        if isinstance(payload, dict) and "final_answer" in payload:
-            return normalize_answer(str(payload["final_answer"]))
-    except (json.JSONDecodeError, TypeError, ValueError):
-        pass
     matches = re.findall(r"####\s*([^\n]+)", text)
     if matches:
         return normalize_answer(matches[-1])
     numbers = re.findall(r"-?\d+(?:\.\d+)?", text.replace(",", ""))
-    if numbers:
-        return normalize_answer(numbers[-1])
-    nonempty_lines = [line.strip() for line in text.splitlines() if line.strip()]
-    return normalize_answer(nonempty_lines[-1]) if nonempty_lines else ""
+    return normalize_answer(numbers[-1]) if numbers else ""
 
 
 def normalize_answer(text: str) -> str:
     cleaned = str(text).strip().replace(",", "")
-    cleaned = re.sub(r"^(?:final answer|answer)\s*:\s*", "", cleaned, flags=re.IGNORECASE)
-    cleaned = cleaned.strip().rstrip(".。")
     if cleaned.endswith(".0"):
         cleaned = cleaned[:-2]
     return cleaned
@@ -745,18 +550,11 @@ def _numeric_equal(left: str, right: str) -> bool:
         return left == right
 
 
-def _answer_equal(left: str, right: str) -> bool:
-    if _numeric_equal(left, right):
-        return True
-    return " ".join(left.casefold().split()) == " ".join(right.casefold().split())
-
-
 def strip_gold_annotations(task: str) -> str:
+    task = strip_hidden_retrieval_labels(task)
     lines = []
     in_gold_reasoning = False
     for line in task.splitlines():
-        if re.match(r"\s*Gold image elements:", line):
-            continue
         if re.match(r"\s*Gold reasoning:", line):
             in_gold_reasoning = True
             continue

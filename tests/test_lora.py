@@ -14,7 +14,6 @@ from b_magent.lora import (
     LoraTrainingConfig,
     LoraUpdate,
     build_lora_example,
-    build_visual_supervision_target,
     tokenize_lora_row,
 )
 from b_magent.models import Draft, EvaluationScores, PeerEvaluation, SelfImprovement
@@ -36,31 +35,6 @@ def count_jsonl_rows_for_test(path: Path) -> int:
 
 
 class LoraEvolutionTestCase(unittest.TestCase):
-    def test_releases_inference_model_before_lora_training(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="b_magent_lora_release_test_") as temp:
-            trainer = FakeLoraTrainer()
-            release_calls: list[str] = []
-            manager = LoraEvolutionManager(
-                LoraTrainingConfig(
-                    base_model_path="model",
-                    output_dir=Path(temp) / "lora",
-                    threshold=1,
-                ),
-                trainer=trainer,
-                before_train=lambda: release_calls.append("released"),
-            )
-            dataset_path = manager.dataset_path("qwen_agent_1")
-            dataset_path.parent.mkdir(parents=True, exist_ok=True)
-            dataset_path.write_text(
-                json.dumps({"instruction": "solve", "input": "q", "output": "a"}) + "\n",
-                encoding="utf-8",
-            )
-
-            manager.train_agent_on_curated_dataset("qwen_agent_1")
-
-            self.assertEqual(release_calls, ["released"])
-            self.assertEqual(len(trainer.calls), 1)
-
     def test_sft_tokenization_masks_prompt_and_preserves_output_when_truncated(self) -> None:
         class CharacterTokenizer:
             eos_token_id = 0
@@ -140,26 +114,54 @@ class LoraEvolutionTestCase(unittest.TestCase):
         self.assertNotIn("#### 2", example.input)
         self.assertIn("Question: q", example.input)
 
-    def test_visual_target_preserves_complete_elements_reasoning_and_answer_first(self) -> None:
-        target = build_visual_supervision_target(
-            'Question: q\nGold image elements: {"text":["A"],"numbers":["42"]}\n'
-            'Gold reasoning: ["Read A", "Connect A to 42"]\nGold final answer: 42 | forty two'
-        )
+    def test_verified_retrieval_label_trains_even_when_current_draft_is_not_grounded(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="b_magent_verified_retrieval_lora_test_") as temp:
+            trainer = FakeLoraTrainer()
+            manager = LoraEvolutionManager(
+                LoraTrainingConfig(
+                    base_model_path="models/Qwen2.5-VL-3B-Instruct",
+                    output_dir=Path(temp) / "lora",
+                    threshold=1,
+                ),
+                trainer=trainer,
+            )
+            task = (
+                "TravelPlanner information-retrieval task.\n"
+                "Task: Find a hotel.\n"
+                "Candidate reference information:\n[source-1] Harbor Hotel costs 100.\n\n"
+                "Gold retrieval targets:\nsource-1: Hotels\n\n"
+                "Gold reference response:\nStay at Harbor Hotel for 100."
+            )
+            draft = Draft("qwen_agent_1", "general", "unsupported draft", [], [], [], [])
+            review = PeerEvaluation(
+                "qwen_agent_3",
+                "qwen_agent_1",
+                ["use source-1"],
+                "ground the answer",
+                [],
+                EvaluationScores(correctness=1.0, safety=1.0, efficiency=1.0),
+            )
+            improvement = SelfImprovement("qwen_agent_1", ["use source-1"], "still unsupported", [])
 
-        payload = json.loads(target)
-        self.assertEqual(list(payload), ["final_answer", "image_elements", "reasoning"])
-        self.assertEqual(payload["final_answer"], "42")
-        self.assertEqual(payload["image_elements"]["numbers"], ["42"])
-        self.assertEqual(payload["reasoning"], ["Read A", "Connect A to 42"])
+            updates = manager.update_from_round(task, [draft], [review], [improvement])
+
+            self.assertTrue(updates[0].trained)
+            row = json.loads(manager.dataset_path("qwen_agent_1").read_text(encoding="utf-8").strip())
+            self.assertIn("Summarize the evidence already retrieved by the server", row["instruction"])
+            self.assertNotIn("Gold reference response", row["input"])
+            self.assertIn("Relevant sources: source-1: Hotels", row["output"])
+            self.assertIn("Stay at Harbor Hotel for 100.", row["output"])
+            self.assertFalse(improvement.is_correct)
 
     def test_manager_accumulates_per_agent_datasets_and_trains_when_curated_examples_exist(self) -> None:
         with tempfile.TemporaryDirectory(prefix="b_magent_lora_test_") as temp:
             trainer = FakeLoraTrainer()
             manager = LoraEvolutionManager(
                 LoraTrainingConfig(
-                    base_model_path="models/Qwen2.5-1.5B-Instruct",
+                    base_model_path="models/Qwen2.5-VL-3B-Instruct",
                     output_dir=Path(temp) / "lora",
                     threshold=1,
+                    require_correct_answer=False,
                 ),
                 trainer=trainer,
             )
@@ -197,7 +199,7 @@ class LoraEvolutionTestCase(unittest.TestCase):
             trainer = FakeLoraTrainer()
             manager = LoraEvolutionManager(
                 LoraTrainingConfig(
-                    base_model_path="models/Qwen2.5-1.5B-Instruct",
+                    base_model_path="models/Qwen2.5-VL-3B-Instruct",
                     output_dir=Path(temp) / "lora",
                     threshold=1,
                 ),
@@ -221,7 +223,10 @@ class LoraEvolutionTestCase(unittest.TestCase):
                 reviews,
                 [SelfImprovement("qwen_agent_1", ["fix"], "still wrong #### 1", [])],
             )
-            self.assertEqual(bad_updates[0].reason, "improved answer failed gold-answer correctness gate")
+            self.assertEqual(
+                bad_updates[0].reason,
+                "improved answer did not pass a verifiable correctness or grounding gate",
+            )
             self.assertFalse(manager.dataset_path("qwen_agent_1").exists())
 
             good = SelfImprovement("qwen_agent_1", ["fix"], "now correct #### 2", [])
@@ -237,7 +242,7 @@ class LoraEvolutionTestCase(unittest.TestCase):
             trainer = FakeLoraTrainer()
             manager = LoraEvolutionManager(
                 LoraTrainingConfig(
-                    base_model_path="models/Qwen2.5-1.5B-Instruct",
+                    base_model_path="models/Qwen2.5-VL-3B-Instruct",
                     output_dir=Path(temp) / "lora",
                     threshold=2,
                 ),

@@ -1,6 +1,6 @@
   # b_magent
 
-`b_magent` 是一个本地四智能体自进化实验系统，现使用 MM-Vet 和 InfographicsVQA 进行视觉问答训练与评测。
+`b_magent` 是一个本地四智能体自进化实验系统。OpenAGI 与 TravelPlanner 官方数据分别保存在 `data/OpenAGI` 和 `data/TravelPlanner`；当前默认训练入口读取 TravelPlanner 官方训练集，用于四智能体协作求解、互评、自我反思和 LoRA 增量训练。
 
 系统默认使用 4 个同构 Qwen 智能体：
 
@@ -48,46 +48,6 @@ models/Qwen2.5-VL-3B-Instruct
 该项目按离线本地模型运行，不会自动下载模型。可以通过 `--model-path` 指定其他本地模型目录。
 
 ## 数据
-
-默认数据集已替换为 MM-Vet 和 InfographicsVQA。首次使用时运行：
-
-```bash
-python scripts/prepare_vision_datasets.py --output-dir data
-```
-
-只准备训练所需的InfographicsVQA（推荐先执行）：
-
-```bash
-python scripts/prepare_vision_datasets.py --dataset infographicsvqa --output-dir data
-```
-
-可用 `--limit 10` 先准备小样本。规范化后的目录为 `data/mm-vet/` 和
-`data/infographicsvqa/`，JSONL 每行包含 `image`、`question`和 `answers`。训练入口默认
-`--dataset-dir data`。
-规范化过程保留 InfographicsVQA 官方 `train`、`validation`、`test` 划分。只有官方
-`train` 参与训练，`validation` 用于本地 ANLS 评估。MM-Vet 始终作为评测集，不会
-进入四智能体私有训练数据或 LoRA 经验。
-
-视觉训练固定按官方train原始顺序取前800条：4个智能体依次获得互不重叠的200条。
-默认 `--rounds 0` 会自动运行足够轮次，使每个智能体完整处理自己的200条。验证与
-测试默认只读取对应split的前100条。
-
-InfographicsVQA 本地验证：
-
-```bash
-python -m train.four_agent_private_train \
-  --mode local-qwen-vote \
-  --dataset-dir data/infographicsvqa \
-  --eval-split validation
-```
-
-报告同时包含严格匹配 `accuracy` 和官方风格的 `anls`。对 MM-Vet 运行
-`--eval-split test` 时，还会在报告旁生成可交给 MM-Vet 官方评估器的预测 JSON。
-
-默认模型为轻量视觉语言模型 `models/Qwen2.5-VL-3B-Instruct`。引擎会自动
-读取视觉问答任务中的 `Image:` 本地路径，并向模型同时传入图像和文本。
-
-### 旧 GSM8K 格式（兼容）
 
 GSM8K 数据默认放在：
 
@@ -214,6 +174,41 @@ data/qwen_agent_*/private_data.jsonl
 
 ### b-magent 自进化训练
 
+TravelPlanner 等数据集使用“服务器检索、智能体总结”的训练契约。第二层服务器负责历史关键信息命中、网页搜索和候选证据准备；LoRA 与专业经验库只强化基于已有证据进行总结、整合、去重、冲突处理和约束保持的能力：
+
+- 模型输入只包含用户问题和候选参考信息，不包含官方答案和官方相关来源标签。
+- `reference_information` 会被解析为带 `source-N` 标识的候选资料，作为第二层服务器已检索到的证据，保留与官方回答相关的资料和部分困难负样本。
+- LoRA 监督输出使用“官方相关来源 + 官方总结/计划”，不使用未验证的模型自生成答案作为标签。
+- 当数据集没有官方标签时，默认 `require_correct_answer=True` 会拒绝该 LoRA 样本；只有显式关闭正确性门槛才能做实验性训练。
+- 智能体当前回答只有同时满足官方回答覆盖率、证据 grounding 精度和数字覆盖率时，才会标记为 `curated-success-experience`；否则仅保存为错误反思经验。
+- LoRA 默认上下文窗口为 `4096`，用于保留候选证据、任务约束和监督总结输出；训练指令明确禁止客户端再次搜索。
+- 专业经验以 `summarization`、`information-synthesis`、`constraint-preservation` 等标签沉淀，第二层服务器据此匹配三个智能体并统一整合结果。
+
+当前 TravelPlanner 训练集检查结果为 45/45 条样本包含候选参考信息和相关来源标签，模型可见输入中没有官方答案原文泄漏。最终检索准确率仍需要在独立验证集上计算 Recall@K、MRR、grounded precision 和 hallucination rate。
+
+### GPT-5.6 Sol 回答验证
+
+生产训练默认使用 `gpt-5.6-sol` 通过 OpenAI Responses API 判定智能体回答是否正确。判定是语义和约束导向的：只要回答达成用户要求的结果、满足所有显式硬约束，且重要事实能由候选证据支持，即认为正确；不要求措辞、顺序、格式或具体选择与官方答案完全一致。
+
+训练和测试共用这一判定标准。训练时，GPT 结论决定回答进入成功专业经验还是错误反思经验；测试时，GPT 结论直接决定 `VotingPrediction.correct`，即使回答与官方参考的文字或具体方案不同，只要符合题目要求就计为正确。测试报告同时保存 `requirements_met`、`requirements_missed`、`unsupported_claims` 和 `answer_validation_rationale`。
+
+TravelPlanner 的 validation/test 即使没有 `annotated_plan` 也会保留题目和 `reference_information` 供 GPT 语义验证。当前可加载数量为 train 45、validation 180、test 1000，所有样本均包含候选参考信息。
+
+```bash
+export OPENAI_API_KEY="your-openai-api-key"
+# 可选：自定义兼容的 API 基础地址和推理强度
+export OPENAI_BASE_URL="https://api.openai.com/v1"
+export OPENAI_VALIDATOR_REASONING_EFFORT="medium"
+```
+
+常规训练无需额外参数，因为 `--answer-validator` 默认是 `gpt-5.6-sol`。API 请求失败或结构化判定无法解析时会直接停止训练，不会把故障误当成错误回答。评估理由、已满足要求、遗漏要求和无依据声明会一起写入专业经验轨迹。
+
+离线测试或确定性调试可以显式回退到本地规则：
+
+```bash
+python -m train.four_agent_private_train --mode b-magent --answer-validator local
+```
+
 默认模式是 `--mode b-magent`，默认后端是 `local-qwen`，默认启用 LoRA。每次启动该模式时，脚本会先清理上一轮生成的 agent 专业库、私有数据、评价库、server 全局评价库和 LoRA adapter 目录，再开始新的训练。
 
 ```bash
@@ -255,7 +250,7 @@ python -m train.four_agent_private_train \
 3. 用 `build_participant_schedule()` 生成每轮两个参与者的排班
 4. 用 `expand_participant_schedule()` 根据 `--rounds` 扩展排班
 5. 用 `build_default_agents()` 创建智能体并初始化经验库
-6. 每轮用 `format_gsm8k_training_task()` 构造带 gold 信息的训练任务
+6. 每轮用 `format_gsm8k_training_task()` 构造基于已检索证据的总结任务；模型可见输入会隐藏 gold 标签
 7. 训练轮次开始前调用 `downlink_global_evaluation_experience()`，把 server 全局评价经验下发到各 agent 评价库
 8. 调用 `MultiAgentWorkflow.run()` 完成四智能体自进化，并由 `qwen_server_agent` 聚合本轮全局评价经验
 9. 如果启用 LoRA，调用 `LoraEvolutionManager.update_from_round()`
@@ -273,9 +268,9 @@ python -m train.four_agent_private_train \
 - `--enable-lora` / `--disable-lora`：开启或关闭 LoRA
 - `--lora-output-dir`：每个智能体的 LoRA SFT 数据集和 adapter 输出目录，默认 `data/lora_adapters`
 - `--lora-threshold`：每个智能体累计多少条新精选样本后刷新一次 LoRA，默认 `10`；训练结束会刷新不足阈值的剩余样本
-- `--lora-max-seq-length`：LoRA 训练最大序列长度，默认 `1024`
-- `--lora-train-batch-size`：单卡 LoRA batch size，默认 `1`
-- `--lora-gradient-accumulation-steps`：LoRA 梯度累积步数，默认 `4`
+- `--lora-max-seq-length`：LoRA 训练最大序列长度，默认 `4096`
+- `--lora-train-batch-size`：单卡 LoRA batch size，默认 `4`
+- `--lora-gradient-accumulation-steps`：LoRA 梯度累积步数，默认 `1`
 - `--lora-epochs`：每次 LoRA SFT 的 epoch 数，默认 `1.0`
 - `--lora-learning-rate`：LoRA 学习率，默认 `2e-4`
 - `--lora-min-evaluation-score`：接受 LoRA 样本所需的最低评价分数，默认 `0.6`
@@ -300,6 +295,55 @@ data/qwen_server_agent/global_evaluation_library.jsonl
 
 每轮结束时，`qwen_server_agent` 会聚合所有评价者对参与者初稿的互评经验，写入全局评价经验库。下一轮开始前，训练入口会检索与当前任务相关的全局经验，并以 `global-downlink` 记录追加到每个 agent 的 `evaluation_library.jsonl`，避免每个 agent 只在自己的局部评价轨迹里演化。
 
+同一轮中的私有训练、专业经验进化和评价经验进化会生成任务标签，并以只包含元数据的形式上传到：
+
+```text
+data/qwen_server_agent/agent_training_tags.jsonl
+data/qwen_server_agent/agent_training_tags/<agent_name>.jsonl
+```
+
+测试时，第二层先提取题目能力标签和风险标签，再与四个智能体的训练标签匹配并按得分选择前 3 个。只有这 3 个智能体生成回答，第二层服务器读取三份完整内容、取并集、消除冲突并生成最终答案。
+
+### Server 历史关键信息缓存
+
+第二层 server agent 还会维护已验证的历史关键信息库：
+
+```text
+data/qwen_server_agent/key_information_store.jsonl
+```
+
+启用第二层 `server_model` 时，`run_four_agent_voting_on_test()` 会默认创建并搜索该库，也可以显式传入 `server_key_information_store=server_agent.key_information_store` 共享已有 server agent 的存储器。精确题目或高相似的关键信息命中时，直接复用历史 server synthesis，不再调用第三层 client agent。未命中时才调用标签匹配度最高的 3 个 client agent，并把经 GPT-5.6 Sol 语义验证正确的服务器整合结果写回缓存。
+
+普通训练状态重置会保留该历史库。只有显式传入 `reset_key_information_store=True` 时才会删除。推理报告中的 `server_cache_hit` 用于表示本次是否跳过了 client agent。
+
+### 网页搜索
+
+第二层可以通过正式 JSON 搜索 API 获取网页结果，再由受限制的抓取器提取网页正文。配置环境变量后，启用 `server_model` 的推理流程会自动创建网页搜索服务：
+
+```bash
+export WEB_SEARCH_PROVIDER="bing"  # generic, bing, brave, serper
+export WEB_SEARCH_ENDPOINT="https://your-search-api.example/v1/search"
+export WEB_SEARCH_API_KEY="your-api-key"
+```
+
+第二层题目分析只有在 `requires_web_search=true` 时才会联网。数学题、题目内已给出完整信息的问题不会触发搜索。价格、时刻表、天气、新闻等实时信息可以通过 `web_cache_ttl_seconds` 设置较短缓存时间。
+
+网页结果缓存位于：
+
+```text
+data/qwen_server_agent/web_search_store.jsonl
+```
+
+缓存未过期时不再调用搜索 API 和网页抓取器。抓取器只允许公网 `http`/`https` 地址，拒绝 localhost、内网 IP 和重定向到内网的请求，并限制响应体和提取文本大小。推理报告会记录 `web_search_cache_hit` 和带 URL 的 `web_search_results`。
+
+网页搜索还会提取 `og:image`、`twitter:image`、`img src`、`data-src` 和 `srcset` 中的图片地址。图片通过与网页相同的公网地址和重定向安全检查后下载，并使用 Pillow 验证真实图片格式、文件大小和像素数。默认每个页面最多下载 2 张、每道题最多下载 8 张，图片缓存位于：
+
+```text
+data/qwen_server_agent/web_images/
+```
+
+`WebSearchResult.image_urls` 保存来源图片 URL，`WebSearchResult.local_image_paths` 保存已验证的本地图片。当 server model 提供 `generate_multimodal()` 时，第二层会把这些图片和网页文本一起传入 Qwen2.5-VL；没有图片或模型不支持图文输入时，自动回退到纯文本整合。
+
 ## 后端模型逻辑
 
 ### Demo 后端
@@ -320,7 +364,7 @@ data/qwen_server_agent/global_evaluation_library.jsonl
 - `QwenGenerationConfig`：控制 `max_new_tokens`、`temperature`、`top_p`、`do_sample`
 - `LocalQwenEngine.__init__()`：保存模型路径、设备、dtype、生成参数
 - `LocalQwenEngine.generate(prompt, adapter_path=None)`：加载模型，套 chat template，必要时加载 LoRA adapter，然后生成文本
-- `LocalQwenEngine._load()`：懒加载 `AutoTokenizer` 和 `AutoModelForCausalLM`
+- `LocalQwenEngine._load()`：懒加载 `AutoProcessor` 和 `Qwen2_5_VLForConditionalGeneration`
 - `LocalQwenEngine._load_adapter_model()`：用 PEFT 加载 agent adapter，并根据文件指纹刷新缓存
 - `LocalQwenEngine.unload()`：释放模型和 CUDA 缓存
 - `LocalQwenEvolutionBackend.solve()`：把任务、私有样本和经验库组织成 prompt，调用本地 Qwen 解题

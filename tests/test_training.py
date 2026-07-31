@@ -462,6 +462,8 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
                         "b-magent",
                         "--backend",
                         "demo",
+                        "--answer-validator",
+                        "local",
                         "--dataset-dir",
                         str(dataset_dir),
                         "--output",

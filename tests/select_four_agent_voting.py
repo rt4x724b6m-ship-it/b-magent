@@ -24,6 +24,7 @@ from b_magent.local_qwen import (
     VISUAL_OUTPUT_INSTRUCTION,
 )
 from b_magent.models import LibraryRecord
+from s_server import ServerKeyInformationStore
 from train.four_agent_private_train import (
     AGENT_NAMES,
     VotingPrediction,
@@ -80,12 +81,15 @@ class FixedRecordingVoteModel:
 
 
 class RecordingServerRoutingModel:
-    def __init__(self, diagnostic: str) -> None:
+    def __init__(self, diagnostic: str, synthesis: str = "") -> None:
         self.diagnostic = diagnostic
+        self.synthesis = synthesis
         self.prompts: list[str] = []
 
     def generate(self, prompt: str) -> str:
         self.prompts.append(prompt)
+        if prompt.startswith("Server-side selected-agent synthesis"):
+            return self.synthesis
         return self.diagnostic
 
 
@@ -229,6 +233,259 @@ def _print_real_test_prediction(prediction: VotingPrediction, total: int) -> Non
 
 
 class FourAgentVotingTestCase(unittest.TestCase):
+    def test_server_synthesis_passes_downloaded_web_images_to_multimodal_model(self) -> None:
+        from train.four_agent_private_train import (
+            AgentVote,
+            ServerRoutingAssessment,
+            _server_synthesize_agent_answers,
+        )
+        from b_magent.web import WebSearchResult
+
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_multimodal_server_test_"))
+        try:
+            image_path = temp_dir / "result.png"
+            from PIL import Image
+
+            Image.new("RGB", (32, 32), color="blue").save(image_path)
+
+            class RecordingMultimodalServer:
+                def __init__(self) -> None:
+                    self.text_calls: list[str] = []
+                    self.multimodal_calls: list[tuple[str, list[str]]] = []
+
+                def generate(self, prompt: str) -> str:
+                    self.text_calls.append(prompt)
+                    return "#### 0"
+
+                def generate_multimodal(self, prompt: str, image_paths: list[str]) -> str:
+                    self.multimodal_calls.append((prompt, image_paths))
+                    return "The image confirms the value. #### 42"
+
+            server = RecordingMultimodalServer()
+            result = _server_synthesize_agent_answers(
+                server,  # type: ignore[arg-type]
+                "Read the value shown in the product image.",
+                [AgentVote("qwen_agent_1", "The value may be 42. #### 42", "42")],
+                ServerRoutingAssessment(requires_web_search=True),
+                [],
+                [
+                    WebSearchResult(
+                        title="Official product",
+                        url="https://example.com/product",
+                        content="Official product page",
+                        image_urls=["https://example.com/result.png"],
+                        local_image_paths=[str(image_path)],
+                    )
+                ],
+            )
+
+            self.assertEqual(result, "The image confirms the value. #### 42")
+            self.assertEqual(server.text_calls, [])
+            self.assertEqual(server.multimodal_calls[0][1], [str(image_path)])
+            self.assertIn("https://example.com/result.png", server.multimodal_calls[0][0])
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_server_fetches_web_evidence_when_assessment_requires_it(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_server_web_search_test_"))
+        try:
+            dataset_dir = temp_dir / "data" / "gsm8k"
+            dataset_dir.mkdir(parents=True)
+            question = "What is the current official ticket price?"
+            (dataset_dir / "test.jsonl").write_text(
+                json.dumps({"question": question, "answer": "#### 25"}) + "\n",
+                encoding="utf-8",
+            )
+            server_model = RecordingServerRoutingModel(
+                json.dumps(
+                    {
+                        "difficulty": "easy",
+                        "target": "find the current official ticket price",
+                        "search_queries": ["official ticket current price"],
+                        "requires_web_search": True,
+                        "web_cache_ttl_seconds": 1800,
+                        "capability_tags": ["money"],
+                        "risk_tags": ["verification"],
+                    }
+                ),
+                "The official page lists a ticket price of 25. #### 25",
+            )
+
+            class FakeWebService:
+                def __init__(self) -> None:
+                    self.calls: list[tuple[str, list[str], int]] = []
+
+                def search_and_fetch(self, request_question, queries, *, ttl_seconds):  # type: ignore[no-untyped-def]
+                    self.calls.append((request_question, queries, ttl_seconds))
+                    return (
+                        [
+                            WebSearchResult(
+                                title="Official tickets",
+                                url="https://example.com/tickets",
+                                content="The current ticket price is 25.",
+                                source="official",
+                                retrieved_at="2026-07-31T00:00:00Z",
+                            )
+                        ],
+                        False,
+                    )
+
+            from b_magent.web import WebSearchResult
+
+            web_service = FakeWebService()
+            models = {agent_name: FixedRecordingVoteModel("25") for agent_name in AGENT_NAMES}
+            tag_records = [
+                LibraryRecord(
+                    agent_name=agent_name,
+                    library_type="agent_training_tags",
+                    source_task="money task",
+                    summary="money",
+                    detail="",
+                    tags=["money", "verification"],
+                )
+                for agent_name in AGENT_NAMES
+            ]
+
+            report = run_four_agent_voting_on_test(
+                dataset_dir,
+                models=models,
+                server_model=server_model,
+                server_training_tag_records=tag_records,
+                web_search_service=web_service,  # type: ignore[arg-type]
+            )
+
+            prediction = report.predictions[0]
+            self.assertEqual(
+                web_service.calls,
+                [(question, ["official ticket current price"], 1800)],
+            )
+            self.assertEqual(prediction.web_search_results[0]["url"], "https://example.com/tickets")
+            self.assertIn("Server-retrieved web evidence", server_model.prompts[1])
+            self.assertIn("https://example.com/tickets", server_model.prompts[1])
+            self.assertEqual(prediction.final_answer, "25")
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_server_key_information_cache_skips_all_client_agents_after_hit(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_server_key_cache_test_"))
+        try:
+            dataset_dir = temp_dir / "data" / "gsm8k"
+            dataset_dir.mkdir(parents=True)
+            question = "A $20 item is discounted by 50%. What is the final price?"
+            (dataset_dir / "test.jsonl").write_text(
+                json.dumps({"question": question, "answer": "#### 10"}) + "\n",
+                encoding="utf-8",
+            )
+            diagnostic = json.dumps(
+                {
+                    "difficulty": "medium",
+                    "target": "calculate the final discounted price",
+                    "facts": ["original price is $20", "discount is 50%"],
+                    "constraints": ["return final price, not discount amount"],
+                    "keywords": ["discount", "final price"],
+                    "search_queries": ["percentage discount final price"],
+                    "capability_tags": ["money", "percentage", "subtraction"],
+                    "risk_tags": ["verification"],
+                }
+            )
+            server_model = RecordingServerRoutingModel(
+                diagnostic,
+                "The discount is $10, so the final price is $10. #### 10",
+            )
+            store = ServerKeyInformationStore(
+                temp_dir / "data" / "qwen_server_agent" / "key_information_store.jsonl"
+            )
+            server_tag_records = [
+                LibraryRecord(
+                    agent_name=agent_name,
+                    library_type="agent_training_tags",
+                    source_task="percentage discount training",
+                    summary="money percentage tags",
+                    detail="",
+                    tags=["money", "percentage", "subtraction"],
+                )
+                for agent_name in AGENT_NAMES
+            ]
+            first_models = {agent_name: FixedRecordingVoteModel("10") for agent_name in AGENT_NAMES}
+
+            first_report = run_four_agent_voting_on_test(
+                dataset_dir,
+                models=first_models,
+                server_model=server_model,
+                server_training_tag_records=server_tag_records,
+                server_key_information_store=store,
+            )
+
+            self.assertFalse(first_report.predictions[0].server_cache_hit)
+            for agent_name in first_report.predictions[0].selected_agents:
+                self.assertEqual(first_models[agent_name].questions_seen, [question])
+            unselected = set(AGENT_NAMES) - set(first_report.predictions[0].selected_agents)
+            for agent_name in unselected:
+                self.assertEqual(first_models[agent_name].questions_seen, [])
+            self.assertTrue(store.library.all_records())
+
+            second_models = {agent_name: FixedRecordingVoteModel("0") for agent_name in AGENT_NAMES}
+            second_report = run_four_agent_voting_on_test(
+                dataset_dir,
+                models=second_models,
+                server_model=server_model,
+                server_training_tag_records=server_tag_records,
+                server_key_information_store=store,
+            )
+
+            prediction = second_report.predictions[0]
+            self.assertTrue(prediction.server_cache_hit)
+            self.assertEqual(prediction.selected_agents, [])
+            self.assertEqual(prediction.votes, [])
+            self.assertEqual(prediction.final_answer, "10")
+            self.assertTrue(prediction.cached_key_information)
+            for model in second_models.values():
+                self.assertEqual(model.questions_seen, [])
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_structured_key_information_ranks_relevant_global_experience_first(self) -> None:
+        from train.four_agent_private_train import (
+            ServerRoutingAssessment,
+            _select_relevant_global_records,
+        )
+
+        generic = LibraryRecord(
+            agent_name="qwen_server_agent",
+            library_type="global_evaluation",
+            source_task="旅行预算规划",
+            summary="检查预算并给出最终答案",
+            detail="泛化预算检查。",
+            tags=["money", "verification"],
+        )
+        relevant = LibraryRecord(
+            agent_name="qwen_server_agent",
+            library_type="global_evaluation",
+            source_task="北京三日旅行，酒店每晚500元，总预算3000元",
+            summary="先扣除两晚酒店费用，再计算剩余交通与餐饮预算",
+            detail="必须满足三天行程和总预算约束。",
+            tags=["money", "time", "multi-step", "curated-success-experience"],
+        )
+        assessment = ServerRoutingAssessment(
+            target="制定北京三日旅行方案",
+            facts=["酒店每晚500元"],
+            constraints=["总预算不超过3000元", "旅行时间为三天"],
+            numbers=["500", "3000", "3"],
+            units=["元", "天"],
+            keywords=["北京", "酒店", "预算"],
+            search_queries=["北京三日旅行预算", "酒店费用和剩余预算"],
+            capability_tags=["money", "time", "multi-step"],
+        )
+
+        records = _select_relevant_global_records(
+            "请规划一次北京三日旅行，酒店每晚500元，总预算3000元。",
+            [generic, relevant],
+            limit=1,
+            assessment=assessment,
+        )
+
+        self.assertEqual(records, [relevant])
+
     def test_server_routing_does_not_append_guidance_to_agent_question(self) -> None:
         temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_no_guidance_route_test_"))
         try:
@@ -523,6 +780,55 @@ class FourAgentVotingTestCase(unittest.TestCase):
 
         self.assertEqual(engine._resolve_device_map(), "balanced")
 
+    def test_local_qwen_multimodal_generation_passes_images_to_processor(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_qwen_vl_input_test_"))
+        try:
+            from PIL import Image
+
+            image_path = temp_dir / "input.png"
+            Image.new("RGB", (16, 16), color="green").save(image_path)
+            processor_calls: list[dict[str, object]] = []
+
+            class FakeInputs(dict):
+                input_ids = [[1, 2]]
+
+                def to(self, device: object) -> "FakeInputs":
+                    self["device"] = device
+                    return self
+
+            class FakeProcessor:
+                def apply_chat_template(self, messages, **kwargs):  # type: ignore[no-untyped-def]
+                    user_content = messages[-1]["content"]
+                    self_outer.assertEqual(user_content[0]["type"], "image")
+                    self_outer.assertEqual(user_content[-1]["type"], "text")
+                    return "rendered multimodal prompt"
+
+                def __call__(self, **kwargs):  # type: ignore[no-untyped-def]
+                    processor_calls.append(kwargs)
+                    return FakeInputs()
+
+                def batch_decode(self, completion_ids, skip_special_tokens=True):  # type: ignore[no-untyped-def]
+                    return ["multimodal answer"]
+
+            class FakeModel:
+                device = "cpu"
+
+                def generate(self, **kwargs):  # type: ignore[no-untyped-def]
+                    return [[1, 2, 3]]
+
+            self_outer = self
+            engine = LocalQwenEngine()
+            engine._tokenizer = FakeProcessor()
+            engine._model = FakeModel()
+
+            answer = engine.generate_multimodal("Inspect this image.", [image_path])
+
+            self.assertEqual(answer, "multimodal answer")
+            self.assertEqual(len(processor_calls[0]["images"]), 1)  # type: ignore[arg-type]
+            self.assertEqual(processor_calls[0]["text"], ["rendered multimodal prompt"])
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def test_b_magent_reset_clears_all_training_experience_by_default(self) -> None:
         temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_reset_test_"))
         try:
@@ -539,6 +845,7 @@ class FourAgentVotingTestCase(unittest.TestCase):
             server_dir.mkdir(parents=True)
             (server_dir / "global_evaluation_library.jsonl").write_text("global\n", encoding="utf-8")
             (server_dir / "agent_training_tags.jsonl").write_text("tags\n", encoding="utf-8")
+            (server_dir / "key_information_store.jsonl").write_text("cached\n", encoding="utf-8")
             (lora_output_dir / "qwen_agent_1").mkdir(parents=True)
             (lora_output_dir / "qwen_agent_1" / "state.json").write_text("{}", encoding="utf-8")
             report_file.write_text("{}", encoding="utf-8")
@@ -556,8 +863,27 @@ class FourAgentVotingTestCase(unittest.TestCase):
                 self.assertFalse((agent_dir / "evaluation_library.jsonl").exists())
             self.assertFalse((server_dir / "global_evaluation_library.jsonl").exists())
             self.assertFalse((server_dir / "agent_training_tags.jsonl").exists())
+            self.assertTrue((server_dir / "key_information_store.jsonl").exists())
             self.assertFalse(lora_output_dir.exists())
             self.assertFalse(report_file.exists())
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_b_magent_reset_can_clear_server_key_information_explicitly(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_reset_key_cache_test_"))
+        try:
+            data_dir = temp_dir / "data"
+            cache_file = data_dir / "qwen_server_agent" / "key_information_store.jsonl"
+            cache_file.parent.mkdir(parents=True)
+            cache_file.write_text("cached\n", encoding="utf-8")
+
+            reset_b_magent_training_state(
+                data_dir,
+                lora_output_dir=None,
+                reset_key_information_store=True,
+            )
+
+            self.assertFalse(cache_file.exists())
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -650,7 +976,7 @@ class FourAgentVotingTestCase(unittest.TestCase):
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
-    def test_server_routes_test_question_to_three_tag_matched_agents(self) -> None:
+    def test_server_synthesizes_the_union_of_all_agent_answers(self) -> None:
         temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_server_routed_vote_test_"))
         try:
             dataset_dir = temp_dir / "data" / "gsm8k"
@@ -668,7 +994,8 @@ class FourAgentVotingTestCase(unittest.TestCase):
                 "qwen_agent_4": FixedRecordingVoteModel("0"),
             }
             server_model = RecordingServerRoutingModel(
-                "server COT hidden; observed errors: arithmetic calculation, final-answer check, verification"
+                "server COT hidden; observed errors: arithmetic calculation, final-answer check, verification",
+                "Integrated calculation: 20 + 22 = 42. #### 42",
             )
             server_tag_records = [
                 LibraryRecord(
@@ -730,16 +1057,21 @@ class FourAgentVotingTestCase(unittest.TestCase):
             self.assertEqual(prediction.votes[1].predicted_answer, "42")
             self.assertEqual(prediction.votes[2].predicted_answer, "42")
             self.assertEqual(prediction.final_answer, "42")
+            self.assertEqual(prediction.server_synthesis, "Integrated calculation: 20 + 22 = 42. #### 42")
             self.assertTrue(prediction.correct)
             self.assertEqual(models["qwen_agent_4"].questions_seen, [])
             self.assertEqual(models["qwen_agent_1"].questions_seen, [question])
             self.assertIn(question, server_model.prompts[0])
             self.assertIn("Prior aggregated evaluation experience", server_model.prompts[0])
+            self.assertIn("Selected agent responses", server_model.prompts[1])
+            for agent_name in prediction.selected_agents:
+                self.assertIn(f"[{agent_name}]", server_model.prompts[1])
+            self.assertNotIn("[qwen_agent_4]", server_model.prompts[1])
             self.assertIn("verification", prediction.matched_tags["qwen_agent_1"])
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
-    def test_server_routed_vote_preserves_original_agent_order_for_selected_agents(self) -> None:
+    def test_server_synthesis_preserves_original_order_for_three_selected_agents(self) -> None:
         temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_server_routed_order_test_"))
         try:
             dataset_dir = temp_dir / "data" / "gsm8k"

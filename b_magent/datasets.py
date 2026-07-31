@@ -1,25 +1,47 @@
 from __future__ import annotations
 
+import csv
 import json
 import random
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .retrieval_training import build_retrieval_training_context
+
 
 @dataclass
 class GSM8KSample:
     question: str
     answer: str
-    final_answer: str
+    final_answer: str = ""
+    task_type: str = "general"
+    reference_information: str = ""
+    retrieval_targets: list[str] | None = None
+
+    def __post_init__(self) -> None:
+        self.retrieval_targets = list(self.retrieval_targets or [])
 
     def to_training_text(self) -> str:
-        return (
-            "GSM8K sample | "
-            f"question: {self.question} | "
-            f"reasoning_answer: {self.answer} | "
-            f"final_answer: {self.final_answer}"
-        )
+        if self.task_type == "general" and self.final_answer:
+            return (
+                "GSM8K sample | "
+                f"question: {self.question} | "
+                f"reasoning_answer: {self.answer} | "
+                f"final_answer: {self.final_answer}"
+            )
+        parts = [
+            f"task sample | type: {self.task_type}",
+            f"task: {self.question}",
+            f"reference_response: {self.answer}",
+        ]
+        if self.final_answer:
+            parts.append(f"final_answer: {self.final_answer}")
+        if self.reference_information:
+            parts.append(f"candidate_reference_information: {self.reference_information}")
+        if self.retrieval_targets:
+            parts.append(f"relevant_sources: {'; '.join(self.retrieval_targets)}")
+        return " | ".join(parts)
 
 
 class GSM8KDataset:
@@ -41,10 +63,12 @@ class GSM8KDataset:
         self.root = root
 
     def exists(self, split: str = "train") -> bool:
-        return self._split_path(split).exists()
+        return self._split_path(split).exists() or self._csv_split_path(split).exists()
 
     def load(self, split: str = "train", limit: int | None = None) -> list[GSM8KSample]:
         path = self._split_path(split)
+        if not path.exists() and self._csv_split_path(split).exists():
+            return self._load_csv(split, limit)
         if not path.exists():
             return []
 
@@ -62,10 +86,37 @@ class GSM8KDataset:
                     question=question,
                     answer=answer,
                     final_answer=self.extract_final_answer(answer),
+                    task_type=str(payload.get("task_type", "general")).strip() or "general",
                 )
             )
             if limit is not None and len(samples) >= limit:
                 break
+        return samples
+
+    def _load_csv(self, split: str, limit: int | None) -> list[GSM8KSample]:
+        samples: list[GSM8KSample] = []
+        with self._csv_split_path(split).open(encoding="utf-8", newline="") as handle:
+            for payload in csv.DictReader(handle):
+                question = str(payload.get("query", "")).strip()
+                answer = str(payload.get("annotated_plan", "")).strip()
+                raw_reference_information = str(payload.get("reference_information", ""))
+                if not question or (split == "train" and not answer):
+                    continue
+                reference_context, retrieval_targets = build_retrieval_training_context(
+                    raw_reference_information,
+                    answer,
+                )
+                samples.append(
+                    GSM8KSample(
+                        question=question,
+                        answer=answer,
+                        task_type=self.root.name,
+                        reference_information=reference_context,
+                        retrieval_targets=retrieval_targets,
+                    )
+                )
+                if limit is not None and len(samples) >= limit:
+                    break
         return samples
 
     def split_raw_jsonl(
@@ -109,6 +160,9 @@ class GSM8KDataset:
 
     def _split_path(self, split: str) -> Path:
         return self.root / f"{split}.jsonl"
+
+    def _csv_split_path(self, split: str) -> Path:
+        return self.root / f"{split}.csv"
 
     @staticmethod
     def _is_valid_row(line: str) -> bool:

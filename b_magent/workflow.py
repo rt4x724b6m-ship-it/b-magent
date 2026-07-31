@@ -5,6 +5,7 @@ import random
 import re
 from pathlib import Path
 from typing import Any
+from .answer_validation import AnswerValidator
 
 from .agent import QwenAgent
 from .backend import DemoQwenBackend
@@ -14,15 +15,19 @@ from s_server import ServerAgent
 from s_server.server_agent import select_consensus_peer_reviews
 
 
-def build_default_agents(base_dir: Path | None = None, backend: Any | None = None) -> list[QwenAgent]:
+def build_default_agents(
+    base_dir: Path | None = None,
+    backend: Any | None = None,
+    answer_validator: AnswerValidator | None = None,
+) -> list[QwenAgent]:
     root = base_dir or Path(__file__).resolve().parent.parent
     data_dir = root / "data"
     backend = backend or DemoQwenBackend()
     return [
-        QwenAgent("qwen_agent_1", "通用智能体", data_dir, backend),
-        QwenAgent("qwen_agent_2", "通用智能体", data_dir, backend),
-        QwenAgent("qwen_agent_3", "通用智能体", data_dir, backend),
-        QwenAgent("qwen_agent_4", "通用智能体", data_dir, backend),
+        QwenAgent("qwen_agent_1", "通用智能体", data_dir, backend, answer_validator),
+        QwenAgent("qwen_agent_2", "通用智能体", data_dir, backend, answer_validator),
+        QwenAgent("qwen_agent_3", "通用智能体", data_dir, backend, answer_validator),
+        QwenAgent("qwen_agent_4", "通用智能体", data_dir, backend, answer_validator),
     ]
 
 
