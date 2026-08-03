@@ -14,6 +14,9 @@ from b_magent.lora import (
     LoraTrainingConfig,
     LoraUpdate,
     build_lora_example,
+    configure_multimodal_image_budget,
+    configure_processor_tokenizer,
+    safe_lora_epochs,
     tokenize_lora_row,
 )
 from b_magent.models import Draft, EvaluationScores, PeerEvaluation, SelfImprovement
@@ -35,6 +38,110 @@ def count_jsonl_rows_for_test(path: Path) -> int:
 
 
 class LoraEvolutionTestCase(unittest.TestCase):
+    def test_multimodal_image_budget_keeps_visual_tokens_below_sequence_limit(self) -> None:
+        class ImageProcessor:
+            patch_size = 14
+            merge_size = 2
+            min_pixels = 56 * 56
+            max_pixels = 28 * 28 * 12800
+
+        class VLProcessor:
+            image_processor = ImageProcessor()
+
+        processor = VLProcessor()
+        max_pixels = configure_multimodal_image_budget(processor, 2048)
+
+        self.assertEqual(max_pixels, 1536 * 14 * 14 * 4)
+        self.assertEqual(processor.image_processor.max_pixels, max_pixels)
+        self.assertLessEqual(max_pixels // (14 * 14 * 4), 2048 - 256)
+
+    def test_multimodal_image_budget_does_not_enlarge_existing_cap(self) -> None:
+        class ImageProcessor:
+            patch_size = 14
+            merge_size = 2
+            min_pixels = 56 * 56
+            max_pixels = 100_000
+
+        class VLProcessor:
+            image_processor = ImageProcessor()
+
+        processor = VLProcessor()
+        configure_multimodal_image_budget(processor, 2048)
+
+        self.assertEqual(processor.image_processor.max_pixels, 100_000)
+
+    def test_tiny_lora_datasets_have_a_safe_epoch_cap(self) -> None:
+        self.assertEqual(safe_lora_epochs(1, 200.0), 3.0)
+        self.assertEqual(safe_lora_epochs(16, 200.0), 5.0)
+        self.assertEqual(safe_lora_epochs(50, 200.0), 10.0)
+
+    def test_lora_does_not_train_below_safety_minimum(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="b_magent_lora_minimum_test_") as temp:
+            trainer = FakeLoraTrainer()
+            manager = LoraEvolutionManager(
+                LoraTrainingConfig(
+                    base_model_path="model",
+                    output_dir=Path(temp) / "lora",
+                    threshold=1,
+                    min_training_examples=2,
+                    require_correct_answer=False,
+                ),
+                trainer=trainer,
+            )
+            updates = manager.update_from_round(
+                "task",
+                [Draft("qwen_agent_1", "specialty", "draft", [], [], [], [])],
+                [PeerEvaluation("qwen_agent_2", "qwen_agent_1", [], "ok", [])],
+                [SelfImprovement("qwen_agent_1", [], "answer", [])],
+            )
+
+            self.assertFalse(updates[0].trained)
+            self.assertIn("safety minimum", updates[0].reason)
+            self.assertEqual(trainer.calls, [])
+
+    def test_lora_lifecycle_is_stored_as_non_prompt_professional_metadata(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="b_magent_lora_audit_test_") as temp:
+            root = Path(temp)
+            manager = LoraEvolutionManager(
+                LoraTrainingConfig(
+                    base_model_path="model",
+                    output_dir=root / "lora",
+                    threshold=50,
+                    professional_library_dir=root / "data",
+                    require_correct_answer=False,
+                ),
+                trainer=FakeLoraTrainer(),
+            )
+            manager.update_from_round(
+                "audit task",
+                [Draft("qwen_agent_1", "specialty", "draft", [], [], [], [])],
+                [PeerEvaluation("qwen_agent_2", "qwen_agent_1", [], "ok", [])],
+                [SelfImprovement("qwen_agent_1", [], "answer", [])],
+            )
+
+            payload = json.loads(
+                (root / "data/qwen_agent_1/professional_library.jsonl").read_text(encoding="utf-8")
+            )
+            self.assertIn("lora-training-metadata", payload["tags"])
+            self.assertIn("example_hash=", payload["detail"])
+
+    def test_configures_tokenizer_wrapped_by_vl_processor(self) -> None:
+        class TextTokenizer:
+            pad_token = None
+            eos_token = "<eos>"
+            padding_side = "left"
+
+        class VLProcessor:
+            tokenizer = TextTokenizer()
+
+        processor = VLProcessor()
+
+        tokenizer = configure_processor_tokenizer(processor)
+
+        self.assertIs(tokenizer, processor.tokenizer)
+        self.assertEqual(tokenizer.pad_token, "<eos>")
+        self.assertEqual(tokenizer.padding_side, "right")
+
     def test_sft_tokenization_masks_prompt_and_preserves_output_when_truncated(self) -> None:
         class CharacterTokenizer:
             eos_token_id = 0
@@ -52,6 +159,21 @@ class LoraEvolutionTestCase(unittest.TestCase):
         first_target = tokenized["labels"].index(ord("a"))
         self.assertTrue(all(label == -100 for label in tokenized["labels"][:first_target]))
         self.assertEqual(tokenized["labels"][first_target:], [ord(char) for char in "answer"] + [0])
+
+    def test_sft_tokenization_keeps_start_of_long_answer(self) -> None:
+        class CharacterTokenizer:
+            eos_token_id = 0
+
+            def __call__(self, text: str, **_: object) -> dict[str, list[int]]:
+                return {"input_ids": [ord(character) for character in text]}
+
+        tokenized = tokenize_lora_row(
+            CharacterTokenizer(),
+            {"instruction": "solve", "input": "x", "output": "final-answer-followed-by-detail"},
+            max_length=16,
+        )
+        targets = [token for token in tokenized["labels"] if token != -100]
+        self.assertEqual(targets, [ord(character) for character in "final-an"])
 
     def test_builds_reflection_sft_example_from_trajectory_and_evaluations(self) -> None:
         draft = Draft(
@@ -88,6 +210,98 @@ class LoraEvolutionTestCase(unittest.TestCase):
         self.assertIn("fix final answer", example.input)
         self.assertIn("correctness=0.90", example.input)
         self.assertEqual(example.output, "improved answer")
+
+    def test_visual_sft_example_uses_image_and_short_gold_answer(self) -> None:
+        draft = Draft("qwen_agent_1", "visual", "wrong", [], [], [], [])
+        improvement = SelfImprovement("qwen_agent_1", ["fix"], "verbose revision", [])
+        example = build_lora_example(
+            "Image: /tmp/chart.png\nQuestion: Which color?\nGold image elements: {}\n"
+            "Gold reasoning: hidden\nGold final answer: Blue | blue",
+            draft,
+            [PeerEvaluation("qwen_agent_3", "qwen_agent_1", ["fix"], "r", [])],
+            improvement,
+        )
+        self.assertEqual(example.image, "/tmp/chart.png")
+        self.assertEqual(example.output, "Blue")
+        self.assertNotIn("Gold final answer", example.input)
+        self.assertNotIn("Gold image elements", example.input)
+        self.assertIn("visual", example.instruction)
+
+    def test_visual_gold_supervision_accepts_an_incorrect_draft(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="b_magent_visual_gold_lora_test_") as temp:
+            trainer = FakeLoraTrainer()
+            manager = LoraEvolutionManager(
+                LoraTrainingConfig(
+                    base_model_path="models/Qwen2.5-VL-3B-Instruct",
+                    output_dir=Path(temp) / "lora",
+                    threshold=1,
+                ),
+                trainer=trainer,
+            )
+            task = "Image: /tmp/chart.png\nQuestion: Which color?\nGold final answer: blue"
+            draft = Draft("qwen_agent_1", "OCR specialist", "red", [], [], [], [])
+            review = PeerEvaluation(
+                "qwen_agent_3",
+                "qwen_agent_1",
+                ["recheck"],
+                "wrong color",
+                [],
+                EvaluationScores(correctness=1.0, safety=1.0, efficiency=1.0),
+            )
+
+            updates = manager.update_from_round(
+                task,
+                [draft],
+                [review],
+                [SelfImprovement("qwen_agent_1", ["recheck"], "red", [], is_correct=False)],
+            )
+
+            self.assertTrue(updates[0].trained)
+            row = json.loads(manager.dataset_path("qwen_agent_1").read_text(encoding="utf-8"))
+            self.assertEqual(row["output"], "blue")
+            self.assertIn("OCR specialist", row["instruction"])
+
+    def test_visual_bare_short_answer_passes_gate_and_trains_lora(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="b_magent_visual_lora_gate_test_") as temp:
+            trainer = FakeLoraTrainer()
+            manager = LoraEvolutionManager(
+                LoraTrainingConfig(
+                    base_model_path="models/Qwen2.5-VL-3B-Instruct",
+                    output_dir=Path(temp) / "lora",
+                    threshold=1,
+                ),
+                trainer=trainer,
+            )
+            task = (
+                "Image: /tmp/chart.png\n"
+                "Question: Which platform has the heavy female audience?\n"
+                "Gold final answer: Pinterest | pinterest"
+            )
+            draft = Draft("qwen_agent_1", "visual", "Pinterest", [], [], [], [])
+            reviews = [
+                PeerEvaluation(
+                    "qwen_agent_3",
+                    "qwen_agent_1",
+                    ["keep the short answer"],
+                    "correct visual answer",
+                    [],
+                    EvaluationScores(correctness=1.0, safety=1.0, efficiency=1.0),
+                )
+            ]
+            improvement = SelfImprovement(
+                "qwen_agent_1",
+                ["keep the short answer"],
+                "Pinterest",
+                [],
+            )
+
+            updates = manager.update_from_round(task, [draft], reviews, [improvement])
+
+            self.assertTrue(updates[0].trained)
+            self.assertTrue(improvement.is_correct)
+            self.assertEqual(len(trainer.calls), 1)
+            row = json.loads(manager.dataset_path("qwen_agent_1").read_text(encoding="utf-8"))
+            self.assertEqual(row["output"], "Pinterest")
 
     def test_lora_example_hides_gold_answer_from_training_input(self) -> None:
         draft = Draft(

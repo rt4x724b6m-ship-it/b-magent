@@ -1,0 +1,272 @@
+backend: local-qwen
+model: /root/autodl-tmp/user/cxh/第二层-图片识别/models/Qwen2.5-VL-3B-Instruct
+已清空之前的训练存储
+开始训练
+[1/1260] 开始四智能体训练: What is the name of the famous person who was thrown with condoms? Keep it brief.
+backend: local-qwen
+model: /root/autodl-tmp/user/cxh/第二层-图片识别/models/Qwen2.5-VL-3B-Instruct
+保留已有训练成果，从第 1 轮继续
+开始训练
+[1/1260] 开始四智能体训练: What is the name of the famous person who was thrown with condoms? Keep it brief.
+Using a slow image processor as `use_fast` is unset and a slow processor was saved with this model. `use_fast=True` will be the default behavior in v4.52, even if the model was saved with a slow processor. This will result in minor differences in outputs. You'll still be able to use a slow processor with `use_fast=False`.
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  2.51it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  2.72it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  2.69it/s]
+[1/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[2/1260] 开始四智能体训练: in which year was the skateboard the longest Answer briefly.
+[2/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[3/1260] 开始四智能体训练: what was the name of the skateboard with precision bearings Quick response, please.
+[3/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[4/1260] 开始四智能体训练: How many years did it take after 1990 for the new design Short answer required.
+[4/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[5/1260] 开始四智能体训练: What was the name of the board introduced in 1964 Concise answer only.
+[5/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[6/1260] 开始四智能体训练: what is the colour of all the boards, white or blue? Quick response, please.
+[6/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[7/1260] 开始四智能体训练: when was the old school fishtail introduced? Keep it brief.
+[7/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[8/1260] 开始四智能体训练: when was nash shark introduced? Answer briefly.
+[8/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[9/1260] 开始四智能体训练: how many enemies does the doctor have Short answer required.
+[9/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[10/1260] 开始四智能体训练: who is often mistaken for the lock ness monster Concise answer only.
+[10/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[11/1260] 开始四智能体训练: who are extremely sensitive to heat Concise answer only.
+[11/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[12/1260] 开始四智能体训练: the enemies identified are in a period of how many years Keep it brief.
+[12/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[13/1260] 开始四智能体训练: what is the colour of the police box, blue, red? Be succinct.
+[13/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[14/1260] 开始四智能体训练: who is holding a helmet in his hand? Quick response, please.
+[14/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[15/1260] 开始四智能体训练: where should I eat if I am in Canada Short answer required.
+[15/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[16/1260] 开始四智能体训练: where should I eat if I dont have more than $3 Answer briefly.
+[16/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[17/1260] 开始四智能体训练: where should I eat if I am not older than 16? Keep it brief.
+[17/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[18/1260] 开始四智能体训练: where should I eat if it is before 10:30 AM and I am not a police officer? Give a very brief answer.
+[18/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[19/1260] 开始四智能体训练: where should I eat if I dont eat fish Be succinct.
+[19/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[20/1260] 开始四智能体训练: Where should I eat if I live in westcoast and it is before 10:00PM Short answer required.
+[20/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[21/1260] 开始四智能体训练: How many eating joints have been mentioned here? Answer briefly.
+[21/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[22/1260] 开始四智能体训练: Where can I go if I am in a car Quick response, please.
+[22/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[23/1260] 开始四智能体训练: LIver is a source of how many of the vitamins shown here? Concise answer only.
+[23/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[24/1260] 开始四智能体训练: Which dairy item is a source of vitamin b9? Answer briefly.
+[24/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[25/1260] 开始四智能体训练: Which fish/meat item is a source of vitamin k? Write a very short answer.
+[25/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[26/1260] 开始四智能体训练: Which fish/meat item is a source of vitamin E? Be succinct.
+[26/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[27/1260] 开始四智能体训练: Which fruit is a source of vitamin E? Write a very short answer.
+[27/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[28/1260] 开始四智能体训练: Apart from butter which dairy product is a source of vitamin e? Short answer required.
+[28/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[29/1260] 开始四智能体训练: Which grain is a source of vitamin b5 and b7? Short answer required.
+[29/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[30/1260] 开始四智能体训练: Apart from egg yolks, which dairy item is a source of vitamin D? Give a very brief answer.
+[30/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[31/1260] 开始四智能体训练: Which grain item gets you vitamin b2? Quick response, please.
+[31/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[32/1260] 开始四智能体训练: Which fruit has vitamin b2? Keep it brief.
+[32/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[33/1260] 开始四智能体训练: How many types of oils are listed here? Give a very brief answer.
+[33/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[34/1260] 开始四智能体训练: How many meat/fish item are listed here? Be succinct.
+[34/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[35/1260] 开始四智能体训练: How long a swallowed gum will stuck in your tummy? Concise answer only.
+[35/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[36/1260] 开始四智能体训练: What is the truth of reading under low light? Be succinct.
+[36/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[37/1260] 开始四智能体训练: What is the third physical activity mentioned that helps to manage anxiety? Write a very short answer.
+[37/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[38/1260] 开始四智能体训练: What item can get delivered to save time? Write a very short answer.
+[38/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[39/1260] 开始四智能体训练: Which item should you discard if you stop using? Answer briefly.
+[39/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[40/1260] 开始四智能体训练: How many tips are mentioned under the subheading FOOD? Short answer required.
+[40/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[41/1260] 开始四智能体训练: Which type of sweet is tough to be paired with wine? Be succinct.
+[41/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[42/1260] 开始四智能体训练: Under what type of wine does Pinot Noir fall? Write a very short answer.
+[42/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[43/1260] 开始四智能体训练: What is the colour of the sweater icon shown - green or red? Give a very brief answer.
+[43/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[44/1260] 开始四智能体训练: What is the most common booth size? Short answer required.
+[44/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[45/1260] 开始四智能体训练: Where is the Northeastern university located as per the map? Give a very brief answer.
+[45/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[46/1260] 开始四智能体训练: Where did Daniel Tewfik manage inventory? Quick response, please.
+[46/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[47/1260] 开始四智能体训练: Which is the letter written on the belt of Madonna? Quick response, please.
+[47/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[48/1260] 开始四智能体训练: In which year Madonnas Disco 1 was released? Give a very brief answer.
+[48/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[49/1260] 开始四智能体训练: What percent of the National GDP is not Direct GDP? Be succinct.
+[49/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[50/1260] 开始四智能体训练: What is the 2nd benefit of mobile engagement Keep it brief.
+[50/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[51/1260] 开始四智能体训练: What is the 3rd benefit of mobile engagement Give a very brief answer.
+[51/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[52/1260] 开始四智能体训练: What is the 4th benefit of mobile engagament Concise answer only.
+[52/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[53/1260] 开始四智能体训练: What helps target different segments with ease Be succinct.
+[53/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[54/1260] 开始四智能体训练: What will replace desktop computers outside of the workplace Concise answer only.
+[54/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[55/1260] 开始四智能体训练: How many people are not disabled in Australia considering five people? Keep it brief.
+[55/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[56/1260] 开始四智能体训练: What is the chance of disability for senior citizens? Concise answer only.
+[56/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[57/1260] 开始四智能体训练: Which category posses more percent of disability, male or female? Keep it brief.
+[57/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[58/1260] 开始四智能体训练: What is the percentage of DYSLEXIA for Australians? Short answer required.
+[58/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[59/1260] 开始四智能体训练: What is the mental health condition percentage of Australians? Write a very short answer.
+[59/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[60/1260] 开始四智能体训练: For Australians percentage of Dyslexia or Mental health condition is more? Answer briefly.
+[60/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[61/1260] 开始四智能体训练: Out of six how many Australians are not affected with hearing loss? Quick response, please.
+[61/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[62/1260] 开始四智能体训练: How many out of five where fined for speeding in Victoria ? Write a very short answer.
+[62/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[63/1260] 开始四智能体训练: How many fines are issued in Victoria each day? Keep it brief.
+[63/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[64/1260] 开始四智能体训练: What is the color of the car shown in the info graphic- yellow, orange, red or green? Be succinct.
+[64/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[65/1260] 开始四智能体训练: How many persons with Dollar symbol are depicted in the info graphic? Be succinct.
+[65/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[66/1260] 开始四智能体训练: How many person images are shown in grey color? Quick response, please.
+[66/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[67/1260] 开始四智能体训练: How many election issues were reported by ABC? Quick response, please.
+[67/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[68/1260] 开始四智能体训练: Which was the second last topic of the election issues? Quick response, please.
+[68/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[69/1260] 开始四智能体训练: How many regions are shown in the map? Answer briefly.
+[69/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[70/1260] 开始四智能体训练: How many camels are shown in the info graphic? Short answer required.
+[70/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[71/1260] 开始四智能体训练: What is the major reason for the wide usage of mobile phones? Short answer required.
+[71/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[72/1260] 开始四智能体训练: How many different types of usage of Internet is depicted in the info graphic? Write a very short answer.
+[72/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[73/1260] 开始四智能体训练: In which color Facebook logo is shown- black, white, red, blue? Quick response, please.
+[73/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[74/1260] 开始四智能体训练: What is the text written inside the Facebook logo? Answer briefly.
+[74/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[75/1260] 开始四智能体训练: How many myths are listed in the info graphic? Quick response, please.
+[75/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[76/1260] 开始四智能体训练: What percent of Millennials does not own a smartphone? Give a very brief answer.
+[76/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[77/1260] 开始四智能体训练: How many millennial's chose not to live in metro capital cities? Concise answer only.
+[77/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[78/1260] 开始四智能体训练: What percentage of millennial's have not participated in the volunteer work? Write a very short answer.
+[78/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[79/1260] 开始四智能体训练: What percentage of millennial's does not use smartphone to connect with others? Keep it brief.
+[79/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[80/1260] 开始四智能体训练: what do you do if you know what kind of beer you want Give a very brief answer.
+[80/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[81/1260] 开始四智能体训练: what happens if you have not done this three or more times in the last month? Short answer required.
+[81/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[82/1260] 开始四智能体训练: what does it mean that these rules no longer apply to you? Quick response, please.
+[82/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[83/1260] 开始四智能体训练: how many taps are shown Short answer required.
+[83/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[84/1260] 开始四智能体训练: how many beer glasses are shown Be succinct.
+[84/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[85/1260] 开始四智能体训练: how many yes are there in the image Quick response, please.
+[85/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[86/1260] 开始四智能体训练: who killed 2.5 million Give a very brief answer.
+[86/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[87/1260] 开始四智能体训练: how many did Adolf Hitler kill? Keep it brief.
+[87/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[88/1260] 开始四智能体训练: Which country was Hideki Tojo from Give a very brief answer.
+[88/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[89/1260] 开始四智能体训练: which country had the second largest killing Quick response, please.
+[89/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[90/1260] 开始四智能体训练: Which year range did Pol Pot belong to Give a very brief answer.
+[90/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[91/1260] 开始四智能体训练: In how many years did Mao Zedong kill 78 million Answer briefly.
+[91/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[92/1260] 开始四智能体训练: what is the colour of blood droplets, red or green Concise answer only.
+[92/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[93/1260] 开始四智能体训练: how many dictators have worn caps Answer briefly.
+[93/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[94/1260] 开始四智能体训练: How much land was destroyed by fire in Northern Siberia? Give a very brief answer.
+[94/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[95/1260] 开始四智能体训练: Which fire incident happened in California? Quick response, please.
+[95/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[96/1260] 开始四智能体训练: In which country was 11,300,000 Acres of land destroyed by fires? Give a very brief answer.
+[96/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[97/1260] 开始四智能体训练: How many females are affected by diabetes Keep it brief.
+[97/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[98/1260] 开始四智能体训练: what could lead to kidney failure Concise answer only.
+[98/1260] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
+[99/1260] 开始四智能体训练: what could lead to blindness or stroke Keep it brief.
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 42.33it/s]
+/root/miniconda3/envs/cxh/lib/python3.12/site-packages/networkx/utils/backends.py:102: RuntimeWarning: networkx backend defined more than once: nx_loopback
+  backends = _get_backends("networkx.backends")
+  0%|          | 0/12 [00:00<?, ?it/s]/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/utils/checkpoint.py:85: UserWarning: None of the inputs have requires_grad=True. Gradients will be None
+  warnings.warn(
+Traceback (most recent call last):
+  File "/root/autodl-tmp/user/cxh/第二层-图片识别/train/train.py", line 2038, in <module>
+    main()
+  File "/root/autodl-tmp/user/cxh/第二层-图片识别/train/train.py", line 1960, in main
+    report = run_b_magent_training_entry(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/autodl-tmp/user/cxh/第二层-图片识别/train/train.py", line 331, in run_b_magent_training_entry
+    lora_updates = lora_manager.update_from_round(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/autodl-tmp/user/cxh/第二层-图片识别/b_magent/lora.py", line 284, in update_from_round
+    updates.append(self.train_agent_on_curated_dataset(draft.agent_name))
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/autodl-tmp/user/cxh/第二层-图片识别/b_magent/lora.py", line 363, in train_agent_on_curated_dataset
+    self.trainer.train(agent_name, dataset_path, adapter_path, training_config)
+  File "/root/autodl-tmp/user/cxh/第二层-图片识别/b_magent/lora.py", line 212, in train
+    trainer.train()
+  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/transformers/trainer.py", line 2245, in train
+    return inner_training_loop(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/transformers/trainer.py", line 2560, in _inner_training_loop
+    tr_loss_step = self.training_step(model, inputs, num_items_in_batch)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/transformers/trainer.py", line 3736, in training_step
+    loss = self.compute_loss(model, inputs, num_items_in_batch=num_items_in_batch)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/transformers/trainer.py", line 3801, in compute_loss
+    outputs = model(**inputs)
+              ^^^^^^^^^^^^^^^
+  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/accelerate/utils/operations.py", line 943, in forward
+    return model_forward(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/accelerate/utils/operations.py", line 931, in __call__
+    return convert_to_fp32(self.model_forward(*args, **kwargs))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/amp/autocast_mode.py", line 44, in decorate_autocast
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/peft/peft_model.py", line 1577, in forward
+    return self.base_model(
+           ^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/peft/tuners/tuners_utils.py", line 188, in forward
+    return self.model.forward(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/transformers/models/qwen2_5_vl/modeling_qwen2_5_vl.py", line 1761, in forward
+    raise ValueError(
+ValueError: Image features and image tokens do not match: tokens: 2033, features 2280
+  0%|          | 0/12 [00:04<?, ?it/s]

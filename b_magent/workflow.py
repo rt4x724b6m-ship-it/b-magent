@@ -11,6 +11,7 @@ from .agent import QwenAgent
 from .backend import DemoQwenBackend
 from .models import Draft, EvolutionReport, LibraryRecord, PeerEvaluation
 from .lora import is_improved_answer_correct
+from .specialties import agent_specialty
 from s_server import ServerAgent
 from s_server.server_agent import select_consensus_peer_reviews
 
@@ -24,10 +25,8 @@ def build_default_agents(
     data_dir = root / "data"
     backend = backend or DemoQwenBackend()
     return [
-        QwenAgent("qwen_agent_1", "通用智能体", data_dir, backend, answer_validator),
-        QwenAgent("qwen_agent_2", "通用智能体", data_dir, backend, answer_validator),
-        QwenAgent("qwen_agent_3", "通用智能体", data_dir, backend, answer_validator),
-        QwenAgent("qwen_agent_4", "通用智能体", data_dir, backend, answer_validator),
+        QwenAgent(name, agent_specialty(name), data_dir, backend, answer_validator)
+        for name in ("qwen_agent_1", "qwen_agent_2", "qwen_agent_3", "qwen_agent_4")
     ]
 
 

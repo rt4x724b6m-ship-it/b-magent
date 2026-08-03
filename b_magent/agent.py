@@ -11,8 +11,9 @@ from .models import Draft, EvaluationEvolution, LibraryRecord, PeerEvaluation, S
 from .self_evolution import EvolutionInput, SelfEvolutionLibrary
 from .tagging import extract_math_task_tags
 from .trajectory import extract_answer_features, mask_draft_for_evaluation
-from .retrieval_training import is_retrieval_summary_grounded, strip_hidden_retrieval_labels
+from .retrieval_training import strip_hidden_retrieval_labels
 from .answer_validation import AnswerValidator
+from .lora import is_improved_answer_correct
 
 
 class QwenAgent:
@@ -64,7 +65,11 @@ class QwenAgent:
     def solve_task(self, task: str, private_training: list[str]) -> Draft:
         professional_records = self.professional_library.search(
             task,
-            exclude_tags={"error-reflection-experience", "evaluated-experience"},
+            exclude_tags={
+                "error-reflection-experience",
+                "evaluated-experience",
+                "lora-training-metadata",
+            },
         )
         evaluation_records = self.evaluation_library.search(
             task,
@@ -121,7 +126,11 @@ class QwenAgent:
             record.summary
             for record in self.professional_library.search(
                 task,
-                exclude_tags={"error-reflection-experience", "evaluated-experience"},
+                exclude_tags={
+                    "error-reflection-experience",
+                    "evaluated-experience",
+                    "lora-training-metadata",
+                },
             )
         ]
         evaluation_alerts = [
@@ -132,7 +141,17 @@ class QwenAgent:
             )
         ]
         improve_answer = getattr(self.backend, "improve_answer", None)
-        if callable(improve_answer):
+        evaluator_consensus_correct = "Image:" in task and bool(evaluations) and all(
+            evaluation.scores.correctness >= 1.0
+            for evaluation in evaluations
+        )
+        if evaluator_consensus_correct:
+            revised_answer = draft.answer
+            reflection = (
+                "Reflection: both evaluators confirmed the answer as correct; retained the verified "
+                "short answer and recorded its reusable solving pattern."
+            )
+        elif callable(improve_answer):
             revised_answer, reflection = improve_answer(
                 self.name,
                 self.specialty,
@@ -150,7 +169,6 @@ class QwenAgent:
                 "Reflection: reviewed evaluator feedback and converted concrete suggestions "
                 "into an improved answer."
             )
-        gold_answer = _extract_gold_final_answer(task)
         if self.answer_validator is not None:
             validation = self.answer_validator.validate(task, revised_answer)
             is_correct = validation.correct
@@ -163,9 +181,7 @@ class QwenAgent:
                 f"rationale={validation.rationale}"
             )
         else:
-            is_correct = is_retrieval_summary_grounded(task, revised_answer)
-            if is_correct is None and gold_answer is not None:
-                is_correct = _extract_final_answer(revised_answer) == gold_answer
+            is_correct = is_improved_answer_correct(task, revised_answer)
         experience_tags: list[str] = []
         generate_experience_tags = getattr(self.backend, "generate_experience_tags", None)
         if callable(generate_experience_tags):

@@ -4,18 +4,21 @@ import argparse
 import gc
 import json
 import re
-import string
+import sys
 import time
-import unicodedata
 from dataclasses import asdict, dataclass
-from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Protocol
 
-from b_magent.local_qwen import LocalQwenEngine, QwenGenerationConfig
-
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from b_magent.local_qwen import LocalQwenEngine, QwenGenerationConfig
+from train.four_agent_private_train import infographic_anls, normalize_vision_answer
+
+
 DEFAULT_MODEL_PATH = PROJECT_ROOT / "models" / "Qwen2.5-VL-3B-Instruct"
 DEFAULT_DATASET_PATH = PROJECT_ROOT / "data" / "infographicsvqa" / "test.jsonl"
 DEFAULT_OUTPUT_PATH = Path(__file__).resolve().parent / "local_vlm_report.json"
@@ -30,7 +33,7 @@ SYSTEM_PROMPT = (
 
 
 class VisionModel(Protocol):
-    def generate(self, prompt: str) -> str: ...
+    def generate_multimodal(self, prompt: str, image_paths: list[str | Path]) -> str: ...
 
 
 @dataclass
@@ -53,6 +56,8 @@ class EvaluationReport:
     model_path: str
     dataset_path: str
     total: int
+    correct: int
+    accuracy: float
     successful: int
     errors: int
     exact_correct: int
@@ -73,22 +78,15 @@ def clean_prediction(text: str) -> str:
 
 
 def normalize_answer(value: str) -> str:
-    value = unicodedata.normalize("NFKC", value).casefold()
-    value = value.replace("&", " and ")
-    punctuation = string.punctuation + "“”‘’–—"
-    value = value.translate(str.maketrans({character: " " for character in punctuation}))
-    return " ".join(value.split())
+    """Use the same answer normalization as main.py's voting evaluator."""
+    return normalize_vision_answer(value)
 
 
 def score_anls(prediction: str, answers: list[str], threshold: float = 0.5) -> float:
-    normalized_prediction = normalize_answer(prediction)
-    if not normalized_prediction or not answers:
-        return 0.0
-    similarity = max(
-        SequenceMatcher(None, normalized_prediction, normalize_answer(answer)).ratio()
-        for answer in answers
-    )
-    return similarity if similarity >= threshold else 0.0
+    """Use the same normalized Levenshtein score as main.py's evaluator."""
+    if threshold != 0.5:
+        raise ValueError("main.py's ANLS evaluator uses a fixed threshold of 0.5")
+    return infographic_anls(prediction, tuple(answers))
 
 
 def resolve_image_path(dataset_path: Path, image_value: str) -> Path:
@@ -134,12 +132,12 @@ def evaluate(
 
     for index, sample in enumerate(samples, start=1):
         image_path = resolve_image_path(dataset_path, str(sample["image"]))
-        prompt = f"Image: {image_path}\nQuestion: {sample['question']}"
+        prompt = f"Question: {sample['question']}"
         sample_started = time.perf_counter()
         raw_prediction = ""
         error: str | None = None
         try:
-            raw_prediction = model.generate(prompt)
+            raw_prediction = model.generate_multimodal(prompt, [image_path])
         except Exception as exc:  # Keep long evaluations resumable and auditable.
             error = f"{type(exc).__name__}: {exc}"
             gc.collect()
@@ -185,6 +183,8 @@ def evaluate(
         model_path=model_path,
         dataset_path=str(dataset_path.resolve()),
         total=total,
+        correct=normalized_correct,
+        accuracy=normalized_correct / total if total else 0.0,
         successful=successful,
         errors=total - successful,
         exact_correct=exact_correct,
@@ -269,9 +269,9 @@ def main() -> None:
     finally:
         model.unload()
     print(
-        f"\nNormalized accuracy: {report.normalized_accuracy:.2%} "
-        f"({report.normalized_correct}/{report.total})\n"
-        f"Exact accuracy:      {report.exact_accuracy:.2%}\n"
+        f"\nAccuracy (main.py): {report.accuracy:.2%} "
+        f"({report.correct}/{report.total})\n"
+        f"Raw exact accuracy:  {report.exact_accuracy:.2%}\n"
         f"ANLS:                {report.anls:.4f}\n"
         f"Errors:              {report.errors}\n"
         f"Average latency:     {report.average_latency_seconds:.2f}s\n"

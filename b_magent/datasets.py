@@ -287,6 +287,10 @@ def load_project_dataset(root: Path) -> GSM8KDataset | VisionQADataset | Multimo
     normalized_name = root.name.lower()
     if normalized_name in MultimodalBenchmarkDataset.DATASETS:
         return VisionQADataset(root, normalized_name)
-    if normalized_name == "gsm8k" or (root / "train.jsonl").exists():
+    if (
+        normalized_name == "gsm8k"
+        or (root / "train.jsonl").exists()
+        or (root / "train.csv").exists()
+    ):
         return GSM8KDataset(root)
     return MultimodalBenchmarkDataset(root)

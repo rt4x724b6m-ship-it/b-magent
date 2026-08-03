@@ -27,3 +27,30 @@ path fails immediately instead of downloading from Hugging Face.
 
 The evaluator extracts final answers from `#### answer` when present, otherwise
 it uses the last number in the model output.
+
+# Untrained local VLM baseline
+
+This evaluator runs the original local Qwen2.5-VL checkpoint directly on the
+InfographicsVQA test split. It does not load LoRA adapters, agent training data,
+memory, routing, or voting. Its normalized accuracy and ANLS use the same
+normalization and Levenshtein scoring functions as `main.py`.
+
+Run the first 100 test questions:
+
+```bash
+python -m baseline.local_vlm_eval
+```
+
+Run the full test split or override paths:
+
+```bash
+python -m baseline.local_vlm_eval \
+  --limit 0 \
+  --model-path models/Qwen2.5-VL-3B-Instruct \
+  --dataset data/infographicsvqa/test.jsonl \
+  --output baseline/local_vlm_report.json
+```
+
+The JSON report includes every prediction, reference answer, per-sample ANLS,
+latency, errors, normalized accuracy, and aggregate ANLS. The default checkpoint
+is loaded with `local_files_only=True`, so the command never downloads a model.

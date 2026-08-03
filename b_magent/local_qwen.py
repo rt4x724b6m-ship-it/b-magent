@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .evaluation_format import format_confidence_from_scores, format_structured_evaluation
+from .library import EvolutionLibrary
 from .models import Draft, EvaluationEvolution, EvaluationScores, LibraryRecord, PeerEvaluation
 from .self_evolution import normalize_experience_tags
 
@@ -19,6 +20,14 @@ NUMERIC_ANSWER_INSTRUCTION = (
     "You are a careful math reasoning assistant. Solve the problem step by step. "
     "End your response with a final line exactly in this format: #### <numeric_answer>. "
     "Do not include units, explanations, or full sentences after ####."
+)
+
+VISUAL_OUTPUT_INSTRUCTION = (
+    "Inspect the entire image at its available resolution before answering. Check small text, "
+    "titles, labels, legends, axes, values, objects, colors, layout, and spatial relationships "
+    "that may be relevant to the question. Return only the short direct answer. Preserve names and "
+    "numbers exactly as seen. Do not return JSON, evidence, reasoning, an answer label, or a full "
+    "sentence. Never return an empty answer."
 )
 
 GENERAL_TASK_INSTRUCTION = (
@@ -176,11 +185,11 @@ class LocalQwenEngine:
         with self._adapter_lock:
             if key in self._adapter_models:
                 return self._adapter_models[key]
-            self._adapter_models = {
-                cached_key: cached_model
-                for cached_key, cached_model in self._adapter_models.items()
-                if cached_key[0] != resolved_path
-            }
+            for cached_model in self._adapter_models.values():
+                unload_adapter = getattr(cached_model, "unload", None)
+                if callable(unload_adapter):
+                    self._model = unload_adapter()
+            self._adapter_models.clear()
             try:
                 from peft import PeftModel
             except ImportError as exc:
@@ -284,6 +293,22 @@ def _extract_image_path(prompt: str) -> Path | None:
     return None
 
 
+def _format_library_records(records: list[LibraryRecord]) -> str:
+    if not records:
+        return "(none)"
+    formatted = []
+    for index, record in enumerate(records, start=1):
+        summary = " ".join(record.summary.split())
+        detail = " ".join(record.detail.split())
+        if len(detail) > 600:
+            detail = detail[:597] + "..."
+        tags = ", ".join(record.tags)
+        formatted.append(
+            f"{index}. summary={summary}; detail={detail}; tags={tags or '(none)'}"
+        )
+    return "\n".join(formatted)
+
+
 class LocalQwenAgentModel:
     """Qwen2.5-backed agent model implementing the train/vote interfaces."""
 
@@ -292,10 +317,25 @@ class LocalQwenAgentModel:
         agent_name: str,
         engine: LocalQwenEngine,
         lora_output_dir: str | Path | None = None,
+        professional_library_path: str | Path | None = None,
+        professional_memory_limit: int = 3,
+        require_lora: bool = False,
+        minimum_adapter_examples: int = 16,
     ) -> None:
         self.agent_name = agent_name
+        from .specialties import agent_specialty
+
+        self.specialty = agent_specialty(agent_name)
         self.engine = engine
         self.lora_output_dir = Path(lora_output_dir) if lora_output_dir is not None else None
+        self.professional_library = (
+            EvolutionLibrary(Path(professional_library_path), "professional")
+            if professional_library_path is not None
+            else None
+        )
+        self.professional_memory_limit = professional_memory_limit
+        self.require_lora = require_lora
+        self.minimum_adapter_examples = minimum_adapter_examples
         self.training_examples: list[str] = []
 
     def train_batch(self, batch: object) -> None:
@@ -311,26 +351,79 @@ class LocalQwenAgentModel:
 
     def generate_with_server_guidance(self, question: str, server_guidance: str) -> str:
         context = "\n".join(self.training_examples[-4:])
+        professional_records = (
+            self.professional_library.search(question, limit=self.professional_memory_limit)
+            if self.professional_library is not None
+            else []
+        )
+        image_path = _extract_image_path(question)
+        is_visual = image_path is not None
         prompt = (
             f"Agent: {self.agent_name}\n"
+            f"Specialty: {self.specialty}\n"
+            "Apply the specialty as your evidence-inspection method, but never sacrifice factual "
+            "correctness or invent evidence merely to differ from other agents.\n"
             f"Private examples:\n{context or '(none)'}\n\n"
+            "Relevant professional experience from this agent's own library:\n"
+            f"{_format_library_records(professional_records)}\n\n"
             f"Question:\n{question}\n\n"
             "Server evaluation guidance:\n"
             f"{server_guidance or '(none)'}\n\n"
             "Solve independently while applying the server's risk checks. "
-            "Do not treat the guidance as a proposed numeric answer.\n\n"
-            f"Output constraint:\n{NUMERIC_ANSWER_INSTRUCTION}"
+            "Do not treat the guidance as a proposed answer.\n\n"
+            f"Output constraint:\n{VISUAL_OUTPUT_INSTRUCTION if is_visual else NUMERIC_ANSWER_INSTRUCTION}"
         )
         adapter_path = self._adapter_path()
+        if is_visual:
+            output = self.engine.generate_multimodal(
+                prompt,
+                [image_path],
+                adapter_path=adapter_path,
+            )
+            if adapter_path is not None and is_degenerate_generation(output):
+                return self.engine.generate_multimodal(prompt, [image_path])
+            return output
         if adapter_path is None:
             return self.engine.generate(prompt)
-        return self.engine.generate(prompt, adapter_path=adapter_path)
+        output = self.engine.generate(prompt, adapter_path=adapter_path)
+        return self.engine.generate(prompt) if is_degenerate_generation(output) else output
+
+    def generate_concise_visual_answer(self, question: str) -> str:
+        image_path = _extract_image_path(question)
+        if image_path is None:
+            return self.generate(question)
+        prompt = (
+            f"Specialty: {self.specialty}\n"
+            "Use this specialty to inspect and verify the evidence. Correctness has priority.\n\n"
+            f"Question:\n{question}\n\n"
+            "Inspect the image and return only the short direct answer to the question. "
+            "Do not return JSON, evidence, reasoning, labels, or an empty response."
+        )
+        adapter_path = self._adapter_path()
+        output = self.engine.generate_multimodal(
+            prompt,
+            [image_path],
+            adapter_path=adapter_path,
+        )
+        if adapter_path is not None and is_degenerate_generation(output):
+            return self.engine.generate_multimodal(prompt, [image_path])
+        return output
 
     def _adapter_path(self) -> Path | None:
         if self.lora_output_dir is None:
+            if self.require_lora:
+                raise RuntimeError(f"LoRA output directory is not configured for {self.agent_name}")
             return None
         adapter_path = self.lora_output_dir / self.agent_name / "adapter"
-        return adapter_path if _is_lora_adapter_ready(adapter_path) else None
+        if _is_lora_adapter_ready(adapter_path) and _adapter_has_enough_examples(
+            adapter_path, self.minimum_adapter_examples
+        ):
+            return adapter_path
+        if self.require_lora:
+            raise FileNotFoundError(
+                f"Required LoRA adapter for {self.agent_name} is not ready: {adapter_path}"
+            )
+        return None
 
 
 class LocalQwenEvolutionBackend:
@@ -340,9 +433,11 @@ class LocalQwenEvolutionBackend:
         self,
         engine: LocalQwenEngine,
         lora_output_dir: str | Path | None = None,
+        enable_llm_experience_tags: bool = False,
     ) -> None:
         self.engine = engine
         self.lora_output_dir = Path(lora_output_dir) if lora_output_dir is not None else None
+        self.enable_llm_experience_tags = enable_llm_experience_tags
 
     def solve(
         self,
@@ -366,7 +461,16 @@ class LocalQwenEvolutionBackend:
             f"{_format_context(evaluation_alerts)}\n\n"
             "Produce a complete answer and include reusable lessons that this agent can absorb."
         )
-        answer = self.engine.generate(prompt, adapter_path=self._adapter_path(agent_name))
+        image_path = _extract_image_path(task)
+        adapter_path = self._adapter_path(agent_name)
+        if image_path is not None:
+            answer = self.engine.generate_multimodal(
+                prompt,
+                [image_path],
+                adapter_path=adapter_path,
+            )
+        else:
+            answer = self.engine.generate(prompt, adapter_path=adapter_path)
         thought_trace = [
             f"local_qwen_agent={agent_name}",
             f"private_training={len(private_training)}",
@@ -393,13 +497,18 @@ class LocalQwenEvolutionBackend:
             f"{_format_context(target_draft.thought_trace)}\n\n"
             "Private evaluation-library memories:\n"
             f"{_format_context(evaluation_memory)}\n\n"
-            "Return 3 to 5 concrete improvement suggestions. Do not assign a score."
-            " Also evaluate the answer on correctness, safety, and efficiency using numbers from 0 to 1. "
+            "Return 3 to 5 concrete improvement suggestions and evaluate the answer on correctness, "
+            "safety, and efficiency using numbers from 0 to 1. "
             "Prefer JSON with keys suggestions, correctness, safety, efficiency, rationale. "
             "The rationale must use exactly this section order separated by a line containing ↓: "
             "Task, Observed Error, Evaluation Decision, Confidence, Improvement Pattern."
         )
-        raw_response = self.engine.generate(prompt)
+        image_path = _extract_image_path(task)
+        generate_multimodal = getattr(self.engine, "generate_multimodal", None)
+        if image_path is not None and callable(generate_multimodal):
+            raw_response = generate_multimodal(prompt, [image_path])
+        else:
+            raw_response = self.engine.generate(prompt)
         suggestions = _parse_suggestions(raw_response)
         scores = _parse_scores(raw_response)
         rationale = format_structured_evaluation(
@@ -450,7 +559,17 @@ class LocalQwenEvolutionBackend:
             "Apply the feedback concretely, remove unsupported claims, include verification, "
             "and preserve the required final-answer format when the task is numeric."
         )
-        revised_answer = self.engine.generate(prompt, adapter_path=self._adapter_path(agent_name))
+        image_path = _extract_image_path(task)
+        adapter_path = self._adapter_path(agent_name)
+        generate_multimodal = getattr(self.engine, "generate_multimodal", None)
+        if image_path is not None and callable(generate_multimodal):
+            revised_answer = generate_multimodal(
+                prompt,
+                [image_path],
+                adapter_path=adapter_path,
+            )
+        else:
+            revised_answer = self.engine.generate(prompt, adapter_path=adapter_path)
         reflection = (
             "Reflection: regenerated an ideal final answer using evaluator feedback, "
             "retrieved professional memories, and evaluation checks."
@@ -467,6 +586,8 @@ class LocalQwenEvolutionBackend:
         suggestions: list[str],
         reflection: str,
     ) -> list[str]:
+        if not self.enable_llm_experience_tags:
+            return []
         prompt = (
             f"Agent: {agent_name}\n"
             f"Agent type: {specialty}\n"
@@ -561,7 +682,12 @@ class LocalQwenEvolutionBackend:
         if self.lora_output_dir is None:
             return None
         adapter_path = self.lora_output_dir / agent_name / "adapter"
-        return adapter_path if _is_lora_adapter_ready(adapter_path) else None
+        return (
+            adapter_path
+            if _is_lora_adapter_ready(adapter_path)
+            and _adapter_has_enough_examples(adapter_path, 16)
+            else None
+        )
 
     def release_model_memory(self) -> None:
         self.engine.unload()
@@ -594,6 +720,36 @@ def _adapter_fingerprint(adapter_path: Path) -> int:
         (int(path.stat().st_mtime_ns) for path in metadata_files if path.exists()),
         default=0,
     )
+
+
+def _adapter_has_enough_examples(adapter_path: Path, minimum_examples: int) -> bool:
+    metadata_path = adapter_path / "b_magent_lora_metadata.json"
+    if not metadata_path.is_file():
+        return True
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        examples = int(payload.get("update", {}).get("examples", 0))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return False
+    return examples >= minimum_examples
+
+
+def is_degenerate_generation(text: str) -> bool:
+    """Detect empty, punctuation-only, or highly repetitive adapter output."""
+    value = str(text).strip()
+    if not value:
+        return True
+    if not re.search(r"[\w\u4e00-\u9fff]", value, flags=re.UNICODE):
+        return True
+    compact = re.sub(r"\s+", "", value)
+    if len(compact) >= 32 and len(set(compact)) <= 2:
+        return True
+    tokens = re.findall(r"\w+|[^\w\s]", value, flags=re.UNICODE)
+    if len(tokens) >= 16:
+        most_common = max(tokens.count(token) for token in set(tokens))
+        if most_common / len(tokens) >= 0.8:
+            return True
+    return False
 
 
 def _parse_suggestions(text: str) -> list[str]:

@@ -11,22 +11,94 @@ except ImportError:
     import _project_path  # type: ignore[no-redef]  # noqa: F401
 _project_path.add_project_root_to_sys_path()
 
-from b_magent.datasets import MultimodalBenchmarkDataset, VisionQADataset, VisionQASample, load_project_dataset
+from b_magent.datasets import (
+    GSM8KDataset,
+    MultimodalBenchmarkDataset,
+    VisionQADataset,
+    VisionQASample,
+    load_project_dataset,
+)
 from b_magent.local_qwen import _extract_image_path
 from b_magent.lora import is_improved_answer_correct
 from train.four_agent_private_train import (
+    AGENT_NAMES,
     AgentVote,
+    UNRESOLVED_VISUAL_ANSWER,
     extract_prediction_answer,
     format_inference_question,
     format_training_task,
     infographic_anls,
     majority_vote,
     routed_vote,
+    run_four_agent_voting_on_test,
 )
 from scripts.prepare_vision_datasets import normalized_split_name
 
 
 class VisionDatasetTest(unittest.TestCase):
+    def test_empty_visual_answers_are_retried_and_never_reach_report(self) -> None:
+        class EmptyThenConciseModel:
+            def train_batch(self, batch: object) -> None:
+                return None
+
+            def generate(self, question: str) -> str:
+                return '{"final_answer":"","evidence":["Pinterest"],"reasoning":[]}'
+
+            def generate_concise_visual_answer(self, question: str) -> str:
+                return "Pinterest"
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "infographicsvqa"
+            root.mkdir()
+            image = root / "image.png"
+            image.touch()
+            (root / "test.jsonl").write_text(
+                json.dumps({
+                    "image": "image.png",
+                    "question": "Which platform?",
+                    "answers": ["Pinterest"],
+                }) + "\n",
+                encoding="utf-8",
+            )
+            models = {name: EmptyThenConciseModel() for name in AGENT_NAMES}
+
+            report = run_four_agent_voting_on_test(root, models=models, limit=1)
+
+            prediction = report.predictions[0]
+            self.assertEqual(prediction.final_answer, "pinterest")
+            self.assertTrue(all(vote.predicted_answer for vote in prediction.votes))
+            self.assertTrue(all(vote.raw_prediction == "Pinterest" for vote in prediction.votes))
+
+    def test_double_empty_visual_answer_uses_nonempty_unresolved_marker(self) -> None:
+        class AlwaysEmptyModel:
+            def train_batch(self, batch: object) -> None:
+                return None
+
+            def generate(self, question: str) -> str:
+                return '{"final_answer":""}'
+
+            def generate_concise_visual_answer(self, question: str) -> str:
+                return ""
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "infographicsvqa"
+            root.mkdir()
+            (root / "image.png").touch()
+            (root / "test.jsonl").write_text(
+                json.dumps({"image": "image.png", "question": "What?", "answer": "unknown"}) + "\n",
+                encoding="utf-8",
+            )
+            models = {name: AlwaysEmptyModel() for name in AGENT_NAMES}
+
+            report = run_four_agent_voting_on_test(root, models=models, limit=1)
+
+            prediction = report.predictions[0]
+            self.assertEqual(prediction.final_answer, UNRESOLVED_VISUAL_ANSWER)
+            self.assertTrue(all(
+                vote.predicted_answer == UNRESOLVED_VISUAL_ANSWER
+                for vote in prediction.votes
+            ))
+
     def test_normalizes_image_paths_and_multiple_answers(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "infographicsvqa"
@@ -83,6 +155,21 @@ class VisionDatasetTest(unittest.TestCase):
         dataset = load_project_dataset(Path("/tmp/infographicsvqa"))
         self.assertIsInstance(dataset, VisionQADataset)
 
+    def test_csv_training_dataset_is_not_misread_as_multimodal(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "TravelPlanner"
+            root.mkdir()
+            (root / "train.csv").write_text(
+                "query,annotated_plan,reference_information\n"
+                '"Plan a trip","Day 1: visit downtown","[]"\n',
+                encoding="utf-8",
+            )
+
+            dataset = load_project_dataset(root)
+
+            self.assertIsInstance(dataset, GSM8KDataset)
+            self.assertEqual(len(dataset.load("train")), 1)
+
     def test_visual_training_task_includes_image_and_answers(self) -> None:
         sample = VisionQASample(
             question="How many?", answer="2", final_answer="2", answers=("2", "two"),
@@ -108,9 +195,8 @@ class VisionDatasetTest(unittest.TestCase):
             image_path="/tmp/example.png", dataset="mm-vet",
         )
         inference_prompt = format_inference_question(sample)
-        self.assertIn('"final_answer":"..."', inference_prompt)
-        self.assertIn('"image_elements":{...}', inference_prompt)
-        self.assertIn('"reasoning":["..."]', inference_prompt)
+        self.assertIn("return only the short direct answer", inference_prompt)
+        self.assertNotIn('"reasoning"', inference_prompt)
         self.assertEqual(extract_prediction_answer("Final answer: Yes.", sample), "yes")
         self.assertEqual(
             extract_prediction_answer('{"image_elements":{},"final_answer":"Yes."}', sample),
@@ -136,8 +222,11 @@ class VisionDatasetTest(unittest.TestCase):
         self.assertEqual(routed_vote(votes), "pinterest")
 
     def test_lora_quality_gate_accepts_any_visual_reference(self) -> None:
-        task = "Question: What is shown?\nGold final answer: bicycle | bike"
+        task = "Image: /tmp/example.png\nQuestion: What is shown?\nGold final answer: bicycle | bike"
         self.assertTrue(is_improved_answer_correct(task, "Answer: Bike."))
+        self.assertTrue(is_improved_answer_correct(task, "bike"))
+        self.assertTrue(is_improved_answer_correct(task, '{"final_answer": "Bicycle"}'))
+        self.assertFalse(is_improved_answer_correct(task, "motorcycle"))
 
     def test_infographic_anls_tolerates_small_ocr_errors(self) -> None:
         self.assertEqual(infographic_anls("Coca cola", ("Coca Cola",)), 1.0)

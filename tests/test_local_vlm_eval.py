@@ -15,9 +15,11 @@ class FixedVisionModel:
     def __init__(self, outputs: list[str]) -> None:
         self.outputs = iter(outputs)
         self.prompts: list[str] = []
+        self.image_paths: list[list[Path | str]] = []
 
-    def generate(self, prompt: str) -> str:
+    def generate_multimodal(self, prompt: str, image_paths: list[Path | str]) -> str:
         self.prompts.append(prompt)
+        self.image_paths.append(image_paths)
         return next(self.outputs)
 
 
@@ -47,8 +49,10 @@ def test_evaluate_uses_image_and_scores_multiple_answers(tmp_path: Path) -> None
     report = evaluate(dataset, model=model, model_path="mock", limit=1)
 
     assert report.total == 1
+    assert report.correct == 1
+    assert report.accuracy == 1.0
     assert report.normalized_accuracy == 1.0
     assert report.predictions[0].normalized_exact_match
     assert "Question: Which platform?" in model.prompts[0]
-    assert str((image_dir / "sample.png").resolve()) in model.prompts[0]
+    assert model.image_paths == [[(image_dir / "sample.png").resolve()]]
     assert "do not leak" not in model.prompts[0]

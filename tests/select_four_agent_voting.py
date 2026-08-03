@@ -22,6 +22,7 @@ from b_magent.local_qwen import (
     LocalQwenEngine,
     NUMERIC_ANSWER_INSTRUCTION,
     VISUAL_OUTPUT_INSTRUCTION,
+    is_degenerate_generation,
 )
 from b_magent.models import LibraryRecord
 from s_server import ServerKeyInformationStore
@@ -34,6 +35,10 @@ from train.four_agent_private_train import (
     reset_b_magent_training_state,
     run_four_agent_voting_on_test,
 )
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+INFOGRAPHICSVQA_TEST_FILE = PROJECT_ROOT / "data" / "infographicsvqa" / "test.jsonl"
 
 
 class FixedVoteModel:
@@ -161,7 +166,28 @@ class KnowledgeLibraryVoteModel:
             f"{server_guidance or '(none)'}\n\n"
             f"Output constraint:\n{VISUAL_OUTPUT_INSTRUCTION}"
         )
+        from b_magent.local_qwen import _extract_image_path
+
+        image_path = _extract_image_path(question)
+        if image_path is not None:
+            return self.engine.generate_multimodal(
+                prompt,
+                [image_path],
+                adapter_path=self.adapter_path,
+            )
         return self.engine.generate(prompt, adapter_path=self.adapter_path)
+
+    def generate_concise_visual_answer(self, question: str) -> str:
+        from b_magent.local_qwen import _extract_image_path
+
+        image_path = _extract_image_path(question)
+        if image_path is None:
+            return self.generate(question)
+        return self.engine.generate_multimodal(
+            f"{question}\nReturn only one non-empty short final answer.",
+            [image_path],
+            adapter_path=self.adapter_path,
+        )
 
     @property
     def adapter_path(self) -> Path:
@@ -179,6 +205,9 @@ class KnowledgeServerRoutingModel:
 
     def generate(self, prompt: str) -> str:
         return self.engine.generate(prompt)
+
+    def generate_multimodal(self, prompt: str, image_paths: list[str]) -> str:
+        return self.engine.generate_multimodal(prompt, image_paths)
 
 
 def _format_library_records(records: list[object]) -> str:
@@ -233,6 +262,11 @@ def _print_real_test_prediction(prediction: VotingPrediction, total: int) -> Non
 
 
 class FourAgentVotingTestCase(unittest.TestCase):
+    def test_detects_collapsed_adapter_generation(self) -> None:
+        self.assertTrue(is_degenerate_generation("!" * 512))
+        self.assertTrue(is_degenerate_generation("answer " * 40))
+        self.assertFalse(is_degenerate_generation("73%"))
+
     def test_server_synthesis_passes_downloaded_web_images_to_multimodal_model(self) -> None:
         from train.four_agent_private_train import (
             AgentVote,
@@ -1138,6 +1172,59 @@ class FourAgentVotingTestCase(unittest.TestCase):
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+    def test_unanimous_visual_agents_cannot_be_overridden_by_server_synthesis(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_unanimous_visual_vote_test_"))
+        try:
+            dataset_dir = temp_dir / "data" / "infographicsvqa"
+            dataset_dir.mkdir(parents=True)
+            (dataset_dir / "test.jsonl").write_text(
+                json.dumps(
+                    {
+                        "dataset": "infographicsvqa",
+                        "id": "validation-2",
+                        "image": "images/validation-2.png",
+                        "question": "Which two platforms are good for B2B companies?",
+                        "answers": ["linkedin, facebook"],
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            models = {
+                agent_name: FixedRecordingVoteModel('{"final_answer":"linkedin facebook"}')
+                for agent_name in AGENT_NAMES
+            }
+            server_model = RecordingServerRoutingModel(
+                "visual recognition entity extraction",
+                synthesis="2",
+            )
+            tag_records = [
+                LibraryRecord(
+                    agent_name=agent_name,
+                    library_type="agent_training_tags",
+                    source_task="training",
+                    summary=f"{agent_name} tags",
+                    detail="",
+                    tags=["visual", "recognition", "entity", "extraction"],
+                )
+                for agent_name in AGENT_NAMES
+            ]
+
+            report = run_four_agent_voting_on_test(
+                dataset_dir,
+                models=models,
+                server_model=server_model,
+                server_training_tag_records=_repeat_tag_evidence(tag_records),
+            )
+
+            prediction = report.predictions[0]
+            self.assertEqual(prediction.final_answer, "linkedin facebook")
+            self.assertTrue(prediction.correct)
+            self.assertEqual(prediction.server_synthesis, "")
+            self.assertEqual(len(server_model.prompts), 1)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def test_voting_evaluates_first_100_official_test_questions_by_default(self) -> None:
         temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_vote_limit_test_"))
         try:
@@ -1284,10 +1371,9 @@ class FourAgentVotingTestCase(unittest.TestCase):
 
 class KnowledgeLibraryFourAgentVotingIntegrationTestCase(unittest.TestCase):
     def test_four_agents_vote_with_lora_tuned_models_on_infographicsvqa_test_set(self) -> None:
-        project_root = Path(__file__).resolve().parent.parent
-        dataset_dir = project_root / "data" / "infographicsvqa"
-        model_path = project_root / DEFAULT_QWEN_MODEL
-        data_dir = project_root / "data"
+        dataset_dir = INFOGRAPHICSVQA_TEST_FILE.parent
+        model_path = PROJECT_ROOT / DEFAULT_QWEN_MODEL
+        data_dir = PROJECT_ROOT / "data"
         lora_output_dir = data_dir / "lora_adapters"
         test_limit = max(
             1,
@@ -1297,8 +1383,8 @@ class KnowledgeLibraryFourAgentVotingIntegrationTestCase(unittest.TestCase):
             ),
         )
 
-        if not (dataset_dir / "test.jsonl").exists():
-            self.skipTest(f"missing InfographicsVQA test split: {dataset_dir / 'test.jsonl'}")
+        if not INFOGRAPHICSVQA_TEST_FILE.exists():
+            self.skipTest(f"missing InfographicsVQA test split: {INFOGRAPHICSVQA_TEST_FILE}")
         if not model_path.exists():
             self.skipTest(f"missing local Qwen model: {model_path}")
 
@@ -1338,7 +1424,7 @@ class KnowledgeLibraryFourAgentVotingIntegrationTestCase(unittest.TestCase):
         prior_global_records = _load_library_records(global_eval_file) if global_eval_file.exists() else []
         print(
             "\nStarting real InfographicsVQA test-set evaluation\n"
-            f"dataset: {dataset_dir / 'test.jsonl'}\n"
+            f"dataset: {INFOGRAPHICSVQA_TEST_FILE}\n"
             f"model: {model_path}\n"
             f"samples: {test_limit}\n"
             f"agents: {', '.join(AGENT_NAMES)}",
@@ -1359,7 +1445,7 @@ class KnowledgeLibraryFourAgentVotingIntegrationTestCase(unittest.TestCase):
             if "_spropack" in str(exc):
                 self.skipTest(f"local scipy/transformers environment cannot load Qwen: {exc}")
             raise
-        output_file = project_root / "train" / "four_agent_lora_infographicsvqa_test_report.json"
+        output_file = PROJECT_ROOT / "train" / "four_agent_lora_infographicsvqa_test_report.json"
         output_file.parent.mkdir(parents=True, exist_ok=True)
         output_file.write_text(
             json.dumps(report.to_dict(), ensure_ascii=False, indent=2),

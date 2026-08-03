@@ -18,6 +18,8 @@ from baseline.qwen_gsm8k import (
     run_qwen_gsm8k_baseline,
 )
 from b_magent.local_qwen import DEFAULT_QWEN_MODEL, LocalQwenAgentModel, NUMERIC_ANSWER_INSTRUCTION
+from b_magent.library import EvolutionLibrary
+from b_magent.models import LibraryRecord
 from train.four_agent_private_train import AGENT_NAMES, build_four_local_qwen_agents
 
 
@@ -59,6 +61,70 @@ class QwenGSM8KBaselineTestCase(unittest.TestCase):
 
         self.assertEqual(model.generate("What is 20 + 22?"), "#### 42")
         self.assertIn(NUMERIC_ANSWER_INSTRUCTION, engine.prompt)
+
+    def test_local_qwen_agent_uses_own_lora_and_relevant_professional_memory(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_inference_context_test_"))
+        try:
+            agent_name = "qwen_agent_1"
+            library_path = temp_dir / agent_name / "professional_library.jsonl"
+            library = EvolutionLibrary(library_path, "professional")
+            library.add_record(
+                LibraryRecord(
+                    agent_name=agent_name,
+                    library_type="professional",
+                    source_task="Read the revenue chart",
+                    summary="Check the revenue axis and unit before answering.",
+                    detail="The chart may report revenue in millions; preserve the displayed unit.",
+                    tags=["chart", "revenue"],
+                )
+            )
+            adapter_path = temp_dir / "lora_adapters" / agent_name / "adapter"
+            adapter_path.mkdir(parents=True)
+            (adapter_path / "adapter_config.json").write_text("{}", encoding="utf-8")
+
+            class CapturingEngine:
+                def __init__(self) -> None:
+                    self.prompt = ""
+                    self.adapter_path: Path | None = None
+
+                def generate(self, prompt: str, adapter_path: Path) -> str:
+                    self.prompt = prompt
+                    self.adapter_path = adapter_path
+                    return "#### 42"
+
+            engine = CapturingEngine()
+            model = LocalQwenAgentModel(
+                agent_name=agent_name,
+                engine=engine,  # type: ignore[arg-type]
+                lora_output_dir=temp_dir / "lora_adapters",
+                professional_library_path=library_path,
+                require_lora=True,
+            )
+
+            self.assertEqual(model.generate("What is the revenue shown in the chart?"), "#### 42")
+            self.assertEqual(engine.adapter_path, adapter_path)
+            self.assertIn("Check the revenue axis and unit", engine.prompt)
+            self.assertIn("revenue in millions", engine.prompt)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_required_agent_lora_does_not_silently_fall_back(self) -> None:
+        class UnusedEngine:
+            def generate(self, prompt: str, adapter_path: Path) -> str:
+                raise AssertionError("engine should not run without the required adapter")
+
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_required_lora_test_"))
+        try:
+            model = LocalQwenAgentModel(
+                agent_name="qwen_agent_2",
+                engine=UnusedEngine(),  # type: ignore[arg-type]
+                lora_output_dir=temp_dir,
+                require_lora=True,
+            )
+            with self.assertRaises(FileNotFoundError):
+                model.generate("What is 20 + 22?")
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
     def test_baseline_uses_raw_local_qwen_without_system_prompt(self) -> None:
         temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_model_test_"))

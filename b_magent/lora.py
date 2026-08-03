@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 import gc
 import re
+from dataclasses import replace
 from decimal import Decimal, InvalidOperation
 from dataclasses import asdict, dataclass, field
 from hashlib import sha256
 from pathlib import Path
 from typing import Protocol
 
-from .models import Draft, PeerEvaluation, SelfImprovement
+from .models import Draft, LibraryRecord, PeerEvaluation, SelfImprovement
 from .retrieval_training import (
     build_verified_retrieval_output,
     is_retrieval_summary_grounded,
@@ -27,9 +28,12 @@ class LoraTrainingConfig:
     threshold: int = DEFAULT_LORA_THRESHOLD
     require_correct_answer: bool = True
     min_evaluation_score: float = 0.6
+    min_training_examples: int = 1
+    professional_library_dir: Path | None = None
     max_seq_length: int = 4096
     per_device_train_batch_size: int = 4
     gradient_accumulation_steps: int = 1
+    gradient_checkpointing: bool = True
     learning_rate: float = 2e-4
     num_train_epochs: float = 1.0
     lora_r: int = 8
@@ -56,6 +60,8 @@ class LoraTrainingConfig:
             raise ValueError("LoRA gradient accumulation steps must be positive")
         if not 0.0 <= self.min_evaluation_score <= 1.0:
             raise ValueError("LoRA evaluation threshold must be between 0 and 1")
+        if self.min_training_examples <= 0:
+            raise ValueError("LoRA minimum training examples must be positive")
         if not 0.0 <= self.lora_dropout < 1.0:
             raise ValueError("LoRA dropout must be between 0 (inclusive) and 1")
 
@@ -66,6 +72,7 @@ class LoraSFTExample:
     instruction: str
     input: str
     output: str
+    image: str = ""
 
     def to_dict(self) -> dict[str, str]:
         return asdict(self)
@@ -111,7 +118,6 @@ class PeftSFTLoraTrainer:
             from peft import LoraConfig, TaskType, get_peft_model
             from transformers import (
                 AutoProcessor,
-                DataCollatorForSeq2Seq,
                 Qwen2_5_VLForConditionalGeneration,
                 Trainer,
                 TrainingArguments,
@@ -126,16 +132,26 @@ class PeftSFTLoraTrainer:
         if not rows:
             raise ValueError(f"LoRA dataset is empty: {dataset_path}")
 
-        tokenizer = AutoProcessor.from_pretrained(config.base_model_path, local_files_only=True)
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
+        processor = AutoProcessor.from_pretrained(config.base_model_path, local_files_only=True)
+        tokenizer = configure_processor_tokenizer(processor)
 
+        use_bf16 = bool(torch.cuda.is_available() and torch.cuda.is_bf16_supported())
         model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             config.base_model_path,
-            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+            torch_dtype=(
+                torch.bfloat16
+                if use_bf16
+                else (torch.float16 if torch.cuda.is_available() else torch.float32)
+            ),
             local_files_only=True,
         )
         model.config.use_cache = False
+        if config.gradient_checkpointing:
+            model.gradient_checkpointing_enable()
+            # PEFT freezes the input embeddings. Gradient checkpointing still
+            # needs their outputs to require gradients so LoRA layers receive
+            # gradients during the recomputed forward pass.
+            model.enable_input_require_grads()
         peft_config = LoraConfig(
             task_type=TaskType.CAUSAL_LM,
             r=config.lora_r,
@@ -145,23 +161,40 @@ class PeftSFTLoraTrainer:
         )
         model = get_peft_model(model, peft_config)
 
-        dataset = Dataset.from_list(rows)
+        visual_rows = [row for row in rows if str(row.get("image", "")).strip()]
+        text_rows = [row for row in rows if not str(row.get("image", "")).strip()]
+        if visual_rows and text_rows:
+            raise ValueError("Do not mix visual and text-only rows in one LoRA dataset")
+        is_visual = bool(visual_rows)
+        if is_visual:
+            tokenized_dataset = Dataset.from_list(visual_rows)
+            data_collator = MultimodalSFTCollator(processor, config.max_seq_length)
+        else:
+            tokenized_dataset = Dataset.from_list(
+                [tokenize_lora_row(tokenizer, row, config.max_seq_length) for row in text_rows]
+            )
+            from transformers import DataCollatorForSeq2Seq
 
-        def tokenize(row: dict[str, str]) -> dict[str, list[int]]:
-            return tokenize_lora_row(tokenizer, row, config.max_seq_length)
-
-        tokenized_dataset = dataset.map(tokenize, remove_columns=dataset.column_names)
+            data_collator = DataCollatorForSeq2Seq(
+                tokenizer=tokenizer,
+                model=model,
+                padding=True,
+                label_pad_token_id=-100,
+            )
         training_args = TrainingArguments(
             output_dir=str(adapter_path / "trainer_state"),
             per_device_train_batch_size=config.per_device_train_batch_size,
             gradient_accumulation_steps=config.gradient_accumulation_steps,
+            gradient_checkpointing=config.gradient_checkpointing,
             learning_rate=config.learning_rate,
             num_train_epochs=config.num_train_epochs,
             logging_steps=1,
             save_strategy="no",
             report_to=[],
-            fp16=torch.cuda.is_available(),
+            fp16=torch.cuda.is_available() and not use_bf16,
+            bf16=use_bf16,
             label_names=["labels"],
+            remove_unused_columns=not is_visual,
         )
 
         # Use the real optimizer implementation.  Overriding ``train``/``eval``
@@ -172,24 +205,21 @@ class PeftSFTLoraTrainer:
             model=model,
             args=training_args,
             train_dataset=tokenized_dataset,
-            data_collator=DataCollatorForSeq2Seq(
-                tokenizer=tokenizer,
-                model=model,
-                padding=True,
-                label_pad_token_id=-100,
-            ),
+            data_collator=data_collator,
             optimizers=(optimizer, None),
         )
-        trainer.train()
-        adapter_path.mkdir(parents=True, exist_ok=True)
-        model.save_pretrained(adapter_path)
-        tokenizer.save_pretrained(adapter_path)
-        del trainer
-        del optimizer
-        del model
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        try:
+            trainer.train()
+            adapter_path.mkdir(parents=True, exist_ok=True)
+            model.save_pretrained(adapter_path)
+            processor.save_pretrained(adapter_path)
+        finally:
+            del trainer
+            del optimizer
+            del model
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
 
 class LoraEvolutionManager:
@@ -224,15 +254,31 @@ class LoraEvolutionManager:
                 example,
             )
             if not accepted:
-                updates.append(self.skipped_update(draft.agent_name, reason))
+                update = self.skipped_update(draft.agent_name, reason)
+                updates.append(update)
+                self.record_lora_experience(
+                    draft.agent_name,
+                    reason,
+                    update,
+                    accepted=False,
+                    source_task=task,
+                    example_hash=hash_lora_example(example),
+                )
                 continue
             state = self.load_state(draft.agent_name)
             if state.pending_examples < self.config.threshold:
-                updates.append(
-                    self.skipped_update(
+                update = self.skipped_update(
                         draft.agent_name,
                         f"pending examples below LoRA threshold: {state.pending_examples}/{self.config.threshold}",
                     )
+                updates.append(update)
+                self.record_lora_experience(
+                    draft.agent_name,
+                    reason,
+                    update,
+                    accepted=True,
+                    source_task=task,
+                    example_hash=hash_lora_example(example),
                 )
                 continue
             updates.append(self.train_agent_on_curated_dataset(draft.agent_name))
@@ -258,15 +304,31 @@ class LoraEvolutionManager:
         state = self.load_state(draft.agent_name)
         if not evaluations:
             return False, "no evaluator report"
-        low_scores = [evaluation for evaluation in evaluations if not evaluation.scores.is_usable_for_lora(self.config.min_evaluation_score)]
-        if low_scores:
+        has_verified_visual_label = bool(extract_task_image_path(task) and extract_gold_final_answer(task))
+        low_scores = [
+            evaluation
+            for evaluation in evaluations
+            if not evaluation.scores.is_usable_for_lora(self.config.min_evaluation_score)
+        ]
+        # For visual SFT the target is the dataset gold label, not the draft or
+        # evaluator-authored answer. Subjective safety/efficiency scores must not
+        # discard a verified image-answer pair.
+        if low_scores and not has_verified_visual_label:
             return False, "evaluation scores below LoRA quality threshold"
         correct = improvement.is_correct
         if correct is None:
             correct = is_improved_answer_correct(task, improvement.revised_answer)
         improvement.is_correct = correct
         has_verified_retrieval_label = build_verified_retrieval_output(task) is not None
-        if self.config.require_correct_answer and correct is not True and not has_verified_retrieval_label:
+        # Visual SFT rows are built from the dataset gold answer below, not from
+        # an unverified draft. This retains strict output correctness while still
+        # allowing a specialist to learn from a task it initially answered wrong.
+        if (
+            self.config.require_correct_answer
+            and correct is not True
+            and not has_verified_retrieval_label
+            and not has_verified_visual_label
+        ):
             return False, "improved answer did not pass a verifiable correctness or grounding gate"
         digest = hash_lora_example(example)
         if digest in state.example_hashes:
@@ -286,7 +348,19 @@ class LoraEvolutionManager:
         state = self.load_state(agent_name)
         examples = count_jsonl_rows(dataset_path)
 
-        self.trainer.train(agent_name, dataset_path, adapter_path, self.config)
+        if examples < self.config.min_training_examples:
+            update = self.skipped_update(
+                agent_name,
+                f"curated examples below LoRA safety minimum: "
+                f"{examples}/{self.config.min_training_examples}",
+            )
+            self.record_lora_experience(agent_name, update.reason, update, accepted=True)
+            return update
+        training_config = replace(
+            self.config,
+            num_train_epochs=safe_lora_epochs(examples, self.config.num_train_epochs),
+        )
+        self.trainer.train(agent_name, dataset_path, adapter_path, training_config)
         state.version += 1
         state.trained_examples = state.examples
         state.pending_examples = 0
@@ -300,8 +374,44 @@ class LoraEvolutionManager:
             version=state.version,
             pending_examples=state.pending_examples,
         )
-        write_lora_metadata(adapter_path, update, self.config)
+        write_lora_metadata(adapter_path, update, training_config)
+        self.record_lora_experience(agent_name, update.reason or "adapter trained", update, accepted=True)
         return update
+
+    def record_lora_experience(
+        self,
+        agent_name: str,
+        reason: str,
+        update: LoraUpdate,
+        *,
+        accepted: bool,
+        source_task: str = "",
+        example_hash: str = "",
+    ) -> None:
+        if self.config.professional_library_dir is None:
+            return
+        from .library import EvolutionLibrary
+
+        library = EvolutionLibrary(
+            self.config.professional_library_dir / agent_name / "professional_library.jsonl",
+            "professional",
+        )
+        status = "trained" if update.trained else ("accepted" if accepted else "rejected")
+        library.add_record(
+            LibraryRecord(
+                agent_name=agent_name,
+                library_type="professional",
+                source_task=source_task or f"LoRA dataset: {update.dataset_path}",
+                summary=f"LoRA lifecycle status={status}; {reason}",
+                detail=(
+                    f"status={status} | examples={update.examples} | "
+                    f"pending_examples={update.pending_examples} | version={update.version} | "
+                    f"adapter_path={update.adapter_path} | example_hash={example_hash or '(batch)'} | "
+                    f"reason={reason}"
+                ),
+                tags=["lora-training-metadata", f"lora-{status}", "professional-storage-audit"],
+            )
+        )
 
     def skipped_update(self, agent_name: str, reason: str) -> LoraUpdate:
         state = self.load_state(agent_name)
@@ -376,10 +486,26 @@ def build_lora_example(
     evaluation_report = format_evaluation_report(evaluations)
     trajectory = format_trajectory(draft)
     verified_output = build_verified_retrieval_output(task)
+    image_path = extract_task_image_path(task)
+    if image_path:
+        gold = extract_gold_final_answer(task) or ""
+        answer = gold.split("|", 1)[0].strip()
+        return LoraSFTExample(
+            agent_name=draft.agent_name,
+            instruction=(
+                f"Act as {draft.specialty}. Apply that specialist evidence-inspection workflow to "
+                "the supplied image, while treating factual correctness as the highest priority. "
+                "Return only the short answer, without JSON, evidence, reasoning, or an answer label."
+            ),
+            input=strip_gold_annotations(task),
+            output=answer,
+            image=image_path,
+        )
     return LoraSFTExample(
         agent_name=draft.agent_name,
         instruction=(
-            "Summarize the evidence already retrieved by the server. Preserve the user's target and "
+            f"Act as {draft.specialty}. Summarize the evidence already retrieved by the server. "
+            "Preserve the user's target and "
             "hard constraints, remove duplication and conflicts, and produce a concise grounded answer."
         ),
         input=(
@@ -443,7 +569,7 @@ def tokenize_lora_row(tokenizer: object, row: dict[str, str], max_length: int) -
     # sequence boundary. Reserve half of the window for response supervision.
     max_output_length = max(1, max_length // 2)
     if len(output_ids) > max_output_length:
-        output_ids = output_ids[-max_output_length:]
+        output_ids = output_ids[:max_output_length]
     prefix_ids = prefix_ids[: max_length - len(output_ids)]
     input_ids = prefix_ids + output_ids
     return {
@@ -451,6 +577,127 @@ def tokenize_lora_row(tokenizer: object, row: dict[str, str], max_length: int) -
         "attention_mask": [1] * len(input_ids),
         "labels": [-100] * len(prefix_ids) + list(output_ids),
     }
+
+
+class MultimodalSFTCollator:
+    """Build Qwen-VL image tensors while masking every token except the answer."""
+
+    def __init__(self, processor: object, max_length: int) -> None:
+        self.processor = processor
+        self.max_length = max_length
+        configure_multimodal_image_budget(processor, max_length)
+
+    def __call__(self, rows: list[dict[str, str]]) -> dict[str, object]:
+        from PIL import Image
+
+        full_texts: list[str] = []
+        prefix_texts: list[str] = []
+        images = []
+        for row in rows:
+            image_path = Path(row["image"])
+            if not image_path.is_file():
+                raise FileNotFoundError(f"LoRA training image not found: {image_path}")
+            images.append(Image.open(image_path).convert("RGB"))
+            user_content = [
+                {"type": "image", "image": str(image_path.resolve())},
+                {
+                    "type": "text",
+                    "text": format_lora_prompt(row["instruction"], row["input"], output=""),
+                },
+            ]
+            prefix_messages = [{"role": "user", "content": user_content}]
+            full_messages = [
+                *prefix_messages,
+                {"role": "assistant", "content": str(row["output"])},
+            ]
+            prefix_texts.append(
+                self.processor.apply_chat_template(
+                    prefix_messages, tokenize=False, add_generation_prompt=True
+                )
+            )
+            full_texts.append(
+                self.processor.apply_chat_template(
+                    full_messages, tokenize=False, add_generation_prompt=False
+                )
+            )
+        try:
+            batch = self.processor(
+                text=full_texts,
+                images=images,
+                padding=True,
+                truncation=True,
+                max_length=self.max_length,
+                return_tensors="pt",
+            )
+            prefixes = self.processor(
+                text=prefix_texts,
+                images=images,
+                padding=True,
+                truncation=True,
+                max_length=self.max_length,
+                return_tensors="pt",
+            )
+        finally:
+            for image in images:
+                image.close()
+        labels = batch["input_ids"].clone()
+        labels[batch["attention_mask"] == 0] = -100
+        for index, prefix_length in enumerate(prefixes["attention_mask"].sum(dim=1).tolist()):
+            labels[index, : int(prefix_length)] = -100
+        batch["labels"] = labels
+        return dict(batch)
+
+
+def configure_multimodal_image_budget(processor: object, max_length: int) -> int:
+    """Cap Qwen-VL image tokens so sequence truncation cannot split an image block."""
+    image_processor = getattr(processor, "image_processor", None)
+    if image_processor is None:
+        return 0
+
+    # Keep one quarter of the context (at least 256 tokens) for the chat
+    # template, question, and supervised answer. Qwen-VL produces one visual
+    # token per merge_size**2 image patches.
+    text_budget = min(max(256, max_length // 4), max_length - 1)
+    visual_token_budget = max(1, max_length - text_budget)
+    patch_size = int(getattr(image_processor, "patch_size", 14))
+    merge_size = int(getattr(image_processor, "merge_size", 2))
+    max_pixels = visual_token_budget * (patch_size * merge_size) ** 2
+
+    current_max_pixels = getattr(image_processor, "max_pixels", None)
+    if current_max_pixels is None or int(current_max_pixels) > max_pixels:
+        image_processor.max_pixels = max_pixels
+    current_min_pixels = getattr(image_processor, "min_pixels", None)
+    if current_min_pixels is not None and int(current_min_pixels) > max_pixels:
+        image_processor.min_pixels = max_pixels
+    return max_pixels
+
+
+def configure_processor_tokenizer(processor: object) -> object:
+    """Return and configure the text tokenizer wrapped by a VL processor."""
+    tokenizer = getattr(processor, "tokenizer", processor)
+    if getattr(tokenizer, "pad_token", None) is None:
+        eos_token = getattr(tokenizer, "eos_token", None)
+        if eos_token is None:
+            raise ValueError("LoRA tokenizer has neither a pad token nor an EOS token")
+        tokenizer.pad_token = eos_token
+    tokenizer.padding_side = "right"
+    return tokenizer
+
+
+def safe_lora_epochs(example_count: int, requested_epochs: float) -> float:
+    """Cap epochs for tiny datasets, where repeated SFT quickly collapses generation."""
+    if example_count <= 0:
+        raise ValueError("LoRA example count must be positive")
+    if example_count < 8:
+        return min(requested_epochs, 3.0)
+    if example_count < 32:
+        return min(requested_epochs, 5.0)
+    return min(requested_epochs, 10.0)
+
+
+def extract_task_image_path(task: str) -> str:
+    match = re.search(r"^Image:\s*(.+)$", task, re.MULTILINE)
+    return match.group(1).strip() if match else ""
 
 
 def append_lora_example(dataset_path: Path, example: LoraSFTExample) -> None:
@@ -482,6 +729,11 @@ def write_lora_metadata(adapter_path: Path, update: LoraUpdate, config: LoraTrai
         "config": {
             **asdict(config),
             "output_dir": str(config.output_dir),
+            "professional_library_dir": (
+                str(config.professional_library_dir)
+                if config.professional_library_dir is not None
+                else None
+            ),
             "target_modules": list(config.target_modules),
         },
         "objective": "SFT cross-entropy on reflection-improved answers; frozen backbone plus trainable LoRA adapter.",
@@ -517,8 +769,50 @@ def is_improved_answer_correct(task: str, improved_answer: str) -> bool | None:
     gold = extract_gold_final_answer(task)
     if gold is None:
         return None
+    if extract_task_image_path(task):
+        predicted_text = _extract_visual_text_answer(improved_answer)
+        if not predicted_text:
+            return False
+        return _normalize_text_answer(predicted_text) in {
+            _normalize_text_answer(candidate)
+            for candidate in gold.split("|")
+        }
     predicted = extract_final_answer(improved_answer)
-    return _numeric_equal(predicted, gold)
+    if predicted and _numeric_equal(predicted, gold):
+        return True
+    text_match = re.search(r"(?:final\s+answer|answer)\s*:\s*([^\n]+)", improved_answer, re.I)
+    if not text_match:
+        return False
+    predicted_text = _normalize_text_answer(text_match.group(1))
+    return predicted_text in {
+        _normalize_text_answer(candidate)
+        for candidate in gold.split("|")
+    }
+
+
+def _extract_visual_text_answer(answer: str) -> str:
+    text = str(answer).strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE).strip()
+    try:
+        payload = json.loads(text)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        payload = None
+    if isinstance(payload, dict):
+        return str(payload.get("final_answer", "")).strip()
+
+    plain_text = text.replace("**", "").replace("__", "").strip()
+    labelled = re.search(r"(?:final\s+answer|answer)\s*:\s*([^\n]+)", plain_text, re.I)
+    if labelled:
+        return labelled.group(1).strip()
+    if len(plain_text) <= 200 and len(plain_text.split()) <= 30 and "\n" not in plain_text:
+        return plain_text
+    return ""
+
+
+def _normalize_text_answer(text: str) -> str:
+    value = str(text).strip().casefold().strip(". ,;:\"'")
+    return " ".join(value.split())
 
 
 def extract_gold_final_answer(task: str) -> str | None:
@@ -555,6 +849,8 @@ def strip_gold_annotations(task: str) -> str:
     lines = []
     in_gold_reasoning = False
     for line in task.splitlines():
+        if re.match(r"\s*Gold image elements:", line):
+            continue
         if re.match(r"\s*Gold reasoning:", line):
             in_gold_reasoning = True
             continue

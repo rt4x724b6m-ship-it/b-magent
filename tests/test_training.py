@@ -49,11 +49,72 @@ class ReleasingBackend:
 
 
 class NoopLoraManager:
+    def __init__(self) -> None:
+        self.flush_calls = 0
+
     def update_from_round(self, task, drafts, peer_reviews, self_improvements):  # type: ignore[no-untyped-def]
         return []
 
+    def flush_pending(self, agent_names):  # type: ignore[no-untyped-def]
+        self.flush_calls += 1
+        raise AssertionError("training entry must not bypass the LoRA accumulation threshold")
+
+
+class FinalizingLoraManager:
+    def __init__(self) -> None:
+        self.flush_calls = 0
+
+    def update_from_round(self, task, drafts, peer_reviews, self_improvements):  # type: ignore[no-untyped-def]
+        raise AssertionError("a completed resume must not run another training round")
+
+    def flush_pending(self, agent_names):  # type: ignore[no-untyped-def]
+        self.flush_calls += 1
+        from b_magent.lora import LoraUpdate
+
+        return [LoraUpdate("qwen_agent_4", "dataset", "adapter", 1, True)]
+
 
 class FourAgentPrivateTrainingTestCase(unittest.TestCase):
+    def test_completed_resume_flushes_pending_lora_without_another_round(self) -> None:
+        from train.train import run_b_magent_training_entry as run_visual_training_entry
+
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_completed_resume_test_"))
+        try:
+            dataset_dir = temp_dir / "dataset"
+            data_dir = temp_dir / "data"
+            dataset_dir.mkdir()
+            train_rows = [
+                {"question": f"q{index}", "answer": f"a{index} #### {index}"}
+                for index in range(len(AGENT_NAMES))
+            ]
+            (dataset_dir / "train.jsonl").write_text(
+                "\n".join(json.dumps(row) for row in train_rows) + "\n",
+                encoding="utf-8",
+            )
+            for agent_name, row in zip(AGENT_NAMES, train_rows):
+                agent_dir = data_dir / agent_name
+                agent_dir.mkdir(parents=True)
+                (agent_dir / "private_data.jsonl").write_text(
+                    json.dumps(row) + "\n",
+                    encoding="utf-8",
+                )
+            lora_manager = FinalizingLoraManager()
+
+            report = run_visual_training_entry(
+                dataset_dir=dataset_dir,
+                data_dir=data_dir,
+                rounds=1,
+                start_round=1,
+                preserve_private_datasets=True,
+                lora_manager=lora_manager,  # type: ignore[arg-type]
+            )
+
+            self.assertEqual(lora_manager.flush_calls, 1)
+            self.assertEqual(report.training_rounds, [])
+            self.assertEqual(report.lora_updates["qwen_agent_4"], 1)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def test_four_agents_train_separately_for_three_rounds(self) -> None:
         temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_training_test_"))
         try:
@@ -368,15 +429,18 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
 
             self.assertEqual(report.training_rounds[0].global_downlinks, 0)
             self.assertEqual(report.training_rounds[0].global_uploads, 1)
-            self.assertEqual(report.training_rounds[1].global_downlinks, 4)
+            self.assertEqual(report.training_rounds[1].global_downlinks, 2)
             self.assertEqual(report.training_rounds[1].global_uploads, 1)
             self.assertTrue((temp_dir / "data" / "qwen_server_agent" / "global_evaluation_library.jsonl").exists())
+            second_round_evaluators = set(report.training_rounds[1].evaluators)
             for agent_name in AGENT_NAMES:
-                evaluation_text = (temp_dir / "data" / agent_name / "evaluation_library.jsonl").read_text(
-                    encoding="utf-8"
-                )
-                self.assertIn("global-downlink", evaluation_text)
-                self.assertIn("source_global_experience_id=qwen_server_agent:", evaluation_text)
+                evaluation_path = temp_dir / "data" / agent_name / "evaluation_library.jsonl"
+                evaluation_text = evaluation_path.read_text(encoding="utf-8") if evaluation_path.exists() else ""
+                if agent_name in second_round_evaluators:
+                    self.assertIn("global-downlink", evaluation_text)
+                    self.assertIn("source_global_experience_id=qwen_server_agent:", evaluation_text)
+                else:
+                    self.assertNotIn("global-downlink", evaluation_text)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -394,6 +458,7 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
                 encoding="utf-8",
             )
             backend = ReleasingBackend()
+            lora_manager = NoopLoraManager()
 
             run_b_magent_training_entry(
                 dataset_dir=dataset_dir,
@@ -402,10 +467,11 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
                 private_batch_size=1,
                 random_seed=1,
                 backend=backend,
-                lora_manager=NoopLoraManager(),
+                lora_manager=lora_manager,
             )
 
             self.assertEqual(backend.release_calls, 0)
+            self.assertEqual(lora_manager.flush_calls, 0)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -432,9 +498,12 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
         self.assertTrue(args.output.is_absolute())
         self.assertTrue(args.lora_output_dir.is_absolute())
         self.assertTrue(args.enable_lora)
-        self.assertEqual(args.lora_threshold, 10)
-        self.assertEqual(args.lora_train_batch_size, 4)
+        self.assertEqual(args.private_batch_size, 4)
+        self.assertEqual(args.lora_threshold, 50)
+        self.assertEqual(args.lora_train_batch_size, 1)
+        self.assertEqual(args.lora_min_training_examples, 16)
         self.assertEqual(args.lora_gradient_accumulation_steps, 1)
+        self.assertFalse(args.llm_experience_tags)
 
     def test_cli_can_disable_lora(self) -> None:
         with patch("sys.argv", ["four_agent_private_train.py", "--disable-lora"]):

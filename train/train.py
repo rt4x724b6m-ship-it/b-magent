@@ -47,6 +47,7 @@ from s_server import ServerKeyInformationStore
 
 AGENT_NAMES = ("qwen_agent_1", "qwen_agent_2", "qwen_agent_3", "qwen_agent_4")
 STANDARD_PRIVATE_TRAIN_SIZE = 200
+DEFAULT_TRAINING_ROUNDS = 0
 DEFAULT_PRIVATE_BATCH_SIZE = 4
 DEFAULT_TRAINING_LORA_THRESHOLD = 50
 UNRESOLVED_VISUAL_ANSWER = "unable to determine"
@@ -257,8 +258,6 @@ def run_b_magent_training_entry(
 
     dataset = load_project_dataset(dataset_dir)
     train_samples = dataset.load("train")
-    if train_samples and isinstance(train_samples[0], VisionQASample):
-        train_samples = train_samples[: STANDARD_PRIVATE_TRAIN_SIZE * len(AGENT_NAMES)]
     if not train_samples:
         raise ValueError(f"no training samples found at {dataset_dir / 'train.jsonl'}")
 
@@ -275,6 +274,11 @@ def run_b_magent_training_entry(
             raise ValueError("resume requested but one or more private datasets are missing")
     else:
         private_dataset_counts = write_even_agent_private_datasets(train_samples, data_dir, AGENT_NAMES)
+    validate_agent_private_datasets(
+        data_dir,
+        expected_total=len({sample.to_training_text() for sample in train_samples}),
+        agent_names=AGENT_NAMES,
+    )
     base_participant_schedule = build_participant_schedule(private_dataset_counts, private_batch_size)
     effective_rounds = rounds or len(base_participant_schedule)
     participant_schedule = expand_participant_schedule(base_participant_schedule, effective_rounds)
@@ -297,6 +301,13 @@ def run_b_magent_training_entry(
     }
     workflow = MultiAgentWorkflow(agents, random_seed=random_seed, private_batch_size=private_batch_size)
     training_rounds: list[BMagentTrainingRound] = []
+    final_lora_updates: list[LoraUpdate] = []
+
+    # A resumed run may already have completed every requested workflow round
+    # while still holding a partial LoRA batch. Finalize that batch instead of
+    # returning a report with no usable adapters.
+    if lora_manager is not None and start_round == effective_rounds:
+        final_lora_updates = lora_manager.flush_pending(AGENT_NAMES)
 
     for index in range(start_round, effective_rounds):
         sample = train_samples[index % len(train_samples)]
@@ -376,8 +387,14 @@ def run_b_magent_training_entry(
         lora_updates={
             agent.name: sum(
                 1
-                for round_report in training_rounds
-                for update in round_report.lora_updates
+                for update in (
+                    [
+                        item
+                        for round_report in training_rounds
+                        for item in round_report.lora_updates
+                    ]
+                    + final_lora_updates
+                )
                 if update.agent_name == agent.name and update.trained
             )
             for agent in agents
@@ -1521,18 +1538,64 @@ def write_even_agent_private_datasets(
     data_dir: Path,
     agent_names: tuple[str, ...] = AGENT_NAMES,
 ) -> dict[str, int]:
-    splits = split_samples_evenly(samples, len(agent_names))
+    unique_samples: list[GSM8KSample] = []
+    seen_training_texts: set[str] = set()
+    for sample in samples:
+        training_text = sample.to_training_text()
+        if training_text in seen_training_texts:
+            continue
+        seen_training_texts.add(training_text)
+        unique_samples.append(sample)
+
+    splits = split_samples_evenly(unique_samples, len(agent_names))
     counts: dict[str, int] = {}
+    private_training_owners: dict[str, str] = {}
     for agent_name, private_samples in zip(agent_names, splits):
         agent_dir = data_dir / agent_name
         agent_dir.mkdir(parents=True, exist_ok=True)
         private_file = agent_dir / "private_data.jsonl"
+        private_training_texts = [sample.to_training_text() for sample in private_samples]
+        for training_text in private_training_texts:
+            previous_owner = private_training_owners.get(training_text)
+            if previous_owner is not None:
+                raise ValueError(
+                    f"private training sample is shared by {previous_owner} and {agent_name}"
+                )
+            private_training_owners[training_text] = agent_name
         private_file.write_text(
-            "\n".join(sample.to_training_text() for sample in private_samples) + ("\n" if private_samples else ""),
+            "\n".join(private_training_texts) + ("\n" if private_training_texts else ""),
             encoding="utf-8",
         )
         counts[agent_name] = len(private_samples)
     return counts
+
+
+def validate_agent_private_datasets(
+    data_dir: Path,
+    expected_total: int,
+    agent_names: tuple[str, ...] = AGENT_NAMES,
+) -> None:
+    """Require a complete, duplicate-free partition of the training dataset."""
+    owners: dict[str, str] = {}
+    for agent_name in agent_names:
+        private_file = data_dir / agent_name / "private_data.jsonl"
+        if not private_file.is_file():
+            raise ValueError(f"missing private training dataset for {agent_name}: {private_file}")
+        rows = [line for line in private_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+        if len(rows) != len(set(rows)):
+            raise ValueError(f"duplicate samples found in {agent_name} private training dataset")
+        for row in rows:
+            previous_owner = owners.get(row)
+            if previous_owner is not None:
+                raise ValueError(
+                    f"private training sample is shared by {previous_owner} and {agent_name}"
+                )
+            owners[row] = agent_name
+    if len(owners) != expected_total:
+        raise ValueError(
+            "private training datasets do not cover the complete training set: "
+            f"expected {expected_total} unique samples, found {len(owners)}"
+        )
 
 
 def reset_b_magent_training_state(
@@ -1687,8 +1750,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--rounds",
         type=int,
-        default=0,
-        help="Training rounds. Use 0 to auto-cover the evenly split private training data.",
+        default=DEFAULT_TRAINING_ROUNDS,
+        help=(
+            f"Training rounds (default: {DEFAULT_TRAINING_ROUNDS}). "
+            "Use 0 to auto-cover the evenly split private training data."
+        ),
     )
     parser.add_argument(
         "--private-batch-size",
@@ -1738,9 +1804,30 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_TRAINING_LORA_THRESHOLD,
         help="Number of newly accepted samples accumulated per agent before one LoRA refresh.",
     )
-    parser.add_argument("--lora-max-seq-length", type=int, default=4096)
+    parser.add_argument(
+        "--lora-max-seq-length",
+        type=int,
+        default=2048,
+        help="Maximum LoRA sequence length. The 2048 default is sized for a 32 GB GPU.",
+    )
     parser.add_argument("--lora-train-batch-size", type=int, default=1)
-    parser.add_argument("--lora-gradient-accumulation-steps", type=int, default=1)
+    parser.add_argument("--lora-gradient-accumulation-steps", type=int, default=4)
+    parser.add_argument(
+        "--lora-target-modules",
+        nargs="+",
+        default=None,
+        help=(
+            "Transformer projection names adapted by LoRA. By default the full "
+            "LoraTrainingConfig target set is used."
+        ),
+    )
+    parser.add_argument(
+        "--no-lora-gradient-checkpointing",
+        dest="lora_gradient_checkpointing",
+        action="store_false",
+        default=True,
+        help="Disable LoRA gradient checkpointing (enabled by default to reduce GPU memory).",
+    )
     parser.add_argument("--lora-epochs", type=float, default=1.0)
     parser.add_argument("--lora-learning-rate", type=float, default=5e-5)
     parser.add_argument("--lora-min-evaluation-score", type=float, default=0.6)
@@ -1803,6 +1890,9 @@ def build_b_magent_backend(args: argparse.Namespace) -> object | None:
 def build_lora_manager(args: argparse.Namespace) -> LoraEvolutionManager | None:
     if not args.enable_lora:
         return None
+    config_kwargs = {}
+    if args.lora_target_modules:
+        config_kwargs["target_modules"] = tuple(args.lora_target_modules)
     config = LoraTrainingConfig(
         base_model_path=str(args.model_path),
         output_dir=args.lora_output_dir,
@@ -1814,8 +1904,10 @@ def build_lora_manager(args: argparse.Namespace) -> LoraEvolutionManager | None:
         max_seq_length=args.lora_max_seq_length,
         per_device_train_batch_size=args.lora_train_batch_size,
         gradient_accumulation_steps=args.lora_gradient_accumulation_steps,
+        gradient_checkpointing=args.lora_gradient_checkpointing,
         num_train_epochs=args.lora_epochs,
         learning_rate=args.lora_learning_rate,
+        **config_kwargs,
     )
     return LoraEvolutionManager(config)
 
