@@ -1,6 +1,6 @@
   # b_magent
 
-`b_magent` 是一个本地四智能体自进化实验系统，现使用 MM-Vet 和 InfographicsVQA 进行视觉问答训练与评测。
+`b_magent` 是一个本地六智能体自进化实验系统，支持 GSM8K 数学题以及 MM-Vet、InfographicsVQA 视觉问答训练与评测。
 
 系统默认使用 4 个同构 Qwen 智能体：
 
@@ -8,6 +8,8 @@
 - `qwen_agent_2`
 - `qwen_agent_3`
 - `qwen_agent_4`
+- `qwen_agent_5`
+- `qwen_agent_6`
 
 每一轮训练中，系统选择 2 个智能体作为参与者解题，另外 2 个智能体作为评价者互评。参与者根据私有数据、专业经验库和评价经验库生成答案；评价者根据自己的评价经验库给出建议；参与者再根据建议做自我改进，并把经验写回自己的专业库；评价者也会把本轮评价经验写回自己的评价库。
 
@@ -127,14 +129,14 @@ python main.py --task "设计一个多智能体协作解决数学题的流程" -
 data/latest_report.json
 ```
 
-### 2. 四智能体单轮协作流程
+### 2. 六智能体单轮协作流程
 
 核心类是 [b_magent/workflow.py](/home/cxh/b_magent/b_magent/workflow.py) 里的 `MultiAgentWorkflow`。
 
 `MultiAgentWorkflow.run(task, participant_names=None)` 的流程：
 
-1. `_select_participants()` 选择 2 个参与解题的智能体
-2. 剩余 2 个智能体自动成为评价者
+1. `_select_participants()` 随机或按平衡排班选择 3 个参与解题的智能体
+2. 剩余 3 个智能体自动成为评价者
 3. 每个参与者调用 `QwenAgent.train_private_data()` 读取私有训练数据并写入专业库
 4. 每个参与者调用 `QwenAgent.solve_task()` 生成初稿 `Draft`
 5. 每个评价者调用 `QwenAgent.evaluate_peer()` 评价所有参与者初稿，生成 `PeerEvaluation`
@@ -146,9 +148,9 @@ data/latest_report.json
 每轮结构可以理解为：
 
 ```text
-4 agents
-  -> 2 participants solve
-  -> 2 evaluators review
+6 agents
+  -> 3 participants solve
+  -> 3 evaluators review
   -> participants update professional library
   -> evaluators update evaluation library
   -> server agent aggregate global evaluation experience
@@ -257,7 +259,7 @@ python -m train.four_agent_private_train \
 5. 用 `build_default_agents()` 创建智能体并初始化经验库
 6. 每轮用 `format_gsm8k_training_task()` 构造带 gold 信息的训练任务
 7. 训练轮次开始前调用 `downlink_global_evaluation_experience()`，把 server 全局评价经验下发到各 agent 评价库
-8. 调用 `MultiAgentWorkflow.run()` 完成四智能体自进化，并由 `qwen_server_agent` 聚合本轮全局评价经验
+8. 调用 `MultiAgentWorkflow.run()` 完成六智能体自进化，并由 `qwen_server_agent` 聚合本轮全局评价经验
 9. 如果启用 LoRA，调用 `LoraEvolutionManager.update_from_round()`
 10. 汇总为 `BMagentTrainingReport` 并通过 `export_json_report()` 写出
 
@@ -265,7 +267,7 @@ python -m train.four_agent_private_train \
 
 常用参数：
 
-- `--mode b-magent`：运行四智能体自进化训练
+- `--mode b-magent`：运行六智能体自进化训练
 - `--backend local-qwen`：使用本地 Qwen 模型
 - `--backend demo`：使用确定性 demo 后端，不加载模型
 - `--rounds`：训练轮数，传 `0` 时自动覆盖平均拆分后的私有训练数据
@@ -292,7 +294,7 @@ python -m train.four_agent_private_train \
 
 ### Server 全局评价经验
 
-四智能体 workflow 会额外创建一个 server agent：
+六智能体 workflow 会额外创建一个 server agent：
 
 ```text
 data/qwen_server_agent/global_evaluation_library.jsonl
@@ -389,7 +391,7 @@ python -m train.four_agent_private_train \
 关键函数：
 
 - `build_four_local_qwen_agents()`：共享一个 `LocalQwenEngine`，构造 4 个 `LocalQwenAgentModel`
-- `run_four_agent_voting_on_test()`：对 test set 中每道题让 4 个智能体分别回答
+- `run_four_agent_voting_on_test()`：对 test set 中每道题让 6 个智能体分别回答
 - `majority_vote()`：对 4 个答案做多数投票；平票时保留先出现的答案
 - `format_voting_prediction_detail()`：格式化每道题的投票结果
 

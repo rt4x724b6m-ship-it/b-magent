@@ -22,6 +22,8 @@ def build_default_agents(base_dir: Path | None = None, backend: Any | None = Non
         QwenAgent("qwen_agent_2", "通用智能体", data_dir, backend),
         QwenAgent("qwen_agent_3", "通用智能体", data_dir, backend),
         QwenAgent("qwen_agent_4", "通用智能体", data_dir, backend),
+        QwenAgent("qwen_agent_5", "通用智能体", data_dir, backend),
+        QwenAgent("qwen_agent_6", "通用智能体", data_dir, backend),
     ]
 
 
@@ -39,8 +41,8 @@ class MultiAgentWorkflow:
         random_seed: int | None = None,
         private_batch_size: int | None = None,
     ) -> None:
-        if len(agents) != 4:
-            raise ValueError("b_magent training requires exactly four agents")
+        if len(agents) != 6:
+            raise ValueError("b_magent training requires exactly six agents")
         self.agents = agents
         backend = agents[0].backend if agents else DemoQwenBackend()
         data_dir = agents[0].data_dir if agents else Path(__file__).resolve().parent.parent / "data"
@@ -134,14 +136,14 @@ class MultiAgentWorkflow:
 
     def _select_participants(self, participant_names: list[str] | None) -> list[QwenAgent]:
         if participant_names is None:
-            return self._rng.sample(self.agents, 2)
-        if len(participant_names) != 2:
-            raise ValueError("each workflow round requires exactly two participant names")
+            return self._rng.sample(self.agents, 3)
+        if len(participant_names) != 3:
+            raise ValueError("each workflow round requires exactly three participant names")
         agents_by_name = {agent.name: agent for agent in self.agents}
         missing = [name for name in participant_names if name not in agents_by_name]
         if missing:
             raise ValueError(f"unknown participant agents: {', '.join(missing)}")
-        if len(set(participant_names)) != 2:
+        if len(set(participant_names)) != 3:
             raise ValueError("participant names must be distinct")
         return [agents_by_name[name] for name in participant_names]
 

@@ -52,10 +52,12 @@ class EvaluationScores:
     correctness: float
     safety: float
     efficiency: float
+    parsed_successfully: bool = True
 
     def is_usable_for_lora(self, threshold: float = 0.6) -> bool:
         return (
-            self.correctness >= threshold
+            self.parsed_successfully
+            and self.correctness >= threshold
             and self.safety >= threshold
             and self.efficiency >= threshold
         )

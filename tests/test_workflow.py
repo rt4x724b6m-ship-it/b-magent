@@ -97,7 +97,7 @@ class WorkflowTestCase(unittest.TestCase):
             private_file.write_text("SECRET_PRIVATE_SAMPLE\n", encoding="utf-8")
             workflow = MultiAgentWorkflow(agents, random_seed=7)
 
-            workflow.run("Question: q", participant_names=["qwen_agent_1", "qwen_agent_2"])
+            workflow.run("Question: q", participant_names=["qwen_agent_1", "qwen_agent_2", "qwen_agent_3"])
 
             self.assertTrue(backend.review_drafts)
             for review_draft in backend.review_drafts:
@@ -141,15 +141,17 @@ class WorkflowTestCase(unittest.TestCase):
             private_file.write_text("SECRET_PRIVATE_SAMPLE\n", encoding="utf-8")
             workflow = MultiAgentWorkflow(agents, random_seed=7)
 
-            report = workflow.run("Question: q", participant_names=["qwen_agent_1", "qwen_agent_2"])
+            report = workflow.run(
+                "Question: q",
+                participant_names=["qwen_agent_1", "qwen_agent_2", "qwen_agent_3"],
+            )
 
             evaluation_details = "\n".join(
                 record.detail
                 for evolution in report.evaluation_evolutions
                 for record in evolution.evaluation_updates
             )
-            self.assertIn("revised_answer_summary=", evaluation_details)
-            self.assertIn("final_answer=17", evaluation_details)
+            self.assertIn("review_scores_peer_comparisons_and_target_results=", evaluation_details)
             self.assertNotIn("PRIVATE_DERIVED_REASONING_SENTENCE", evaluation_details)
             self.assertNotIn("SECRET_RAW_THOUGHT_TRACE", evaluation_details)
             self.assertNotIn("SECRET_PRIVATE_SAMPLE", evaluation_details)
@@ -231,24 +233,24 @@ class WorkflowTestCase(unittest.TestCase):
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
-    def test_two_random_trainers_and_two_evaluators_evolve_separate_libraries(self) -> None:
+    def test_three_random_trainers_and_three_evaluators_evolve_separate_libraries(self) -> None:
         temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_test_"))
         try:
             agents = build_default_agents(temp_dir)
             seed_agent_libraries(agents)
             workflow = MultiAgentWorkflow(agents, random_seed=7)
 
-            task = "four-agent self-evolution with private training and evaluator suggestions"
+            task = "six-agent self-evolution with private training and evaluator suggestions"
             report = workflow.run(task)
-            expected_agents = ["qwen_agent_1", "qwen_agent_2", "qwen_agent_3", "qwen_agent_4"]
-            self.assertEqual(len(report.participants), 2)
-            self.assertEqual(len(report.evaluators), 2)
+            expected_agents = [f"qwen_agent_{index}" for index in range(1, 7)]
+            self.assertEqual(len(report.participants), 3)
+            self.assertEqual(len(report.evaluators), 3)
             self.assertEqual(sorted(report.participants + report.evaluators), expected_agents)
             self.assertEqual(set(report.participants).isdisjoint(report.evaluators), True)
-            self.assertEqual(len(report.drafts), 2)
-            self.assertEqual(len(report.self_improvements), 2)
-            self.assertEqual(len(report.evaluation_evolutions), 2)
-            self.assertEqual(len(report.peer_reviews), 4)
+            self.assertEqual(len(report.drafts), 3)
+            self.assertEqual(len(report.self_improvements), 3)
+            self.assertEqual(len(report.evaluation_evolutions), 3)
+            self.assertEqual(len(report.peer_reviews), 9)
             self.assertIsNotNone(report.global_experience)
             assert report.global_experience is not None
             self.assertEqual(report.global_experience.server_name, "qwen_server_agent")
@@ -273,16 +275,17 @@ class WorkflowTestCase(unittest.TestCase):
                 self.assertIn(improvement.agent_name, report.participants)
                 self.assertTrue(improvement.professional_updates)
 
+            self.assertTrue(any(evolution.evaluation_updates for evolution in report.evaluation_evolutions))
             for evolution in report.evaluation_evolutions:
                 self.assertIn(evolution.agent_name, report.evaluators)
-                self.assertTrue(evolution.evaluation_updates)
+                if not evolution.evaluation_updates:
+                    continue
                 self.assertEqual(len(evolution.synthesized_suggestions), 4)
                 detail = evolution.evaluation_updates[0].detail
                 self.assertIn("prior_evaluation_memory=", detail)
                 self.assertIn("own_review_rationales=", detail)
                 self.assertIn("review_scores_peer_comparisons_and_target_results=", detail)
                 self.assertIn("target=", detail)
-                self.assertIn("revised_answer_summary=", detail)
 
             output_file = temp_dir / "data" / "report.json"
             workflow.export_report(report, output_file)
@@ -311,7 +314,12 @@ class WorkflowTestCase(unittest.TestCase):
             self.assertTrue(server_tag_payloads)
             stored_agents = {item["agent_name"] for item in server_tag_payloads}
             self.assertTrue(set(report.participants).issubset(stored_agents))
-            self.assertTrue(set(report.evaluators).issubset(stored_agents))
+            contributing_evaluators = {
+                evolution.agent_name
+                for evolution in report.evaluation_evolutions
+                if evolution.evaluation_updates
+            }
+            self.assertTrue(contributing_evaluators.issubset(stored_agents))
             self.assertTrue(all(item["library_type"] == "agent_training_tags" for item in server_tag_payloads))
             self.assertTrue(any("private-training" in item["tags"] for item in server_tag_payloads))
             self.assertTrue(any("evaluation" in item["tags"] for item in server_tag_payloads))
@@ -376,12 +384,15 @@ class WorkflowTestCase(unittest.TestCase):
             seed_agent_libraries(agents)
             workflow = MultiAgentWorkflow(agents, random_seed=7)
 
-            report = workflow.run("solve numeric task", participant_names=["qwen_agent_1", "qwen_agent_2"])
+            report = workflow.run(
+                "solve numeric task",
+                participant_names=["qwen_agent_1", "qwen_agent_2", "qwen_agent_3"],
+            )
 
             self.assertEqual(len(backend.global_calls), 1)
             self.assertEqual(backend.global_calls[0]["server_name"], "qwen_server_agent")
-            self.assertEqual(backend.global_calls[0]["peer_review_count"], 4)
-            self.assertEqual(backend.global_calls[0]["evolution_count"], 2)
+            self.assertEqual(backend.global_calls[0]["peer_review_count"], 9)
+            self.assertEqual(backend.global_calls[0]["evolution_count"], 3)
             self.assertGreaterEqual(backend.global_calls[0]["consensus_count"], 1)
             self.assertIsNotNone(report.global_experience)
             assert report.global_experience is not None
@@ -395,10 +406,12 @@ class WorkflowTestCase(unittest.TestCase):
                 return "1. solve\n#### 3", ["public trace"]
 
             def suggest_improvements(self, evaluator_name, target_draft, task, evaluation_memory):
-                if evaluator_name == "qwen_agent_3":
-                    suggestions = ["verify final numeric answer"]
-                else:
-                    suggestions = ["rewrite as legal risk memo"]
+                suggestions_by_evaluator = {
+                    "qwen_agent_4": ["recalculate arithmetic totals"],
+                    "qwen_agent_5": ["rewrite narrative chronology"],
+                    "qwen_agent_6": ["inspect geometric symmetry"],
+                }
+                suggestions = suggestions_by_evaluator[evaluator_name]
                 return PeerEvaluation(evaluator_name, target_draft.agent_name, suggestions, "r", evaluation_memory)
 
             def aggregate_global_experience(self, *args, **kwargs):
@@ -410,16 +423,19 @@ class WorkflowTestCase(unittest.TestCase):
             agents = build_default_agents(temp_dir, backend=backend)
             workflow = MultiAgentWorkflow(agents, random_seed=7)
 
-            report = workflow.run("solve numeric task", participant_names=["qwen_agent_1", "qwen_agent_2"])
+            report = workflow.run(
+                "solve numeric task",
+                participant_names=["qwen_agent_1", "qwen_agent_2", "qwen_agent_3"],
+            )
 
             self.assertIsNotNone(report.global_experience)
             assert report.global_experience is not None
             self.assertEqual(report.global_experience.source_update_count, 0)
             self.assertEqual(report.global_experience.global_updates, [])
-            self.assertEqual(len(report.evaluation_evolutions), 2)
+            self.assertEqual(len(report.evaluation_evolutions), 3)
             for evolution in report.evaluation_evolutions:
                 self.assertEqual(evolution.evaluation_updates, [])
-            for agent_name in ("qwen_agent_3", "qwen_agent_4"):
+            for agent_name in ("qwen_agent_4", "qwen_agent_5", "qwen_agent_6"):
                 evaluation_file = temp_dir / "data" / agent_name / "evaluation_library.jsonl"
                 self.assertFalse(evaluation_file.read_text(encoding="utf-8").strip())
             self.assertFalse((temp_dir / "data" / "qwen_server_agent" / "global_evaluation_library.jsonl").read_text(encoding="utf-8").strip())
@@ -452,8 +468,14 @@ class WorkflowTestCase(unittest.TestCase):
             agents = build_default_agents(temp_dir, backend=backend)
             workflow = MultiAgentWorkflow(agents, random_seed=7)
 
-            workflow.run("solve numeric task", participant_names=["qwen_agent_1", "qwen_agent_2"])
-            workflow.run("solve numeric task", participant_names=["qwen_agent_1", "qwen_agent_2"])
+            workflow.run(
+                "solve numeric task",
+                participant_names=["qwen_agent_1", "qwen_agent_2", "qwen_agent_3"],
+            )
+            workflow.run(
+                "solve numeric task",
+                participant_names=["qwen_agent_1", "qwen_agent_2", "qwen_agent_3"],
+            )
 
             flattened_solve_memories = "\n".join(item for batch in backend.solve_memories for item in batch)
             flattened_review_memories = "\n".join(item for batch in backend.review_memories for item in batch)

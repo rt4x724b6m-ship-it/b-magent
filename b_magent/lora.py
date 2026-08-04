@@ -21,12 +21,12 @@ class LoraTrainingConfig:
     output_dir: Path
     threshold: int = DEFAULT_LORA_THRESHOLD
     require_correct_answer: bool = True
-    min_evaluation_score: float = 0.6
-    max_seq_length: int = 1024
+    min_evaluation_score: float = 0.85
+    max_seq_length: int = 1536
     per_device_train_batch_size: int = 4
-    gradient_accumulation_steps: int = 1
-    learning_rate: float = 2e-4
-    num_train_epochs: float = 1.0
+    gradient_accumulation_steps: int = 4
+    learning_rate: float = 1e-4
+    num_train_epochs: float = 2.0
     lora_r: int = 8
     lora_alpha: int = 16
     lora_dropout: float = 0.05
@@ -39,6 +39,7 @@ class LoraTrainingConfig:
         "up_proj",
         "down_proj",
     )
+    replay_examples: int = 16
 
     def __post_init__(self) -> None:
         if self.threshold <= 0:
@@ -53,6 +54,8 @@ class LoraTrainingConfig:
             raise ValueError("LoRA evaluation threshold must be between 0 and 1")
         if not 0.0 <= self.lora_dropout < 1.0:
             raise ValueError("LoRA dropout must be between 0 (inclusive) and 1")
+        if self.replay_examples < 0:
+            raise ValueError("LoRA replay examples must not be negative")
 
 
 @dataclass(frozen=True)
@@ -104,7 +107,7 @@ class PeftSFTLoraTrainer:
         try:
             import torch
             from datasets import Dataset
-            from peft import LoraConfig, TaskType, get_peft_model
+            from peft import LoraConfig, PeftModel, TaskType, get_peft_model
             import transformers
             from transformers import AutoConfig, AutoModelForCausalLM, AutoProcessor, AutoTokenizer, DataCollatorForSeq2Seq, Trainer, TrainingArguments
         except ImportError as exc:
@@ -131,14 +134,17 @@ class PeftSFTLoraTrainer:
             local_files_only=True,
         )
         model.config.use_cache = False
-        peft_config = LoraConfig(
-            task_type=TaskType.CAUSAL_LM,
-            r=config.lora_r,
-            lora_alpha=config.lora_alpha,
-            lora_dropout=config.lora_dropout,
-            target_modules=list(config.target_modules),
-        )
-        model = get_peft_model(model, peft_config)
+        if (adapter_path / "adapter_config.json").exists():
+            model = PeftModel.from_pretrained(model, adapter_path, is_trainable=True)
+        else:
+            peft_config = LoraConfig(
+                task_type=TaskType.CAUSAL_LM,
+                r=config.lora_r,
+                lora_alpha=config.lora_alpha,
+                lora_dropout=config.lora_dropout,
+                target_modules=list(config.target_modules),
+            )
+            model = get_peft_model(model, peft_config)
 
         dataset = Dataset.from_list(rows)
         has_images = any(str(row.get("image", "")).strip() for row in rows)
@@ -365,11 +371,14 @@ class LoraEvolutionManager:
         return True, "accepted"
 
     def train_agent_on_curated_dataset(self, agent_name: str) -> LoraUpdate:
-        selected_dataset_path = self.dataset_path(agent_name)
         dataset_path = self.current_dataset_path(agent_name)
         adapter_path = self.adapter_path(agent_name)
-        copy_lora_dataset(selected_dataset_path, dataset_path)
         state = self.load_state(agent_name)
+        rows = _read_jsonl(self.dataset_path(agent_name))
+        new_rows = rows[state.trained_examples :]
+        replay_start = max(0, state.trained_examples - self.config.replay_examples)
+        replay_rows = rows[replay_start : state.trained_examples]
+        write_jsonl_rows(dataset_path, [*replay_rows, *new_rows])
         examples = count_jsonl_rows(dataset_path)
 
         if self.before_train is not None:
@@ -462,27 +471,26 @@ def build_lora_example(
     improvement: SelfImprovement,
 ) -> LoraSFTExample:
     evaluation_report = format_evaluation_report(evaluations)
-    trajectory = format_trajectory(draft)
     image = extract_task_image_path(task)
-    gold_answer = extract_gold_final_answer(task)
-    target_output = build_visual_supervision_target(task) if image else improvement.revised_answer
     if image:
-        input_text = (
-            f"Task:\n{strip_gold_annotations(task)}\n\n"
-            f"Evaluator checks:\n{_shorten_for_visual_sft(evaluation_report)}"
-        )
-    else:
-        input_text = (
-            f"Task:\n{strip_gold_annotations(task)}\n\n"
-            f"Trajectory:\n{trajectory}\n\n"
-            f"Evaluation Report:\n{evaluation_report}"
+        return LoraSFTExample(
+            agent_name=draft.agent_name,
+            instruction="Inspect the image and answer the visual question accurately.",
+            input=(
+                f"Task:\n{strip_gold_annotations(task)}\n\n"
+                f"Evaluator checks:\n{_shorten_for_visual_sft(evaluation_report)}"
+            ),
+            output=build_visual_supervision_target(task),
+            image=image,
         )
     return LoraSFTExample(
         agent_name=draft.agent_name,
-        instruction="Solve the task, reflect on evaluator feedback, and produce the improved final answer.",
-        input=input_text,
-        output=target_output,
-        image=image,
+        instruction=(
+            "Solve the math problem independently. Show a concise, verifiable derivation and end with "
+            "a line formatted exactly as #### <numeric_answer>."
+        ),
+        input=strip_gold_annotations(task),
+        output=improvement.revised_answer,
     )
 
 
@@ -564,11 +572,12 @@ def tokenize_lora_row(tokenizer: object, row: dict[str, str], max_length: int) -
     if eos_token_id is not None and (not output_ids or output_ids[-1] != eos_token_id):
         output_ids.append(eos_token_id)
 
-    # Long reflection trajectories must not push all target tokens past the
-    # sequence boundary. Reserve half of the window for response supervision.
-    max_output_length = max(1, max_length // 2)
+    # Preserve the derivation from its beginning and reserve room for the final
+    # answer marker when a response exceeds the supervision budget.
+    max_output_length = max(1, max_length * 2 // 3)
     if len(output_ids) > max_output_length:
-        output_ids = output_ids[-max_output_length:]
+        tail_length = min(64, max_output_length // 4)
+        output_ids = output_ids[: max_output_length - tail_length] + output_ids[-tail_length:]
     prefix_ids = prefix_ids[: max_length - len(output_ids)]
     input_ids = prefix_ids + output_ids
     return {
@@ -587,6 +596,14 @@ def append_lora_example(dataset_path: Path, example: LoraSFTExample) -> None:
 def write_lora_example(dataset_path: Path, example: LoraSFTExample) -> None:
     dataset_path.parent.mkdir(parents=True, exist_ok=True)
     dataset_path.write_text(json.dumps(example.to_dict(), ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def write_jsonl_rows(dataset_path: Path, rows: list[dict[str, str]]) -> None:
+    dataset_path.parent.mkdir(parents=True, exist_ok=True)
+    dataset_path.write_text(
+        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
+        encoding="utf-8",
+    )
 
 
 def copy_lora_dataset(source_path: Path, target_path: Path) -> None:

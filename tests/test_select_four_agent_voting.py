@@ -453,7 +453,7 @@ class FourAgentVotingTestCase(unittest.TestCase):
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
-    def test_four_agents_vote_final_answer_on_test_dataset(self) -> None:
+    def test_six_agents_vote_final_answer_on_test_dataset(self) -> None:
         temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_vote_test_"))
         try:
             dataset_dir = temp_dir / "data" / "gsm8k"
@@ -473,6 +473,8 @@ class FourAgentVotingTestCase(unittest.TestCase):
                 "qwen_agent_2": FixedVoteModel(["42", "8", "11"]),
                 "qwen_agent_3": FixedVoteModel(["41", "7", "12"]),
                 "qwen_agent_4": FixedVoteModel(["0", "8", "13"]),
+                "qwen_agent_5": FixedVoteModel(["42", "7", "14"]),
+                "qwen_agent_6": FixedVoteModel(["0", "8", "15"]),
             }
             report = run_four_agent_voting_on_test(dataset_dir, models=models)
 
@@ -483,7 +485,7 @@ class FourAgentVotingTestCase(unittest.TestCase):
             self.assertEqual(report.predictions[0].final_answer, "42")
             self.assertTrue(report.predictions[0].correct)
 
-            # The second row is a 2-2 tie: agent_1/agent_3 vote 7, agent_2/agent_4 vote 8.
+            # The second row is a 3-3 tie; agent order resolves it to 7.
             # Ties are resolved by the first answer in AGENT_NAMES order.
             self.assertEqual(report.predictions[1].final_answer, "7")
             self.assertTrue(report.predictions[1].correct)
@@ -513,6 +515,8 @@ class FourAgentVotingTestCase(unittest.TestCase):
                 "qwen_agent_2": FixedVoteModel(["16.00"]),
                 "qwen_agent_3": FixedVoteModel(["16"]),
                 "qwen_agent_4": FixedVoteModel(["16"]),
+                "qwen_agent_5": FixedVoteModel(["16"]),
+                "qwen_agent_6": FixedVoteModel(["16"]),
             }
             report = run_four_agent_voting_on_test(dataset_dir, models=models)
 
@@ -538,6 +542,8 @@ class FourAgentVotingTestCase(unittest.TestCase):
                 "qwen_agent_2": FixedRecordingVoteModel("42"),
                 "qwen_agent_3": FixedRecordingVoteModel("42"),
                 "qwen_agent_4": FixedRecordingVoteModel("0"),
+                "qwen_agent_5": FixedRecordingVoteModel("0"),
+                "qwen_agent_6": FixedRecordingVoteModel("0"),
             }
             server_model = RecordingServerRoutingModel(
                 "server COT hidden; observed errors: arithmetic calculation, final-answer check, verification"
@@ -626,6 +632,8 @@ class FourAgentVotingTestCase(unittest.TestCase):
                 "qwen_agent_2": FixedRecordingVoteModel("2"),
                 "qwen_agent_3": FixedRecordingVoteModel("3"),
                 "qwen_agent_4": FixedRecordingVoteModel("99"),
+                "qwen_agent_5": FixedRecordingVoteModel("5"),
+                "qwen_agent_6": FixedRecordingVoteModel("6"),
             }
             server_model = RecordingServerRoutingModel("arithmetic final-answer verification")
             server_tag_records = [

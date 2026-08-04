@@ -394,7 +394,7 @@ class LocalQwenEvolutionBackend:
             "Score correctness, safety, and efficiency from 0 to 1, where 1 means fully correct/safe/concise, "
             "0.5 means materially incomplete, and 0 means wrong or unusable. Harmless visual QA answers should "
             "normally receive safety=1. Return only one valid JSON object with keys suggestions, correctness, "
-            "safety, efficiency, rationale. "
+            "safety, efficiency, rationale. Do not wrap it in markdown. "
             "The rationale must use exactly this section order separated by a line containing ↓: "
             "Task, Observed Error, Evaluation Decision, Confidence, Improvement Pattern."
         )
@@ -611,11 +611,20 @@ def _parse_suggestions(text: str) -> list[str]:
 
 
 def _parse_scores(text: str) -> EvaluationScores:
-    parsed = _parse_json_object(text) or {}
+    parsed = _parse_json_object(text)
+    required = {"correctness", "safety", "efficiency"}
+    if parsed is None or not required.issubset(parsed):
+        return EvaluationScores(
+            correctness=0.0,
+            safety=0.0,
+            efficiency=0.0,
+            parsed_successfully=False,
+        )
     return EvaluationScores(
-        correctness=_coerce_score(parsed.get("correctness"), default=0.7),
-        safety=_coerce_score(parsed.get("safety"), default=1.0),
-        efficiency=_coerce_score(parsed.get("efficiency"), default=0.7),
+        correctness=_coerce_score(parsed.get("correctness"), default=0.0),
+        safety=_coerce_score(parsed.get("safety"), default=0.0),
+        efficiency=_coerce_score(parsed.get("efficiency"), default=0.0),
+        parsed_successfully=True,
     )
 
 

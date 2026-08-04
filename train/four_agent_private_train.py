@@ -7,6 +7,7 @@ import argparse
 import json
 import math
 import re
+import random
 import shutil
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -33,7 +34,14 @@ from b_magent.tagging import ROUTING_TAGS, extract_math_task_tags, routing_tag_i
 from b_magent.workflow import MultiAgentWorkflow, build_default_agents
 
 
-AGENT_NAMES = ("qwen_agent_1", "qwen_agent_2", "qwen_agent_3", "qwen_agent_4")
+AGENT_NAMES = (
+    "qwen_agent_1",
+    "qwen_agent_2",
+    "qwen_agent_3",
+    "qwen_agent_4",
+    "qwen_agent_5",
+    "qwen_agent_6",
+)
 STANDARD_PRIVATE_TRAIN_SIZE = 200
 
 
@@ -196,6 +204,9 @@ class BMagentTrainingReport:
     curated_success_records: dict[str, int]
     error_reflection_records: dict[str, int]
     evaluation_records: dict[str, int]
+    validation_total: int = 0
+    validation_accuracy: float | None = None
+    validation_agent_accuracy: dict[str, float] = field(default_factory=dict)
     lora_enabled: bool = False
     lora_updates: dict[str, int] = field(default_factory=dict)
 
@@ -215,15 +226,22 @@ def run_b_magent_training_entry(
     on_round_end: Callable[[int, int, BMagentTrainingRound], None] | None = None,
     start_round: int = 0,
     preserve_private_datasets: bool = False,
+    validation_size: int | None = None,
+    validation_ratio: float = 0.3,
+    validation_evaluator: Callable[[list[GSM8KSample]], tuple[float, dict[str, float]]] | None = None,
 ) -> BMagentTrainingReport:
     if rounds is not None and rounds <= 0:
         raise ValueError("rounds must be positive when explicitly set")
     if private_batch_size <= 0:
         raise ValueError("private_batch_size must be positive")
+    if validation_size is not None and validation_size < 0:
+        raise ValueError("validation_size must not be negative")
+    if not 0.0 <= validation_ratio < 1.0:
+        raise ValueError("validation_ratio must be between 0 (inclusive) and 1")
 
     dataset = load_project_dataset(dataset_dir)
-    train_samples = dataset.load("train")
-    if not train_samples:
+    all_train_samples = dataset.load("train")
+    if not all_train_samples:
         expected_path = (
             dataset_dir / "infographicsvqa" / "train.jsonl"
             if dataset_dir.name.lower() not in {"gsm8k", "infographicsvqa"}
@@ -234,16 +252,28 @@ def run_b_magent_training_entry(
             "Prepare the official InfographicsVQA train split with: "
             "python scripts/prepare_vision_datasets.py --dataset infographicsvqa --output-dir data"
         )
-    is_vision_training = isinstance(train_samples[0], VisionQASample)
+    is_vision_training = isinstance(all_train_samples[0], VisionQASample)
     if is_vision_training:
         required_samples = len(AGENT_NAMES) * STANDARD_PRIVATE_TRAIN_SIZE
-        if len(train_samples) < required_samples:
+        if len(all_train_samples) < required_samples:
             raise ValueError(
                 f"need at least {required_samples} InfographicsVQA training samples for "
                 f"{len(AGENT_NAMES)} agents with {STANDARD_PRIVATE_TRAIN_SIZE} samples each; "
-                f"found {len(train_samples)}"
+                f"found {len(all_train_samples)}"
             )
-        train_samples = train_samples[:required_samples]
+        validation_samples = []
+        train_samples = all_train_samples[:required_samples]
+    else:
+        shuffled_samples = list(all_train_samples)
+        random.Random(random_seed if random_seed is not None else 13).shuffle(shuffled_samples)
+        requested_validation = (
+            validation_size
+            if validation_size is not None
+            else round(len(shuffled_samples) * validation_ratio)
+        )
+        held_out = min(requested_validation, max(0, len(shuffled_samples) - 1))
+        validation_samples = shuffled_samples[:held_out]
+        train_samples = shuffled_samples[held_out:]
 
     if start_round < 0:
         raise ValueError("start_round must not be negative")
@@ -317,6 +347,11 @@ def run_b_magent_training_entry(
         if on_round_end is not None:
             on_round_end(index + 1, effective_rounds, round_report)
 
+    validation_accuracy = None
+    validation_agent_accuracy: dict[str, float] = {}
+    if validation_samples and validation_evaluator is not None:
+        validation_accuracy, validation_agent_accuracy = validation_evaluator(validation_samples)
+
     return BMagentTrainingReport(
         dataset_dir=str(dataset_dir),
         data_dir=str(data_dir),
@@ -349,6 +384,9 @@ def run_b_magent_training_entry(
             agent.name: len(agent.evaluation_library.all_records()) - evaluation_before[agent.name]
             for agent in agents
         },
+        validation_total=len(validation_samples),
+        validation_accuracy=validation_accuracy,
+        validation_agent_accuracy=validation_agent_accuracy,
         lora_enabled=lora_manager is not None,
         lora_updates={
             agent.name: sum(
@@ -384,7 +422,7 @@ def infer_completed_training_rounds(data_dir: Path) -> int:
             payload = json.loads(line)
             if "self-evolution" in payload.get("tags", []):
                 completed_improvements += 1
-    return completed_improvements // 2
+    return completed_improvements // 3
 
 
 def load_training_progress(progress_file: Path) -> int:
@@ -1019,11 +1057,17 @@ def build_participant_schedule(
             (item for item in remaining.items() if item[1] > 0),
             key=lambda item: (-item[1], item[0]),
         )
-        first = active[0][0]
-        second = active[1][0] if len(active) > 1 else next(agent_name for agent_name in AGENT_NAMES if agent_name != first)
-        schedule.append([first, second])
-        remaining[first] = max(0, remaining[first] - 1)
-        remaining[second] = max(0, remaining[second] - 1)
+        selected = [item[0] for item in active[:3]]
+        if len(selected) < 3:
+            selected.extend(
+                agent_name
+                for agent_name in AGENT_NAMES
+                if agent_name not in selected
+            )
+            selected = selected[:3]
+        schedule.append(selected)
+        for agent_name in selected:
+            remaining[agent_name] = max(0, remaining[agent_name] - 1)
     return schedule
 
 
@@ -1096,6 +1140,29 @@ def evaluate_model(model: TrainableQwenModel, test_samples: list[GSM8KSample]) -
         if predicted == gold:
             correct += 1
     return correct
+
+
+def evaluate_lora_validation(
+    models: dict[str, TrainableQwenModel],
+    samples: list[GSM8KSample],
+) -> tuple[float, dict[str, float]]:
+    if not samples:
+        return 0.0, {agent_name: 0.0 for agent_name in models}
+    agent_correct = {agent_name: 0 for agent_name in models}
+    vote_correct = 0
+    for sample in samples:
+        votes = []
+        for agent_name, model in models.items():
+            answer = extract_numeric_answer(model.generate(sample.question))
+            votes.append(AgentVote(agent_name, "", answer))
+            if answer == normalize_answer(sample.final_answer):
+                agent_correct[agent_name] += 1
+        if majority_vote(votes) == normalize_answer(sample.final_answer):
+            vote_correct += 1
+    total = len(samples)
+    return vote_correct / total, {
+        agent_name: correct / total for agent_name, correct in agent_correct.items()
+    }
 
 
 def export_report(report: MultiAgentTrainingReport, output_file: Path) -> None:
@@ -1314,6 +1381,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, default=Path("train/b_magent_training_report.json"))
     parser.add_argument("--seed", type=int, default=None, help="Reserved seed for reproducible b_magent runs.")
     parser.add_argument(
+        "--validation-size",
+        type=int,
+        default=None,
+        help="Exact held-out sample count. When omitted, --validation-ratio is used.",
+    )
+    parser.add_argument(
+        "--validation-ratio",
+        type=float,
+        default=0.3,
+        help="Fraction of shuffled training data held out from private training and LoRA updates.",
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help="Resume from the last completed round without deleting libraries, datasets, or LoRA state.",
@@ -1343,12 +1422,13 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_LORA_THRESHOLD,
         help="Number of newly accepted samples accumulated per agent before one LoRA refresh.",
     )
-    parser.add_argument("--lora-max-seq-length", type=int, default=1024)
+    parser.add_argument("--lora-max-seq-length", type=int, default=1536)
     parser.add_argument("--lora-train-batch-size", type=int, default=4)
-    parser.add_argument("--lora-gradient-accumulation-steps", type=int, default=1)
-    parser.add_argument("--lora-epochs", type=float, default=1.0)
-    parser.add_argument("--lora-learning-rate", type=float, default=2e-4)
-    parser.add_argument("--lora-min-evaluation-score", type=float, default=0.6)
+    parser.add_argument("--lora-gradient-accumulation-steps", type=int, default=4)
+    parser.add_argument("--lora-epochs", type=float, default=2.0)
+    parser.add_argument("--lora-learning-rate", type=float, default=1e-4)
+    parser.add_argument("--lora-min-evaluation-score", type=float, default=0.85)
+    parser.add_argument("--lora-replay-examples", type=int, default=16)
     parser.add_argument(
         "--allow-uncorrect-lora-labels",
         action="store_true",
@@ -1395,13 +1475,14 @@ def build_lora_manager(
         gradient_accumulation_steps=args.lora_gradient_accumulation_steps,
         num_train_epochs=args.lora_epochs,
         learning_rate=args.lora_learning_rate,
+        replay_examples=args.lora_replay_examples,
     )
     return LoraEvolutionManager(config, before_train=before_train)
 
 
 def print_training_round_start(round_index: int, rounds: int, question: str) -> None:
     preview = " ".join(question.split())[:120]
-    print(f"[{round_index}/{rounds}] 开始四智能体训练: {preview}", flush=True)
+    print(f"[{round_index}/{rounds}] 开始六智能体训练: {preview}", flush=True)
 
 
 def print_training_round_end(round_index: int, rounds: int, report: BMagentTrainingRound) -> None:
@@ -1462,6 +1543,17 @@ def main() -> None:
             save_training_progress(progress_file, round_index, total_rounds)
             print_training_round_end(round_index, total_rounds, round_report)
 
+        validation_evaluator = None
+        if isinstance(backend, LocalQwenEvolutionBackend):
+            validation_models = {
+                agent_name: LocalQwenAgentModel(
+                    agent_name,
+                    backend.engine,
+                    lora_output_dir=args.lora_output_dir if args.enable_lora else None,
+                )
+                for agent_name in AGENT_NAMES
+            }
+            validation_evaluator = lambda samples: evaluate_lora_validation(validation_models, samples)
         report = run_b_magent_training_entry(
             dataset_dir=args.dataset_dir,
             data_dir=PROJECT_ROOT / "data",
@@ -1477,10 +1569,18 @@ def main() -> None:
             on_round_end=on_round_end,
             start_round=start_round,
             preserve_private_datasets=args.resume,
+            validation_size=args.validation_size,
+            validation_ratio=args.validation_ratio,
+            validation_evaluator=validation_evaluator,
         )
         export_json_report(report, args.output)
         print(f"b_magent agents: {', '.join(report.agents)}")
         print(f"rounds: {report.rounds}")
+        if isinstance(report.validation_accuracy, (int, float)):
+            print(
+                f"validation_accuracy={report.validation_accuracy:.4f} "
+                f"on {report.validation_total} held-out samples"
+            )
         for agent_name in report.agents:
             professional_count = report.professional_records[agent_name]
             evaluation_count = report.evaluation_records[agent_name]

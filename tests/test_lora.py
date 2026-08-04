@@ -78,7 +78,7 @@ class LoraEvolutionTestCase(unittest.TestCase):
         self.assertTrue(all(label == -100 for label in tokenized["labels"][:first_target]))
         self.assertEqual(tokenized["labels"][first_target:], [ord(char) for char in "answer"] + [0])
 
-    def test_builds_reflection_sft_example_from_trajectory_and_evaluations(self) -> None:
+    def test_builds_direct_solution_sft_example_without_training_time_scaffolding(self) -> None:
         draft = Draft(
             agent_name="qwen_agent_1",
             specialty="通用智能体",
@@ -108,10 +108,11 @@ class LoraEvolutionTestCase(unittest.TestCase):
 
         self.assertEqual(example.agent_name, "qwen_agent_1")
         self.assertIn("solve task", example.input)
-        self.assertIn("old answer", example.input)
-        self.assertIn("calculator(1+1)", example.input)
-        self.assertIn("fix final answer", example.input)
-        self.assertIn("correctness=0.90", example.input)
+        self.assertNotIn("old answer", example.input)
+        self.assertNotIn("calculator(1+1)", example.input)
+        self.assertNotIn("fix final answer", example.input)
+        self.assertNotIn("correctness=0.90", example.input)
+        self.assertIn("independently", example.instruction)
         self.assertEqual(example.output, "improved answer")
 
     def test_lora_example_hides_gold_answer_from_training_input(self) -> None:

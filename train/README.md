@@ -9,7 +9,7 @@ Default mode:
 python -m train.four_agent_private_train --dataset-dir data/gsm8k --rounds 3 --model-path models/Qwen2.5-VL-3B-Instruct
 ```
 
-This runs four equal `b_magent` agents. They share the same workflow and model
+This runs six equal `b_magent` agents. They share the same workflow and model
 interface, but each agent writes only to its own professional evolution library
 and evaluation evolution library:
 
@@ -17,6 +17,8 @@ and evaluation evolution library:
 - `qwen_agent_2`
 - `qwen_agent_3`
 - `qwen_agent_4`
+- `qwen_agent_5`
+- `qwen_agent_6`
 
 For each round it converts one GSM8K training sample into a task, runs the
 multi-agent self-evolution workflow, and writes professional/evaluation memory
@@ -54,6 +56,21 @@ professional/evaluation libraries, server records, private-data splits, LoRA
 adapters, and generated reports are deleted after the training dataset has
 been validated. The deprecated `--resume` flag is accepted for compatibility
 but does not preserve previous training state.
+
+Each round selects three solving agents and uses the remaining three as peer
+evaluators. The default training flow shuffles with a fixed seed and holds out
+30 percent of the training rows for adapter validation. Held-out rows are excluded from private
+agent files, workflow tasks, and LoRA examples. The final report contains the
+six-agent voting accuracy and each agent's validation accuracy. Set
+`--validation-ratio 0` only for smoke tests. The remaining 70 percent is split
+evenly into six non-overlapping private datasets.
+
+Curated LoRA rows train direct question-to-solution behavior. Drafts, peer
+feedback, and gold annotations are used to select a correct target but are not
+included in the SFT input. Malformed evaluator scores are rejected, the default
+quality threshold is 0.85, and later refreshes continue from the existing
+adapter using new examples plus a small replay window. Current defaults are a
+1536 token window, learning rate 1e-4, two epochs, and effective batch size 16.
 
 By default `--mode b-magent` uses `--backend local-qwen`, so each solve and
 evaluation step calls the configured Qwen model. For a fast logic-only smoke

@@ -4,6 +4,10 @@ __pycache__/
 .env
 
 .qoder/
+logs/
+outputs/
+*.log
+*.pid
 
 models/
 data/infographicsvqa/
