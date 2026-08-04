@@ -56,8 +56,10 @@ class EvolutionLibrary:
             record_text = f"{record.source_task} {record.summary} {' '.join(record.tags)} {record.detail}"
             record_terms = _semantic_terms(record_text)
             overlap = terms & record_terms
-            union = terms | record_terms
-            lexical_score = len(overlap) / len(union) if union else 0.0
+            # Query coverage is more stable than Jaccard here: experience details
+            # can be long, and unrelated detail terms should not dilute a precise
+            # match on the question's entities, operations, and units.
+            lexical_score = len(overlap) / len(terms) if terms else 0.0
             record_tags = {_normalize_tag(tag) for tag in record.tags}
             tag_score = (
                 len(normalized_query_tags & record_tags) / len(normalized_query_tags)
@@ -94,6 +96,8 @@ _STOP_TERMS = {
     "lessons", "question", "gold", "reasoning", "final", "answer", "the", "and", "for",
     "with", "from", "that", "how", "many", "much", "does", "did", "was", "were", "has",
     "have", "his", "her", "their", "into", "after", "before", "each", "what", "when",
+    "image", "visual", "inspect", "visible", "evidence", "complete", "direct", "return",
+    "short", "elements", "relevant", "current", "supplied",
 }
 
 

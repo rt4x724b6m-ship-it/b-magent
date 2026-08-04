@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-MODEL_PATH = PROJECT_ROOT / "models" / "Qwen2.5-VL-3B-Instruct"
+MODEL_PATH = PROJECT_ROOT / "models" / "Qwen2.5-VL-7B-Instruct"
 GSM8K_DIR = PROJECT_ROOT / "data" / "gsm8k"
 
 

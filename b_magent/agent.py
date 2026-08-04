@@ -5,7 +5,7 @@ import re
 from typing import Any
 
 from .backend import DemoQwenBackend
-from .datasets import GSM8KDataset
+from .datasets import GSM8KDataset, load_private_training_texts
 from .library import EvolutionLibrary
 from .models import Draft, EvaluationEvolution, LibraryRecord, PeerEvaluation, SelfImprovement
 from .self_evolution import EvolutionInput, SelfEvolutionLibrary
@@ -63,8 +63,9 @@ class QwenAgent:
         return training_batch
 
     def solve_task(self, task: str, private_training: list[str]) -> Draft:
+        visible_task = _strip_gold_annotations(task)
         professional_records = self.professional_library.search(
-            task,
+            visible_task,
             exclude_tags={
                 "error-reflection-experience",
                 "evaluated-experience",
@@ -72,12 +73,11 @@ class QwenAgent:
             },
         )
         evaluation_records = self.evaluation_library.search(
-            task,
+            visible_task,
             exclude_tags={"error-evaluation-experience"},
         )
         professional_memory = [record.summary for record in professional_records]
         evaluation_alerts = [record.summary for record in evaluation_records]
-        visible_task = _strip_gold_annotations(task)
         answer, thought_trace = self.backend.solve(
             self.name,
             self.specialty,
@@ -102,15 +102,17 @@ class QwenAgent:
         )
 
     def evaluate_peer(self, task: str, draft: Draft) -> PeerEvaluation:
+        visible_task = _strip_gold_annotations(task)
         evaluation_records = self.evaluation_library.search(
-            task,
+            visible_task,
             exclude_tags={"error-evaluation-experience"},
         )
         evaluation_memory = [record.summary for record in evaluation_records]
         masked_draft = mask_draft_for_evaluation(draft)
-        return self.backend.suggest_improvements(self.name, masked_draft, _strip_gold_annotations(task), evaluation_memory)
+        return self.backend.suggest_improvements(self.name, masked_draft, visible_task, evaluation_memory)
 
     def self_improve(self, task: str, draft: Draft, evaluations: list[PeerEvaluation]) -> SelfImprovement:
+        visible_task = _strip_gold_annotations(task)
         suggestions = _unique(item for evaluation in evaluations for item in evaluation.suggestions)
         peer_rationales = _unique(evaluation.rationale for evaluation in evaluations)
         peer_scores = [
@@ -125,7 +127,7 @@ class QwenAgent:
         professional_memory = [
             record.summary
             for record in self.professional_library.search(
-                task,
+                visible_task,
                 exclude_tags={
                     "error-reflection-experience",
                     "evaluated-experience",
@@ -136,7 +138,7 @@ class QwenAgent:
         evaluation_alerts = [
             record.summary
             for record in self.evaluation_library.search(
-                task,
+                visible_task,
                 exclude_tags={"error-evaluation-experience"},
             )
         ]
@@ -155,7 +157,7 @@ class QwenAgent:
             revised_answer, reflection = improve_answer(
                 self.name,
                 self.specialty,
-                _strip_gold_annotations(task),
+                visible_task,
                 draft,
                 suggestions,
                 professional_memory,
@@ -289,7 +291,7 @@ class QwenAgent:
         agent_jsonl = self.data_dir / self.name / "private_data.jsonl"
         agent_text = self.data_dir / self.name / "private_data.txt"
         if agent_jsonl.exists():
-            return [line.strip() for line in agent_jsonl.read_text(encoding="utf-8").splitlines() if line.strip()]
+            return load_private_training_texts(agent_jsonl)
         if agent_text.exists():
             return [line.strip() for line in agent_text.read_text(encoding="utf-8").splitlines() if line.strip()]
 
@@ -366,6 +368,8 @@ def _strip_gold_annotations(task: str) -> str:
     lines = []
     in_gold_reasoning = False
     for line in task.splitlines():
+        if re.match(r"\s*Gold image elements:", line):
+            continue
         if re.match(r"\s*Gold reasoning:", line):
             in_gold_reasoning = True
             continue

@@ -38,6 +38,33 @@ def count_jsonl_rows_for_test(path: Path) -> int:
 
 
 class LoraEvolutionTestCase(unittest.TestCase):
+    def test_releases_inference_model_before_lora_trainer_starts(self) -> None:
+        events: list[str] = []
+
+        class RecordingTrainer:
+            def train(self, agent_name, dataset_path, adapter_path, config):  # type: ignore[no-untyped-def]
+                events.append("train")
+
+        with tempfile.TemporaryDirectory() as temp:
+            manager = LoraEvolutionManager(
+                LoraTrainingConfig(
+                    base_model_path="models/Qwen2.5-VL-7B-Instruct",
+                    output_dir=Path(temp) / "lora",
+                ),
+                trainer=RecordingTrainer(),
+                before_train=lambda: events.append("release"),
+            )
+            dataset_path = manager.dataset_path("qwen_agent_1")
+            dataset_path.parent.mkdir(parents=True, exist_ok=True)
+            dataset_path.write_text(
+                json.dumps({"instruction": "solve", "input": "1+1", "output": "2"}) + "\n",
+                encoding="utf-8",
+            )
+
+            manager.train_agent_on_curated_dataset("qwen_agent_1")
+
+        self.assertEqual(events, ["release", "train"])
+
     def test_multimodal_image_budget_keeps_visual_tokens_below_sequence_limit(self) -> None:
         class ImageProcessor:
             patch_size = 14
@@ -232,7 +259,7 @@ class LoraEvolutionTestCase(unittest.TestCase):
             trainer = FakeLoraTrainer()
             manager = LoraEvolutionManager(
                 LoraTrainingConfig(
-                    base_model_path="models/Qwen2.5-VL-3B-Instruct",
+                    base_model_path="models/Qwen2.5-VL-7B-Instruct",
                     output_dir=Path(temp) / "lora",
                     threshold=1,
                 ),
@@ -266,7 +293,7 @@ class LoraEvolutionTestCase(unittest.TestCase):
             trainer = FakeLoraTrainer()
             manager = LoraEvolutionManager(
                 LoraTrainingConfig(
-                    base_model_path="models/Qwen2.5-VL-3B-Instruct",
+                    base_model_path="models/Qwen2.5-VL-7B-Instruct",
                     output_dir=Path(temp) / "lora",
                     threshold=1,
                 ),
@@ -333,7 +360,7 @@ class LoraEvolutionTestCase(unittest.TestCase):
             trainer = FakeLoraTrainer()
             manager = LoraEvolutionManager(
                 LoraTrainingConfig(
-                    base_model_path="models/Qwen2.5-VL-3B-Instruct",
+                    base_model_path="models/Qwen2.5-VL-7B-Instruct",
                     output_dir=Path(temp) / "lora",
                     threshold=1,
                 ),
@@ -372,7 +399,7 @@ class LoraEvolutionTestCase(unittest.TestCase):
             trainer = FakeLoraTrainer()
             manager = LoraEvolutionManager(
                 LoraTrainingConfig(
-                    base_model_path="models/Qwen2.5-VL-3B-Instruct",
+                    base_model_path="models/Qwen2.5-VL-7B-Instruct",
                     output_dir=Path(temp) / "lora",
                     threshold=1,
                     require_correct_answer=False,
@@ -413,7 +440,7 @@ class LoraEvolutionTestCase(unittest.TestCase):
             trainer = FakeLoraTrainer()
             manager = LoraEvolutionManager(
                 LoraTrainingConfig(
-                    base_model_path="models/Qwen2.5-VL-3B-Instruct",
+                    base_model_path="models/Qwen2.5-VL-7B-Instruct",
                     output_dir=Path(temp) / "lora",
                     threshold=1,
                 ),
@@ -456,7 +483,7 @@ class LoraEvolutionTestCase(unittest.TestCase):
             trainer = FakeLoraTrainer()
             manager = LoraEvolutionManager(
                 LoraTrainingConfig(
-                    base_model_path="models/Qwen2.5-VL-3B-Instruct",
+                    base_model_path="models/Qwen2.5-VL-7B-Instruct",
                     output_dir=Path(temp) / "lora",
                     threshold=2,
                 ),

@@ -6,9 +6,10 @@ AGENT_SPECIALTIES: dict[str, str] = {
     "qwen_agent_2": "图表数值专家：优先定位坐标轴、单位、图例和数据标记，执行计数、比较与数值计算",
     "qwen_agent_3": "视觉布局专家：优先分析颜色、形状、空间位置、连接关系和版面层级",
     "qwen_agent_4": "语义验证专家：优先理解问题约束，交叉核验证据、单位和候选答案，排除歧义",
+    "qwen_agent_5": "细节定位专家：优先将问题实体与图像局部区域对齐，核对图标、注释和小型视觉元素",
+    "qwen_agent_6": "答案校准专家：优先比较多个识别线索，检查答案粒度、格式和事实一致性",
 }
 
 
 def agent_specialty(agent_name: str) -> str:
     return AGENT_SPECIALTIES.get(agent_name, "通用视觉问答专家")
-

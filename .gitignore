@@ -7,6 +7,8 @@ __pycache__/
 
 logs/
 backups/
+*.log
+*.pid
 
 models/
 
@@ -20,6 +22,7 @@ data/**/*.jsonl
 data/**/*.json
 data/latest_report.json
 data/lora_adapters/
+data/lora_adapters_qwen2_5_vl_7b/
 !data/gsm8k/
 !data/gsm8k/README.md
 

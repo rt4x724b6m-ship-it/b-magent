@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Protocol
@@ -37,6 +38,8 @@ class GPT56SolRequirementValidator:
         reasoning_effort: str = "medium",
         client: httpx.Client | None = None,
         timeout: float = 120.0,
+        max_retries: int = 3,
+        retry_backoff: float = 1.0,
     ) -> None:
         if not api_key.strip():
             raise ValueError("GPT-5.6 Sol validation requires an OpenAI API key")
@@ -45,20 +48,20 @@ class GPT56SolRequirementValidator:
         self.model = model
         self.reasoning_effort = reasoning_effort
         self.client = client or httpx.Client(timeout=timeout)
+        if max_retries < 0:
+            raise ValueError("max_retries must not be negative")
+        if retry_backoff < 0:
+            raise ValueError("retry_backoff must not be negative")
+        self.max_retries = max_retries
+        self.retry_backoff = retry_backoff
 
     def validate(self, task: str, answer: str) -> AnswerValidationResult:
         visible_task = strip_hidden_retrieval_labels(task)
-        response = self.client.post(
-            f"{self.base_url}/responses",
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": self.model,
-                "reasoning": {"effort": self.reasoning_effort},
-                "store": False,
-                "input": [
+        request_payload = {
+            "model": self.model,
+            "reasoning": {"effort": self.reasoning_effort},
+            "store": False,
+            "input": [
                     {
                         "role": "developer",
                         "content": (
@@ -75,8 +78,8 @@ class GPT56SolRequirementValidator:
                         "role": "user",
                         "content": f"TASK AND AVAILABLE EVIDENCE:\n{visible_task}\n\nANSWER TO VALIDATE:\n{answer}",
                     },
-                ],
-                "text": {
+            ],
+            "text": {
                     "format": {
                         "type": "json_schema",
                         "name": "answer_requirement_validation",
@@ -100,16 +103,39 @@ class GPT56SolRequirementValidator:
                             "additionalProperties": False,
                         },
                     }
-                },
             },
-        )
-        try:
-            response.raise_for_status()
-            payload = response.json()
-            validation_payload = json.loads(_response_output_text(payload))
-            return _parse_validation_result(validation_payload)
-        except (httpx.HTTPError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
-            raise RuntimeError("GPT-5.6 Sol answer validation failed; training was stopped") from exc
+        }
+        last_error: Exception | None = None
+        last_response: httpx.Response | None = None
+        attempts_used = 0
+        for attempt in range(self.max_retries + 1):
+            attempts_used = attempt + 1
+            last_response = None
+            try:
+                response = self.client.post(
+                    f"{self.base_url}/responses",
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=request_payload,
+                )
+                last_response = response
+                response.raise_for_status()
+                payload = response.json()
+                validation_payload = json.loads(_response_output_text(payload))
+                return _parse_validation_result(validation_payload)
+            except (httpx.HTTPError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+                last_error = exc
+                if attempt >= self.max_retries or not _is_retryable_validation_failure(exc, last_response):
+                    break
+                time.sleep(self.retry_backoff * (2**attempt))
+
+        detail = _validation_failure_detail(last_response)
+        raise RuntimeError(
+            f"GPT-5.6 Sol answer validation failed after {attempts_used} attempt(s); "
+            f"training was stopped. {detail}"
+        ) from last_error
 
 
 def build_answer_validator_from_env() -> GPT56SolRequirementValidator:
@@ -123,6 +149,8 @@ def build_answer_validator_from_env() -> GPT56SolRequirementValidator:
         api_key,
         base_url=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
         reasoning_effort=os.environ.get("OPENAI_VALIDATOR_REASONING_EFFORT", "medium"),
+        max_retries=int(os.environ.get("OPENAI_VALIDATOR_MAX_RETRIES", "3")),
+        retry_backoff=float(os.environ.get("OPENAI_VALIDATOR_RETRY_BACKOFF", "1")),
     )
 
 
@@ -134,6 +162,8 @@ def load_local_openai_environment(path: Path | None = None) -> None:
         "OPENAI_API_KEY",
         "OPENAI_BASE_URL",
         "OPENAI_VALIDATOR_REASONING_EFFORT",
+        "OPENAI_VALIDATOR_MAX_RETRIES",
+        "OPENAI_VALIDATOR_RETRY_BACKOFF",
     }
     for raw_line in env_path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
@@ -165,6 +195,36 @@ def _response_output_text(payload: dict[str, object]) -> str:
                 if isinstance(text, str):
                     return text
     raise ValueError("Responses payload did not contain output text")
+
+
+def _is_retryable_validation_failure(
+    error: Exception,
+    response: httpx.Response | None,
+) -> bool:
+    if isinstance(error, (httpx.TimeoutException, httpx.NetworkError)):
+        return True
+    if response is None:
+        return False
+    if response.status_code in {408, 409, 425, 429} or response.status_code >= 500:
+        return True
+    # Successful responses with empty, HTML, or malformed JSON bodies are commonly
+    # produced by transient compatibility-proxy failures.
+    return response.is_success and isinstance(
+        error, (json.JSONDecodeError, KeyError, TypeError, ValueError)
+    )
+
+
+def _validation_failure_detail(response: httpx.Response | None) -> str:
+    if response is None:
+        return "No HTTP response was received."
+    content_type = response.headers.get("content-type", "(missing)")
+    body = " ".join(response.text.strip().split())
+    if len(body) > 500:
+        body = body[:500] + "..."
+    return (
+        f"Last response: HTTP {response.status_code}, content-type={content_type}, "
+        f"body={body or '(empty)'!r}."
+    )
 
 
 def _parse_validation_result(payload: object) -> AnswerValidationResult:

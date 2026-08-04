@@ -21,7 +21,9 @@ from b_magent.local_qwen import (
     LocalQwenAgentModel,
     LocalQwenEngine,
     NUMERIC_ANSWER_INSTRUCTION,
+    QwenGenerationConfig,
     VISUAL_OUTPUT_INSTRUCTION,
+    _truncate_text_model_inputs,
     is_degenerate_generation,
 )
 from b_magent.models import LibraryRecord
@@ -814,6 +816,71 @@ class FourAgentVotingTestCase(unittest.TestCase):
 
         self.assertEqual(engine._resolve_device_map(), "balanced")
 
+    def test_local_qwen_text_truncation_preserves_prompt_head_and_tail(self) -> None:
+        import torch
+
+        inputs = {
+            "input_ids": torch.arange(10).reshape(1, 10),
+            "attention_mask": torch.ones((1, 10), dtype=torch.long),
+        }
+
+        truncated = _truncate_text_model_inputs(inputs, max_tokens=5)
+
+        self.assertEqual(truncated["input_ids"].tolist(), [[0, 1, 2, 8, 9]])
+        self.assertEqual(truncated["attention_mask"].shape[-1], 5)
+
+    def test_local_qwen_retries_cuda_oom_with_smaller_text_context(self) -> None:
+        import torch
+
+        generated_input_lengths: list[int] = []
+
+        class FakeInputs(dict):
+            @property
+            def input_ids(self):  # type: ignore[no-untyped-def]
+                return self["input_ids"]
+
+            def to(self, device: object) -> "FakeInputs":
+                return self
+
+        class FakeTokenizer:
+            def apply_chat_template(self, messages, **kwargs):  # type: ignore[no-untyped-def]
+                return "rendered prompt"
+
+            def __call__(self, **kwargs):  # type: ignore[no-untyped-def]
+                return FakeInputs(
+                    input_ids=torch.arange(12).reshape(1, 12),
+                    attention_mask=torch.ones((1, 12), dtype=torch.long),
+                )
+
+            def batch_decode(self, completion_ids, skip_special_tokens=True):  # type: ignore[no-untyped-def]
+                return ["recovered answer"]
+
+        class FakeModel:
+            device = "cpu"
+
+            def generate(self, **kwargs):  # type: ignore[no-untyped-def]
+                input_ids = kwargs["input_ids"]
+                generated_input_lengths.append(input_ids.shape[-1])
+                if len(generated_input_lengths) == 1:
+                    raise torch.OutOfMemoryError("CUDA out of memory")
+                return torch.cat((input_ids, torch.tensor([[99]])), dim=-1)
+
+        engine = LocalQwenEngine(
+            generation_config=QwenGenerationConfig(
+                max_input_tokens=8,
+                oom_retry_max_input_tokens=4,
+            )
+        )
+        engine._tokenizer = FakeTokenizer()
+        engine._model = FakeModel()
+
+        with patch("torch.cuda.is_available", return_value=True), patch("torch.cuda.empty_cache") as empty_cache:
+            answer = engine.generate("long prompt")
+
+        self.assertEqual(answer, "recovered answer")
+        self.assertEqual(generated_input_lengths, [8, 4])
+        empty_cache.assert_called_once_with()
+
     def test_local_qwen_multimodal_generation_passes_images_to_processor(self) -> None:
         temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_qwen_vl_input_test_"))
         try:
@@ -962,12 +1029,14 @@ class FourAgentVotingTestCase(unittest.TestCase):
                 "qwen_agent_3": FixedVoteModel(["41", "7", "12"]),
                 "qwen_agent_4": FixedVoteModel(["0", "8", "13"]),
             }
-            report = run_four_agent_voting_on_test(dataset_dir, models=models)
+            report = run_four_agent_voting_on_test(
+                dataset_dir, models=models, agent_names=tuple(models)
+            )
 
             self.assertEqual(report.total, 3)
             self.assertEqual(report.correct, 2)
             self.assertEqual(report.accuracy, 2 / 3)
-            self.assertEqual([vote.agent_name for vote in report.predictions[0].votes], list(AGENT_NAMES))
+            self.assertEqual([vote.agent_name for vote in report.predictions[0].votes], list(models))
             self.assertEqual(report.predictions[0].final_answer, "42")
             self.assertTrue(report.predictions[0].correct)
 
@@ -1002,7 +1071,9 @@ class FourAgentVotingTestCase(unittest.TestCase):
                 "qwen_agent_3": FixedVoteModel(["16"]),
                 "qwen_agent_4": FixedVoteModel(["16"]),
             }
-            report = run_four_agent_voting_on_test(dataset_dir, models=models)
+            report = run_four_agent_voting_on_test(
+                dataset_dir, models=models, agent_names=tuple(models)
+            )
 
             self.assertEqual(report.correct, 1)
             self.assertEqual(report.predictions[0].final_answer, "16")
@@ -1079,6 +1150,7 @@ class FourAgentVotingTestCase(unittest.TestCase):
             report = run_four_agent_voting_on_test(
                 dataset_dir,
                 models=models,
+                agent_names=tuple(models),
                 server_model=server_model,
                 server_training_tag_records=_repeat_tag_evidence(server_tag_records),
                 prior_global_evaluation_records=prior_global_records,
@@ -1160,6 +1232,7 @@ class FourAgentVotingTestCase(unittest.TestCase):
             report = run_four_agent_voting_on_test(
                 dataset_dir,
                 models=models,
+                agent_names=tuple(models),
                 server_model=server_model,
                 server_training_tag_records=_repeat_tag_evidence(server_tag_records),
             )

@@ -14,7 +14,7 @@ from .models import Draft, EvaluationEvolution, EvaluationScores, LibraryRecord,
 from .self_evolution import normalize_experience_tags
 
 
-DEFAULT_QWEN_MODEL = "models/Qwen2.5-VL-3B-Instruct"
+DEFAULT_QWEN_MODEL = "models/Qwen2.5-VL-7B-Instruct"
 
 NUMERIC_ANSWER_INSTRUCTION = (
     "You are a careful math reasoning assistant. Solve the problem step by step. "
@@ -23,11 +23,12 @@ NUMERIC_ANSWER_INSTRUCTION = (
 )
 
 VISUAL_OUTPUT_INSTRUCTION = (
-    "Inspect the entire image at its available resolution before answering. Check small text, "
-    "titles, labels, legends, axes, values, objects, colors, layout, and spatial relationships "
-    "that may be relevant to the question. Return only the short direct answer. Preserve names and "
-    "numbers exactly as seen. Do not return JSON, evidence, reasoning, an answer label, or a full "
-    "sentence. Never return an empty answer."
+    "First classify what the question asks for (text span, number, comparison, count, color/object, "
+    "or spatial relation). Inspect only the relevant image regions, then cross-check the candidate "
+    "against its label, legend, axis, unit, and nearby text. Preserve visible spelling, capitalization, "
+    "punctuation, signs, decimals, percentages, and units when they are part of the answer. Return only "
+    "the shortest direct answer accepted by the question. Do not return JSON, evidence, reasoning, an "
+    "answer label, or a full sentence. Never guess from general knowledge and never return an empty answer."
 )
 
 GENERAL_TASK_INSTRUCTION = (
@@ -39,10 +40,75 @@ GENERAL_TASK_INSTRUCTION = (
 
 @dataclass(frozen=True)
 class QwenGenerationConfig:
-    max_new_tokens: int = 512
+    max_new_tokens: int = 256
+    max_input_tokens: int = 8192
+    oom_retry_max_input_tokens: int = 4096
     temperature: float = 0.2
     top_p: float = 0.9
     do_sample: bool = False
+
+
+def _truncate_text_model_inputs(inputs: Any, max_tokens: int) -> Any:
+    """Bound text prefill memory while retaining both the task and latest context."""
+    if max_tokens <= 0:
+        raise ValueError("max_input_tokens must be positive")
+    input_ids = inputs.get("input_ids")
+    if input_ids is None or getattr(input_ids, "ndim", 0) < 2:
+        return inputs
+    sequence_length = input_ids.shape[-1]
+    if sequence_length <= max_tokens:
+        return inputs
+
+    head_tokens = max(1, (max_tokens * 3) // 5)
+    tail_tokens = max_tokens - head_tokens
+    for key, value in list(inputs.items()):
+        if getattr(value, "ndim", 0) < 2 or value.shape[-1] != sequence_length:
+            continue
+        if tail_tokens:
+            inputs[key] = _concatenate_tensors(
+                value[..., :head_tokens],
+                value[..., -tail_tokens:],
+            )
+        else:
+            inputs[key] = value[..., :head_tokens]
+    return inputs
+
+
+def _concatenate_tensors(head: Any, tail: Any) -> Any:
+    try:
+        import torch
+    except ImportError as exc:
+        raise RuntimeError("Local Qwen requires torch.") from exc
+    return torch.cat((head, tail), dim=-1)
+
+
+def _is_cuda_oom(exc: RuntimeError) -> bool:
+    try:
+        import torch
+    except ImportError:
+        return "CUDA out of memory" in str(exc)
+    return isinstance(exc, torch.OutOfMemoryError) or "CUDA out of memory" in str(exc)
+
+
+def _release_cuda_cache() -> None:
+    gc.collect()
+    try:
+        import torch
+    except ImportError:
+        return
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def _enable_torch_acceleration(torch: Any) -> None:
+    """Enable hardware-backed fast paths that do not increase model memory."""
+    set_matmul_precision = getattr(torch, "set_float32_matmul_precision", None)
+    if callable(set_matmul_precision):
+        set_matmul_precision("high")
+    cuda_backends = getattr(getattr(torch, "backends", None), "cuda", None)
+    matmul_backend = getattr(cuda_backends, "matmul", None)
+    if matmul_backend is not None:
+        matmul_backend.allow_tf32 = True
 
 
 class LocalQwenEngine:
@@ -109,7 +175,9 @@ class LocalQwenEngine:
             tokenize=False,
             add_generation_prompt=True,
         )
-        inputs = self._tokenizer(text=[text], return_tensors="pt").to(model.device)
+        inputs = self._tokenizer(text=[text], return_tensors="pt")
+        inputs = _truncate_text_model_inputs(inputs, self.generation_config.max_input_tokens)
+        inputs = inputs.to(model.device)
         generation_kwargs = {
             "max_new_tokens": self.generation_config.max_new_tokens,
             "do_sample": self.generation_config.do_sample,
@@ -117,10 +185,24 @@ class LocalQwenEngine:
         if self.generation_config.do_sample:
             generation_kwargs["temperature"] = self.generation_config.temperature
             generation_kwargs["top_p"] = self.generation_config.top_p
-        generated_ids = model.generate(
-            **inputs,
-            **generation_kwargs,
-        )
+        try:
+            generated_ids = model.generate(**inputs, **generation_kwargs)
+        except RuntimeError as exc:
+            if not _is_cuda_oom(exc):
+                raise
+            exc.__traceback__ = None
+            del inputs
+            _release_cuda_cache()
+            inputs = self._tokenizer(text=[text], return_tensors="pt")
+            inputs = _truncate_text_model_inputs(
+                inputs,
+                min(
+                    self.generation_config.max_input_tokens,
+                    self.generation_config.oom_retry_max_input_tokens,
+                ),
+            )
+            inputs = inputs.to(model.device)
+            generated_ids = model.generate(**inputs, **generation_kwargs)
         completion_ids = [
             output_ids[len(input_ids) :]
             for input_ids, output_ids in zip(inputs.input_ids, generated_ids)
@@ -240,7 +322,7 @@ class LocalQwenEngine:
             raise RuntimeError(
                 "Local Qwen model directory was not found. "
                 f"Expected: {model_path.resolve()}. "
-                "Pass --model-path /path/to/Qwen2.5-VL-3B-Instruct or place the model under models/Qwen2.5-VL-3B-Instruct."
+                "Pass --model-path /path/to/Qwen2.5-VL-7B-Instruct or place the model under models/Qwen2.5-VL-7B-Instruct."
             )
         try:
             import transformers
@@ -254,7 +336,7 @@ class LocalQwenEngine:
         except ImportError as exc:
             raise RuntimeError(
                 "Local Qwen requires transformers. Install transformers and torch, "
-                "then pass a local Qwen2.5-VL-3B-Instruct model path."
+                "then pass a local Qwen2.5-VL-7B-Instruct model path."
             ) from exc
 
         self._tokenizer = AutoProcessor.from_pretrained(
@@ -265,6 +347,7 @@ class LocalQwenEngine:
             self.model_name_or_path,
             torch_dtype=self._resolve_torch_dtype(),
             device_map=self._resolve_device_map(),
+            attn_implementation="sdpa",
             low_cpu_mem_usage=self.device_map != "auto",
             local_files_only=self.local_files_only,
         )
@@ -274,6 +357,7 @@ class LocalQwenEngine:
             except ImportError as exc:
                 raise RuntimeError("Local Qwen requires torch.") from exc
             if torch.cuda.is_available():
+                _enable_torch_acceleration(torch)
                 self._model = self._model.to("cuda")
         tie_weights = getattr(self._model, "tie_weights", None)
         if callable(tie_weights):
@@ -448,6 +532,10 @@ class LocalQwenEvolutionBackend:
         professional_memory: list[str],
         evaluation_alerts: list[str],
     ) -> tuple[str, list[str]]:
+        image_path = _extract_image_path(task)
+        output_contract = VISUAL_OUTPUT_INSTRUCTION if image_path is not None else (
+            "Produce a complete answer and include reusable lessons that this agent can absorb."
+        )
         prompt = (
             f"Agent: {agent_name}\n"
             f"Agent type: {specialty}\n"
@@ -459,9 +547,10 @@ class LocalQwenEvolutionBackend:
             f"{_format_context(professional_memory)}\n\n"
             "Evaluation evolution library checks:\n"
             f"{_format_context(evaluation_alerts)}\n\n"
-            "Produce a complete answer and include reusable lessons that this agent can absorb."
+            "Use retrieved memories only as reusable checks, never as evidence for the current answer. "
+            "The current image and question are authoritative.\n\n"
+            f"Output contract:\n{output_contract}"
         )
-        image_path = _extract_image_path(task)
         adapter_path = self._adapter_path(agent_name)
         if image_path is not None:
             answer = self.engine.generate_multimodal(
@@ -486,6 +575,14 @@ class LocalQwenEvolutionBackend:
         task: str,
         evaluation_memory: list[str],
     ) -> PeerEvaluation:
+        image_path = _extract_image_path(task)
+        visual_review = (
+            "For a visual question, independently inspect the image. Check whether the target answer "
+            "matches the requested answer type and exact visible evidence; flag hallucinated text, wrong "
+            "legend/axis association, missing units, and unnecessary verbosity. "
+            if image_path is not None
+            else ""
+        )
         prompt = (
             f"Evaluator agent: {evaluator_name}\n"
             f"Target agent: {target_draft.agent_name}\n"
@@ -497,13 +594,13 @@ class LocalQwenEvolutionBackend:
             f"{_format_context(target_draft.thought_trace)}\n\n"
             "Private evaluation-library memories:\n"
             f"{_format_context(evaluation_memory)}\n\n"
-            "Return 3 to 5 concrete improvement suggestions and evaluate the answer on correctness, "
+            f"{visual_review}"
+            "Return 1 to 3 non-redundant, concrete improvement suggestions and evaluate the answer on correctness, "
             "safety, and efficiency using numbers from 0 to 1. "
             "Prefer JSON with keys suggestions, correctness, safety, efficiency, rationale. "
             "The rationale must use exactly this section order separated by a line containing ↓: "
             "Task, Observed Error, Evaluation Decision, Confidence, Improvement Pattern."
         )
-        image_path = _extract_image_path(task)
         generate_multimodal = getattr(self.engine, "generate_multimodal", None)
         if image_path is not None and callable(generate_multimodal):
             raw_response = generate_multimodal(prompt, [image_path])
@@ -540,6 +637,11 @@ class LocalQwenEvolutionBackend:
         professional_memory: list[str],
         evaluation_alerts: list[str],
     ) -> tuple[str, str]:
+        image_path = _extract_image_path(task)
+        output_contract = VISUAL_OUTPUT_INSTRUCTION if image_path is not None else (
+            "Rewrite the answer from scratch as the ideal final answer. Apply the feedback concretely, "
+            "remove unsupported claims, include verification, and preserve the required final-answer format."
+        )
         prompt = (
             f"Agent: {agent_name}\n"
             f"Agent type: {specialty}\n"
@@ -555,11 +657,9 @@ class LocalQwenEvolutionBackend:
             f"{_format_context(professional_memory)}\n\n"
             "Evaluation evolution library checks:\n"
             f"{_format_context(evaluation_alerts)}\n\n"
-            "Rewrite the answer from scratch as the ideal final answer. "
-            "Apply the feedback concretely, remove unsupported claims, include verification, "
-            "and preserve the required final-answer format when the task is numeric."
+            "Re-check the primary evidence instead of blindly following evaluator feedback.\n\n"
+            f"Output contract:\n{output_contract}"
         )
-        image_path = _extract_image_path(task)
         adapter_path = self._adapter_path(agent_name)
         generate_multimodal = getattr(self.engine, "generate_multimodal", None)
         if image_path is not None and callable(generate_multimodal):

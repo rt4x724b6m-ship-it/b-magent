@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import random
 import re
 import shutil
 import string
@@ -24,7 +25,6 @@ from baseline.qwen_gsm8k import STANDARD_TEST_LIMIT, extract_numeric_answer, nor
 from b_magent.datasets import (
     GSM8KDataset,
     GSM8KSample,
-    VisionQADataset,
     VisionQASample,
     load_project_dataset,
 )
@@ -45,7 +45,8 @@ from b_magent.answer_validation import AnswerValidator, build_answer_validator_f
 from s_server import ServerKeyInformationStore
 
 
-AGENT_NAMES = ("qwen_agent_1", "qwen_agent_2", "qwen_agent_3", "qwen_agent_4")
+AGENT_NAMES = tuple(f"qwen_agent_{index}" for index in range(1, 7))
+DEFAULT_DATASET_DIR = PROJECT_ROOT / "data" / "infographicsvqa"
 STANDARD_PRIVATE_TRAIN_SIZE = 200
 DEFAULT_PRIVATE_BATCH_SIZE = 4
 DEFAULT_TRAINING_LORA_THRESHOLD = 50
@@ -167,6 +168,7 @@ class VotingPrediction:
     votes: list[AgentVote]
     final_answer: str
     correct: bool
+    evaluated_answer: str = ""
     dataset: str = "gsm8k"
     gold_answers: list[str] = field(default_factory=list)
     anls: float | None = None
@@ -275,7 +277,11 @@ def run_b_magent_training_entry(
             raise ValueError("resume requested but one or more private datasets are missing")
     else:
         private_dataset_counts = write_even_agent_private_datasets(train_samples, data_dir, AGENT_NAMES)
-    base_participant_schedule = build_participant_schedule(private_dataset_counts, private_batch_size)
+    base_participant_schedule = build_participant_schedule(
+        private_dataset_counts,
+        private_batch_size,
+        random_seed=random_seed,
+    )
     effective_rounds = rounds or len(base_participant_schedule)
     participant_schedule = expand_participant_schedule(base_participant_schedule, effective_rounds)
     agents = build_default_agents(
@@ -550,12 +556,9 @@ def run_four_agent_voting_on_test(
     answer_validator: AnswerValidator | None = None,
     split: str = "test",
     enable_server_cache: bool = True,
+    official_infographicvqa_metrics: bool = False,
 ) -> VotingReport:
-    dataset = (
-        VisionQADataset(dataset_dir, dataset_dir.name.lower())
-        if dataset_dir.name.lower() in {"infographicsvqa", "mm-vet"}
-        else GSM8KDataset(dataset_dir)
-    )
+    dataset = load_project_dataset(dataset_dir)
     test_samples = dataset.load(split, limit=limit)
     if not test_samples:
         raise ValueError(f"no test samples found at {dataset_dir / f'{split}.jsonl'}")
@@ -706,7 +709,27 @@ def run_four_agent_voting_on_test(
             gold_answers = list(sample.answers) if is_visual else [sample.final_answer]
             normalize = normalize_vision_answer if is_visual else normalize_answer
             gold_answer = normalize(gold_answers[0])
-            sample_anls = infographic_anls(final_answer, tuple(gold_answers)) if is_visual else None
+            metric_answer = final_answer
+            if is_visual and official_infographicvqa_metrics:
+                if unanimous_answer and votes:
+                    metric_answer = extract_visual_answer_text(votes[0].raw_prediction)
+                elif synthesized_answer:
+                    metric_answer = extract_visual_answer_text(server_synthesis)
+                else:
+                    source_vote = next(
+                        (vote for vote in votes if vote.predicted_answer == fallback_answer),
+                        None,
+                    )
+                    if source_vote is not None:
+                        metric_answer = extract_visual_answer_text(source_vote.raw_prediction)
+                metric_answer = metric_answer or final_answer
+            sample_anls = (
+                infographicvqa_official_anls(metric_answer, tuple(gold_answers))
+                if is_visual and official_infographicvqa_metrics
+                else infographic_anls(final_answer, tuple(gold_answers))
+                if is_visual
+                else None
+            )
             validation_rationale = ""
             requirements_met: list[str] = []
             requirements_missed: list[str] = []
@@ -730,7 +753,13 @@ def run_four_agent_voting_on_test(
                 requirements_missed = validation.requirements_missed
                 unsupported_claims = validation.unsupported_claims
             else:
-                correct = normalize(final_answer) in {normalize(answer) for answer in gold_answers}
+                if is_visual and official_infographicvqa_metrics:
+                    correct = normalize_infographicvqa_official_answer(metric_answer) in {
+                        normalize_infographicvqa_official_answer(answer)
+                        for answer in gold_answers
+                    }
+                else:
+                    correct = normalize(final_answer) in {normalize(answer) for answer in gold_answers}
             prediction = VotingPrediction(
                 index=index,
                 question=sample.question,
@@ -738,6 +767,7 @@ def run_four_agent_voting_on_test(
                 votes=votes,
                 final_answer=final_answer,
                 correct=correct,
+                evaluated_answer=metric_answer,
                 dataset=sample.dataset if is_visual else "gsm8k",
                 gold_answers=gold_answers,
                 anls=sample_anls,
@@ -860,6 +890,27 @@ def infographic_anls(prediction: str, answers: tuple[str, ...]) -> float:
     return best if best >= 0.5 else 0.0
 
 
+def normalize_infographicvqa_official_answer(value: str) -> str:
+    """Apply the paper's accuracy normalization: lowercase only."""
+    return str(value).lower()
+
+
+def infographicvqa_official_anls(prediction: str, answers: tuple[str, ...]) -> float:
+    predicted = normalize_infographicvqa_official_answer(prediction)
+    if not predicted or not answers:
+        return 0.0
+    best = 0.0
+    for answer in answers:
+        reference = normalize_infographicvqa_official_answer(answer)
+        denominator = max(len(predicted), len(reference))
+        normalized_distance = (
+            _edit_distance(predicted, reference) / denominator if denominator else 0.0
+        )
+        if normalized_distance < 0.5:
+            best = max(best, 1.0 - normalized_distance)
+    return best
+
+
 def format_inference_question(sample: GSM8KSample | VisionQASample) -> str:
     if not isinstance(sample, VisionQASample):
         return sample.question
@@ -889,6 +940,16 @@ def extract_prediction_answer(
 ) -> str:
     if not isinstance(sample, VisionQASample):
         return extract_numeric_answer(raw_prediction)
+    value = extract_visual_answer_text(raw_prediction)
+    normalized = normalize_vision_answer(value)
+    # Long prose or malformed JSON is not a usable short VQA vote.
+    if len(normalized) > 200 or len(normalized.split()) > 30 or normalized.startswith("{"):
+        return ""
+    return normalized
+
+
+def extract_visual_answer_text(raw_prediction: str) -> str:
+    """Extract the short answer while preserving metric-significant punctuation."""
     text = str(raw_prediction).strip()
     value = ""
     parsed_json = False
@@ -905,12 +966,7 @@ def extract_prediction_answer(
     if not value and not parsed_json:
         match = re.search(r"(?:final\s+answer|answer)\s*:\s*(.+)", text, re.I)
         value = match.group(1) if match else text
-    value = value.strip().strip("`\"'").rstrip(".,")
-    normalized = normalize_vision_answer(value)
-    # Long prose or malformed JSON is not a usable short VQA vote.
-    if len(normalized) > 200 or len(normalized.split()) > 30 or normalized.startswith("{"):
-        return ""
-    return normalized
+    return value.strip().strip("`\"'")
 
 
 def _retry_empty_visual_votes(
@@ -1105,7 +1161,8 @@ def _server_synthesize_agent_answers(
         "Use web evidence only for claims it directly supports. Preserve source URLs when external "
         "facts are used, and prefer official or more recently retrieved sources when they conflict. "
         + (
-            "Return compact JSON with image_elements, evidence, reasoning, and a short final_answer."
+            "Inspect the image to resolve disagreements, then return only the shortest direct answer. "
+            "Preserve exact visible spelling and numeric formatting; do not return JSON or reasoning."
             if _question_image_path(question) is not None
             else "Return a concise integrated solution followed by the final numeric answer in the exact "
             "form `#### number`."
@@ -1487,6 +1544,7 @@ def split_samples_evenly(samples: list[GSM8KSample], agent_count: int) -> list[l
 def build_participant_schedule(
     private_dataset_counts: dict[str, int],
     private_batch_size: int = DEFAULT_PRIVATE_BATCH_SIZE,
+    random_seed: int | None = None,
 ) -> list[list[str]]:
     if private_batch_size <= 0:
         raise ValueError("private_batch_size must be positive")
@@ -1494,17 +1552,17 @@ def build_participant_schedule(
         agent_name: (private_dataset_counts.get(agent_name, 0) + private_batch_size - 1) // private_batch_size
         for agent_name in AGENT_NAMES
     }
+    rng = random.Random(random_seed)
     schedule: list[list[str]] = []
     while sum(remaining.values()) > 0:
-        active = sorted(
-            (item for item in remaining.items() if item[1] > 0),
-            key=lambda item: (-item[1], item[0]),
-        )
-        first = active[0][0]
-        second = active[1][0] if len(active) > 1 else next(agent_name for agent_name in AGENT_NAMES if agent_name != first)
-        schedule.append([first, second])
-        remaining[first] = max(0, remaining[first] - 1)
-        remaining[second] = max(0, remaining[second] - 1)
+        active = [agent_name for agent_name, count in remaining.items() if count > 0]
+        selected = rng.sample(active, min(3, len(active)))
+        if len(selected) < 3:
+            inactive = [agent_name for agent_name in AGENT_NAMES if agent_name not in selected]
+            selected.extend(rng.sample(inactive, 3 - len(selected)))
+        schedule.append(selected)
+        for agent_name in selected:
+            remaining[agent_name] = max(0, remaining[agent_name] - 1)
     return schedule
 
 
@@ -1537,7 +1595,7 @@ def write_even_agent_private_datasets(
 
 def reset_b_magent_training_state(
     data_dir: Path,
-    lora_output_dir: Path | None = Path("data/lora_adapters"),
+    lora_output_dir: Path | None = Path("data/lora_adapters_qwen2_5_vl_7b"),
     agent_names: tuple[str, ...] = AGENT_NAMES,
     reset_evaluation_libraries: bool = True,
     reset_key_information_store: bool = False,
@@ -1683,7 +1741,12 @@ def parse_args() -> argparse.Namespace:
         default="local-qwen",
         help="Backend for --mode b-magent. local-qwen calls the configured local model; demo is deterministic smoke test logic.",
     )
-    parser.add_argument("--dataset-dir", type=Path, default=Path("data/TravelPlanner"))
+    parser.add_argument(
+        "--dataset-dir",
+        type=Path,
+        default=DEFAULT_DATASET_DIR,
+        help="Training and test dataset directory (default: data/infographicsvqa).",
+    )
     parser.add_argument(
         "--rounds",
         type=int,
@@ -1729,7 +1792,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--lora-output-dir",
         type=Path,
-        default=Path("data/lora_adapters"),
+        default=Path("data/lora_adapters_qwen2_5_vl_7b"),
         help="Directory for per-agent LoRA SFT datasets and adapters.",
     )
     parser.add_argument(
@@ -1800,7 +1863,10 @@ def build_b_magent_backend(args: argparse.Namespace) -> object | None:
     )
 
 
-def build_lora_manager(args: argparse.Namespace) -> LoraEvolutionManager | None:
+def build_lora_manager(
+    args: argparse.Namespace,
+    backend: object | None = None,
+) -> LoraEvolutionManager | None:
     if not args.enable_lora:
         return None
     config = LoraTrainingConfig(
@@ -1817,12 +1883,16 @@ def build_lora_manager(args: argparse.Namespace) -> LoraEvolutionManager | None:
         num_train_epochs=args.lora_epochs,
         learning_rate=args.lora_learning_rate,
     )
-    return LoraEvolutionManager(config)
+    release_model_memory = getattr(backend, "release_model_memory", None)
+    return LoraEvolutionManager(
+        config,
+        before_train=release_model_memory if callable(release_model_memory) else None,
+    )
 
 
 def print_training_round_start(round_index: int, rounds: int, question: str) -> None:
     preview = " ".join(question.split())[:120]
-    print(f"[{round_index}/{rounds}] 开始四智能体训练: {preview}", flush=True)
+    print(f"[{round_index}/{rounds}] 开始六智能体训练: {preview}", flush=True)
 
 
 def print_training_round_end(round_index: int, rounds: int, report: BMagentTrainingRound) -> None:
@@ -1865,14 +1935,15 @@ def main() -> None:
             )
             print("已清空之前的训练存储", flush=True)
         print("开始训练", flush=True)
+        backend = build_b_magent_backend(args)
         report = run_b_magent_training_entry(
             dataset_dir=args.dataset_dir,
             data_dir=PROJECT_ROOT / "data",
             rounds=args.rounds if args.rounds > 0 else None,
             private_batch_size=args.private_batch_size,
             random_seed=args.seed,
-            backend=build_b_magent_backend(args),
-            lora_manager=build_lora_manager(args),
+            backend=backend,
+            lora_manager=build_lora_manager(args, backend),
             on_round_start=print_training_round_start,
             on_round_end=print_training_round_end,
             start_round=start_round,

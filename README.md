@@ -1,15 +1,17 @@
   # b_magent
 
-`b_magent` 是一个本地四智能体自进化实验系统。OpenAGI 与 TravelPlanner 官方数据分别保存在 `data/OpenAGI` 和 `data/TravelPlanner`；当前默认训练入口读取 TravelPlanner 官方训练集，用于四智能体协作求解、互评、自我反思和 LoRA 增量训练。
+`b_magent` 是一个本地六智能体自进化实验系统。每轮从六个客户端智能体中随机选择三个参与训练，剩余三个负责评价。
 
-系统默认使用 4 个同构 Qwen 智能体：
+系统默认使用 6 个同构 Qwen 智能体：
 
 - `qwen_agent_1`
 - `qwen_agent_2`
 - `qwen_agent_3`
 - `qwen_agent_4`
+- `qwen_agent_5`
+- `qwen_agent_6`
 
-每一轮训练中，系统选择 2 个智能体作为参与者解题，另外 2 个智能体作为评价者互评。参与者根据私有数据、专业经验库和评价经验库生成答案；评价者根据自己的评价经验库给出建议；参与者再根据建议做自我改进，并把经验写回自己的专业库；评价者也会把本轮评价经验写回自己的评价库。
+每一轮训练中，系统随机选择 3 个智能体作为参与者，另外 3 个智能体作为评价者。随机选择可通过 `random_seed` 复现。
 
 ## 环境
 
@@ -42,7 +44,7 @@ python scripts/check_setup.py
 本地 Qwen 默认模型路径：
 
 ```text
-models/Qwen2.5-VL-3B-Instruct
+models/Qwen2.5-VL-7B-Instruct
 ```
 
 该项目按离线本地模型运行，不会自动下载模型。可以通过 `--model-path` 指定其他本地模型目录。
@@ -215,7 +217,7 @@ python -m train.four_agent_private_train --mode b-magent --answer-validator loca
 python -m train.four_agent_private_train \
   --mode b-magent \
   --backend local-qwen \
-  --model-path models/Qwen2.5-VL-3B-Instruct \
+  --model-path models/Qwen2.5-VL-7B-Instruct \
   --dataset-dir data/gsm8k \
   --rounds 200 \
   --output train/b_magent_training_report.json
@@ -238,7 +240,7 @@ python -m train.four_agent_private_train \
 python -m train.four_agent_private_train \
   --mode b-magent \
   --backend local-qwen \
-  --model-path models/Qwen2.5-VL-3B-Instruct \
+  --model-path models/Qwen2.5-VL-7B-Instruct \
   --dataset-dir data/gsm8k \
   --disable-lora
 ```
@@ -266,7 +268,7 @@ python -m train.four_agent_private_train \
 - `--rounds`：训练轮数，传 `0` 时自动覆盖平均拆分后的私有训练数据
 - `--private-batch-size`：每轮参与者读取多少条私有样本
 - `--enable-lora` / `--disable-lora`：开启或关闭 LoRA
-- `--lora-output-dir`：每个智能体的 LoRA SFT 数据集和 adapter 输出目录，默认 `data/lora_adapters`
+- `--lora-output-dir`：每个智能体的 LoRA SFT 数据集和 adapter 输出目录，默认 `data/lora_adapters_qwen2_5_vl_7b`
 - `--lora-threshold`：每个智能体累计多少条新精选样本后刷新一次 LoRA，默认 `10`；训练结束会刷新不足阈值的剩余样本
 - `--lora-max-seq-length`：LoRA 训练最大序列长度，默认 `4096`
 - `--lora-train-batch-size`：单卡 LoRA batch size，默认 `4`
@@ -374,7 +376,7 @@ data/qwen_server_agent/web_images/
 
 LoRA adapter 选择顺序：
 
-1. 如果 `data/lora_adapters/<agent>/adapter` 可用，使用该智能体自己的 LoRA adapter
+1. 如果 `data/lora_adapters_qwen2_5_vl_7b/<agent>/adapter` 可用，使用该智能体自己的 LoRA adapter
 2. 如果不存在，就使用原始 base model
 
 ## LoRA 自进化逻辑
@@ -384,10 +386,10 @@ LoRA 逻辑在 [b_magent/lora.py](/home/cxh/b_magent/b_magent/lora.py)。
 默认输出：
 
 ```text
-data/lora_adapters/qwen_agent_*/sft_dataset.jsonl
-data/lora_adapters/qwen_agent_*/current_sft_dataset.jsonl
-data/lora_adapters/qwen_agent_*/lora_state.json
-data/lora_adapters/qwen_agent_*/adapter/
+data/lora_adapters_qwen2_5_vl_7b/qwen_agent_*/sft_dataset.jsonl
+data/lora_adapters_qwen2_5_vl_7b/qwen_agent_*/current_sft_dataset.jsonl
+data/lora_adapters_qwen2_5_vl_7b/qwen_agent_*/lora_state.json
+data/lora_adapters_qwen2_5_vl_7b/qwen_agent_*/adapter/
 ```
 
 核心类：
@@ -423,10 +425,10 @@ data/lora_adapters/qwen_agent_*/adapter/
 ```bash
 python -m train.four_agent_private_train \
   --mode local-qwen-vote \
-  --model-path models/Qwen2.5-VL-3B-Instruct \
+  --model-path models/Qwen2.5-VL-7B-Instruct \
   --dataset-dir data/gsm8k \
   --test-limit 100 \
-  --lora-output-dir data/lora_adapters \
+  --lora-output-dir data/lora_adapters_qwen2_5_vl_7b \
   --output train/four_agent_trained_voting_100_report.json
 ```
 
@@ -511,10 +513,10 @@ data/qwen_server_agent/global_evaluation_library.jsonl
 每个智能体的 LoRA 产物：
 
 ```text
-data/lora_adapters/qwen_agent_*/sft_dataset.jsonl
-data/lora_adapters/qwen_agent_*/current_sft_dataset.jsonl
-data/lora_adapters/qwen_agent_*/lora_state.json
-data/lora_adapters/qwen_agent_*/adapter/
+data/lora_adapters_qwen2_5_vl_7b/qwen_agent_*/sft_dataset.jsonl
+data/lora_adapters_qwen2_5_vl_7b/qwen_agent_*/current_sft_dataset.jsonl
+data/lora_adapters_qwen2_5_vl_7b/qwen_agent_*/lora_state.json
+data/lora_adapters_qwen2_5_vl_7b/qwen_agent_*/adapter/
 ```
 
 ## 推荐运行顺序
@@ -534,11 +536,11 @@ python -m train.four_agent_private_train --mode b-magent --backend demo --datase
 3. 再跑本地 Qwen 自进化训练：
 
 ```bash
-python -m train.four_agent_private_train --mode b-magent --backend local-qwen --model-path models/Qwen2.5-VL-3B-Instruct --dataset-dir data/gsm8k --rounds 200
+python -m train.four_agent_private_train --mode b-magent --backend local-qwen --model-path models/Qwen2.5-VL-7B-Instruct --dataset-dir data/gsm8k --rounds 200
 ```
 
 4. 最后用训练后的 4 个智能体投票评测：
 
 ```bash
-python -m train.four_agent_private_train --mode local-qwen-vote --model-path models/Qwen2.5-VL-3B-Instruct --dataset-dir data/gsm8k --test-limit 100 --lora-output-dir data/lora_adapters --output train/four_agent_trained_voting_100_report.json
+python -m train.four_agent_private_train --mode local-qwen-vote --model-path models/Qwen2.5-VL-7B-Instruct --dataset-dir data/gsm8k --test-limit 100 --lora-output-dir data/lora_adapters_qwen2_5_vl_7b --output train/four_agent_trained_voting_100_report.json
 ```

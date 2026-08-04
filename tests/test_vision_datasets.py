@@ -28,6 +28,7 @@ from train.four_agent_private_train import (
     format_inference_question,
     format_training_task,
     infographic_anls,
+    infographicvqa_official_anls,
     majority_vote,
     routed_vote,
     run_four_agent_voting_on_test,
@@ -36,6 +37,39 @@ from scripts.prepare_vision_datasets import normalized_split_name
 
 
 class VisionDatasetTest(unittest.TestCase):
+    def test_official_infographicvqa_metrics_keep_punctuation_and_strict_threshold(self) -> None:
+        self.assertAlmostEqual(infographicvqa_official_anls("Pinterest.", ("Pinterest",)), 0.9)
+        self.assertEqual(infographicvqa_official_anls("ab", ("ac",)), 0.0)
+
+        class PeriodAnswerModel:
+            def generate(self, question: str) -> str:
+                return '{"final_answer":"Pinterest."}'
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "infographicsvqa"
+            root.mkdir()
+            (root / "image.png").touch()
+            (root / "validation.jsonl").write_text(
+                json.dumps({
+                    "image": "image.png",
+                    "question": "Which platform?",
+                    "answers": ["Pinterest"],
+                }) + "\n",
+                encoding="utf-8",
+            )
+            models = {name: PeriodAnswerModel() for name in AGENT_NAMES}
+
+            report = run_four_agent_voting_on_test(
+                root,
+                models=models,
+                split="validation",
+                official_infographicvqa_metrics=True,
+            )
+
+        self.assertEqual(report.accuracy, 0.0)
+        self.assertAlmostEqual(report.anls or 0.0, 0.9)
+        self.assertEqual(report.predictions[0].evaluated_answer, "Pinterest.")
+
     def test_empty_visual_answers_are_retried_and_never_reach_report(self) -> None:
         class EmptyThenConciseModel:
             def train_batch(self, batch: object) -> None:

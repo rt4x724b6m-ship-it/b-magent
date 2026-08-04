@@ -6,7 +6,7 @@ package agents by default.
 Default mode:
 
 ```bash
-python -m train.four_agent_private_train --dataset-dir data/gsm8k --rounds 3 --model-path models/Qwen2.5-VL-3B-Instruct
+python -m train.four_agent_private_train --dataset-dir data/gsm8k --rounds 3 --model-path models/Qwen2.5-VL-7B-Instruct
 ```
 
 This runs four equal `b_magent` agents. They share the same workflow and model
@@ -46,7 +46,7 @@ ends. Use `--disable-lora` when you only want the
 JSONL experience-library loop:
 
 ```bash
-python -m train.four_agent_private_train --dataset-dir data/gsm8k --rounds 200 --model-path models/Qwen2.5-VL-3B-Instruct
+python -m train.four_agent_private_train --dataset-dir data/gsm8k --rounds 200 --model-path models/Qwen2.5-VL-7B-Instruct
 ```
 
 Every new training invocation starts from a clean state. Existing agent

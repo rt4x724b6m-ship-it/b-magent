@@ -12,8 +12,10 @@ from _project_path import add_project_root_to_sys_path
 add_project_root_to_sys_path()
 
 from baseline.qwen_gsm8k import STANDARD_TEST_LIMIT
+from b_magent.agent import QwenAgent
 from train.four_agent_private_train import (
     AGENT_NAMES,
+    DEFAULT_DATASET_DIR,
     STANDARD_PRIVATE_TRAIN_SIZE,
     build_participant_schedule,
     export_report,
@@ -75,6 +77,108 @@ class FinalizingLoraManager:
 
 
 class FourAgentPrivateTrainingTestCase(unittest.TestCase):
+    def test_visual_training_progress_checkpoint_takes_priority_and_is_resettable(self) -> None:
+        from train.train import (
+            TRAINING_PROGRESS_FILE,
+            load_training_progress,
+            reset_b_magent_training_state,
+            save_training_progress,
+        )
+
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_progress_checkpoint_test_"))
+        try:
+            save_training_progress(temp_dir, 99)
+
+            self.assertEqual(load_training_progress(temp_dir), 99)
+            reset_b_magent_training_state(temp_dir, lora_output_dir=None)
+            self.assertFalse((temp_dir / TRAINING_PROGRESS_FILE).exists())
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_visual_training_main_resumes_without_resetting_state(self) -> None:
+        from train.train import main as visual_training_main
+
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_visual_main_resume_test_"))
+        try:
+            dataset_dir = temp_dir / "TravelPlanner"
+            dataset_dir.mkdir()
+            (dataset_dir / "train.csv").write_text(
+                "query,annotated_plan,reference_information\nq,plan,reference\n",
+                encoding="utf-8",
+            )
+            with (
+                patch(
+                    "sys.argv",
+                    [
+                        "train.py",
+                        "--mode",
+                        "b-magent",
+                        "--backend",
+                        "demo",
+                        "--dataset-dir",
+                        str(dataset_dir),
+                        "--resume",
+                    ],
+                ),
+                patch("train.train.reset_b_magent_training_state") as reset,
+                patch("train.train.load_training_progress", return_value=99),
+                patch("train.train.run_b_magent_training_entry") as run_training,
+                patch("train.train.export_json_report"),
+            ):
+                run_training.return_value.agents = []
+                run_training.return_value.rounds = 200
+
+                visual_training_main()
+
+            reset.assert_not_called()
+            self.assertEqual(run_training.call_args.kwargs["start_round"], 99)
+            self.assertTrue(run_training.call_args.kwargs["preserve_private_datasets"])
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_multiline_private_samples_are_stored_and_loaded_as_single_rows(self) -> None:
+        from train.train import (
+            DEFAULT_TRAINING_ROUNDS,
+            run_b_magent_training_entry as run_visual_training_entry,
+        )
+
+        self.assertEqual(DEFAULT_TRAINING_ROUNDS, 200)
+
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_multiline_private_test_"))
+        try:
+            dataset_dir = temp_dir / "TravelPlanner"
+            dataset_dir.mkdir()
+            (dataset_dir / "train.csv").write_text(
+                "query,annotated_plan,reference_information\n"
+                '"trip one","day 1\nday 2","shared heading\nsource one"\n'
+                '"trip two","day 1\nday 3","shared heading\nsource two"\n'
+                '"trip three","day 1\nday 4","shared heading\nsource three"\n'
+                '"trip four","day 1\nday 5","shared heading\nsource four"\n',
+                encoding="utf-8",
+            )
+            data_dir = temp_dir / "data"
+
+            report = run_visual_training_entry(
+                dataset_dir=dataset_dir,
+                data_dir=data_dir,
+                rounds=1,
+                backend=None,
+            )
+
+            self.assertEqual(sum(report.private_dataset_counts.values()), 4)
+            private_datasets = []
+            for agent_name in AGENT_NAMES:
+                private_file = data_dir / agent_name / "private_data.jsonl"
+                self.assertEqual(len(private_file.read_text(encoding="utf-8").splitlines()), 1)
+                private_data = QwenAgent(agent_name, "test", data_dir)._load_private_data()
+                self.assertEqual(len(private_data), 1)
+                private_datasets.append(set(private_data))
+            for index, private_dataset in enumerate(private_datasets):
+                for other_private_dataset in private_datasets[index + 1 :]:
+                    self.assertTrue(private_dataset.isdisjoint(other_private_dataset))
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def test_completed_resume_flushes_pending_lora_without_another_round(self) -> None:
         from train.train import run_b_magent_training_entry as run_visual_training_entry
 
@@ -482,12 +586,23 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
                 "qwen_agent_2": 3,
                 "qwen_agent_3": 2,
                 "qwen_agent_4": 2,
+                "qwen_agent_5": 2,
+                "qwen_agent_6": 2,
             },
             private_batch_size=1,
+            random_seed=7,
         )
 
-        self.assertEqual(len(schedule), 5)
-        self.assertTrue(all(len(set(pair)) == 2 for pair in schedule))
+        self.assertTrue(all(len(group) == 3 for group in schedule))
+        self.assertTrue(all(len(set(group)) == 3 for group in schedule))
+        self.assertEqual(
+            schedule,
+            build_participant_schedule(
+                {name: 3 if name in {"qwen_agent_1", "qwen_agent_2"} else 2 for name in AGENT_NAMES},
+                private_batch_size=1,
+                random_seed=7,
+            ),
+        )
 
     def test_cli_defaults_enable_lora_and_auto_cover_private_data(self) -> None:
         with patch("sys.argv", ["four_agent_private_train.py"]):
@@ -495,6 +610,7 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
 
         self.assertEqual(args.rounds, 0)
         self.assertTrue(args.dataset_dir.is_absolute())
+        self.assertEqual(args.dataset_dir, DEFAULT_DATASET_DIR)
         self.assertTrue(args.output.is_absolute())
         self.assertTrue(args.lora_output_dir.is_absolute())
         self.assertTrue(args.enable_lora)

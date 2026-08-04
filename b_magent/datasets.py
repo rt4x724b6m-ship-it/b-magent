@@ -10,6 +10,37 @@ from typing import Any
 from .retrieval_training import build_retrieval_training_context
 
 
+def serialize_private_training_text(training_text: str) -> str:
+    """Encode one complete training sample as exactly one JSONL row."""
+    try:
+        payload = json.loads(training_text)
+    except json.JSONDecodeError:
+        return json.dumps(training_text, ensure_ascii=False)
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def deserialize_private_training_row(row: str) -> str:
+    """Decode new JSONL rows while accepting legacy plain-text rows."""
+    stripped = row.strip()
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        return stripped
+    if isinstance(payload, str):
+        return payload
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def load_private_training_texts(path: Path) -> list[str]:
+    if not path.exists():
+        return []
+    return [
+        deserialize_private_training_row(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
 @dataclass
 class GSM8KSample:
     question: str

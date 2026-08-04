@@ -19,7 +19,7 @@ from b_magent.local_qwen import LocalQwenEngine, QwenGenerationConfig
 from train.four_agent_private_train import infographic_anls, normalize_vision_answer
 
 
-DEFAULT_MODEL_PATH = PROJECT_ROOT / "models" / "Qwen2.5-VL-3B-Instruct"
+DEFAULT_MODEL_PATH = PROJECT_ROOT / "models" / "Qwen2.5-VL-7B-Instruct"
 DEFAULT_DATASET_PATH = PROJECT_ROOT / "data" / "infographicsvqa" / "test.jsonl"
 DEFAULT_OUTPUT_PATH = Path(__file__).resolve().parent / "local_vlm_report.json"
 DEFAULT_LIMIT = 100

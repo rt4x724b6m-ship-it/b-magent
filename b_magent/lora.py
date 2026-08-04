@@ -8,7 +8,7 @@ from decimal import Decimal, InvalidOperation
 from dataclasses import asdict, dataclass, field
 from hashlib import sha256
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol
 
 from .models import Draft, LibraryRecord, PeerEvaluation, SelfImprovement
 from .retrieval_training import (
@@ -35,6 +35,9 @@ class LoraTrainingConfig:
     gradient_accumulation_steps: int = 1
     gradient_checkpointing: bool = True
     learning_rate: float = 2e-4
+    warmup_ratio: float = 0.03
+    weight_decay: float = 0.01
+    max_grad_norm: float = 1.0
     num_train_epochs: float = 1.0
     lora_r: int = 8
     lora_alpha: int = 16
@@ -64,6 +67,12 @@ class LoraTrainingConfig:
             raise ValueError("LoRA minimum training examples must be positive")
         if not 0.0 <= self.lora_dropout < 1.0:
             raise ValueError("LoRA dropout must be between 0 (inclusive) and 1")
+        if not 0.0 <= self.warmup_ratio < 1.0:
+            raise ValueError("LoRA warmup ratio must be between 0 (inclusive) and 1")
+        if self.weight_decay < 0.0:
+            raise ValueError("LoRA weight decay must not be negative")
+        if self.max_grad_norm <= 0.0:
+            raise ValueError("LoRA max gradient norm must be positive")
 
 
 @dataclass(frozen=True)
@@ -136,6 +145,11 @@ class PeftSFTLoraTrainer:
         tokenizer = configure_processor_tokenizer(processor)
 
         use_bf16 = bool(torch.cuda.is_available() and torch.cuda.is_bf16_supported())
+        set_matmul_precision = getattr(torch, "set_float32_matmul_precision", None)
+        if callable(set_matmul_precision):
+            set_matmul_precision("high")
+        if torch.cuda.is_available():
+            torch.backends.cuda.matmul.allow_tf32 = True
         model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             config.base_model_path,
             torch_dtype=(
@@ -143,6 +157,7 @@ class PeftSFTLoraTrainer:
                 if use_bf16
                 else (torch.float16 if torch.cuda.is_available() else torch.float32)
             ),
+            attn_implementation="sdpa",
             local_files_only=True,
         )
         model.config.use_cache = False
@@ -187,26 +202,26 @@ class PeftSFTLoraTrainer:
             gradient_accumulation_steps=config.gradient_accumulation_steps,
             gradient_checkpointing=config.gradient_checkpointing,
             learning_rate=config.learning_rate,
+            warmup_ratio=config.warmup_ratio,
+            weight_decay=config.weight_decay,
+            max_grad_norm=config.max_grad_norm,
             num_train_epochs=config.num_train_epochs,
             logging_steps=1,
             save_strategy="no",
             report_to=[],
             fp16=torch.cuda.is_available() and not use_bf16,
             bf16=use_bf16,
+            tf32=torch.cuda.is_available(),
+            optim="adamw_torch_fused" if torch.cuda.is_available() else "adamw_torch",
             label_names=["labels"],
             remove_unused_columns=not is_visual,
         )
 
-        # Use the real optimizer implementation.  Overriding ``train``/``eval``
-        # on an optimizer is incorrect (those methods belong to modules) and
-        # previously made this training path silently behave like a no-op.
-        optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
         trainer = Trainer(
             model=model,
             args=training_args,
             train_dataset=tokenized_dataset,
             data_collator=data_collator,
-            optimizers=(optimizer, None),
         )
         try:
             trainer.train()
@@ -215,17 +230,26 @@ class PeftSFTLoraTrainer:
             processor.save_pretrained(adapter_path)
         finally:
             del trainer
-            del optimizer
+            del data_collator
+            del tokenized_dataset
             del model
+            del tokenizer
+            del processor
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
 
 class LoraEvolutionManager:
-    def __init__(self, config: LoraTrainingConfig, trainer: LoraTrainer | None = None) -> None:
+    def __init__(
+        self,
+        config: LoraTrainingConfig,
+        trainer: LoraTrainer | None = None,
+        before_train: Callable[[], None] | None = None,
+    ) -> None:
         self.config = config
         self.trainer = trainer or PeftSFTLoraTrainer()
+        self.before_train = before_train
         self.config.output_dir.mkdir(parents=True, exist_ok=True)
 
     def update_from_round(
@@ -360,6 +384,8 @@ class LoraEvolutionManager:
             self.config,
             num_train_epochs=safe_lora_epochs(examples, self.config.num_train_epochs),
         )
+        if self.before_train is not None:
+            self.before_train()
         self.trainer.train(agent_name, dataset_path, adapter_path, training_config)
         state.version += 1
         state.trained_examples = state.examples
@@ -494,8 +520,10 @@ def build_lora_example(
             agent_name=draft.agent_name,
             instruction=(
                 f"Act as {draft.specialty}. Apply that specialist evidence-inspection workflow to "
-                "the supplied image, while treating factual correctness as the highest priority. "
-                "Return only the short answer, without JSON, evidence, reasoning, or an answer label."
+                "the supplied image. Identify the requested answer type, localize the relevant region, "
+                "and verify labels, legends, axes, units, and nearby text before answering. Preserve exact "
+                "visible spelling and numeric formatting. Return only the shortest direct answer, without "
+                "JSON, evidence, reasoning, or an answer label."
             ),
             input=strip_gold_annotations(task),
             output=answer,

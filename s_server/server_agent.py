@@ -293,7 +293,10 @@ def _suggestion_tokens(items: list[str]) -> set[str]:
 
 def _review_confidence(review: PeerEvaluation) -> float:
     scores = review.scores
-    return max(0.0, min(1.0, (scores.correctness * scores.safety * scores.efficiency) ** (1 / 3)))
+    # Correctness describes the target draft, not the evaluator's reliability.
+    # Incorrect drafts are precisely the cases whose agreed review lessons need
+    # to reach the global library.
+    return max(0.0, min(1.0, (scores.safety + scores.efficiency) / 2))
 
 
 def _select_consensus_evaluation_updates(

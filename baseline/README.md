@@ -1,6 +1,6 @@
 # Qwen GSM8K baseline
 
-This baseline runs the local Qwen2.5-VL-3B-Instruct model directly on
+This baseline runs the local Qwen2.5-VL-7B-Instruct model directly on
 the first 100 questions of the official GSM8K test split. It does not use
 networking, external tools, voting, or agent memory.
 
@@ -20,7 +20,7 @@ python -m baseline.qwen_gsm8k --dataset-dir data/gsm8k --split test --output bas
 
 The default `--limit` is 100.
 
-The model must already exist at `models/Qwen2.5-VL-3B-Instruct`, or you must pass
+The model must already exist at `models/Qwen2.5-VL-7B-Instruct`, or you must pass
 another local directory with `--model-path`. The script sets
 `local_files_only=True` when loading Transformers weights, so a missing model
 path fails immediately instead of downloading from Hugging Face.
@@ -46,7 +46,7 @@ Run the full test split or override paths:
 ```bash
 python -m baseline.local_vlm_eval \
   --limit 0 \
-  --model-path models/Qwen2.5-VL-3B-Instruct \
+  --model-path models/Qwen2.5-VL-7B-Instruct \
   --dataset data/infographicsvqa/test.jsonl \
   --output baseline/local_vlm_report.json
 ```

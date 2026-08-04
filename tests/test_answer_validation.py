@@ -24,6 +24,24 @@ from train.four_agent_private_train import AGENT_NAMES, run_four_agent_voting_on
 
 
 class GPT56SolValidationTestCase(unittest.TestCase):
+    @staticmethod
+    def _valid_response(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "output_text": json.dumps(
+                    {
+                        "correct": True,
+                        "requirements_met": ["answer supplied"],
+                        "requirements_missed": [],
+                        "unsupported_claims": [],
+                        "rationale": "The answer is supported.",
+                    }
+                )
+            },
+            request=request,
+        )
+
     def test_travelplanner_test_rows_load_without_annotated_plan(self) -> None:
         temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_travel_test_loader_test_"))
         try:
@@ -142,6 +160,47 @@ class GPT56SolValidationTestCase(unittest.TestCase):
         self.assertNotIn("hidden official wording", request_text)
         self.assertNotIn("hidden-source", request_text)
         self.assertIn("Do not require wording", request_text)
+
+    def test_validator_retries_an_empty_success_response(self) -> None:
+        attempts = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                return httpx.Response(200, content=b"", request=request)
+            return self._valid_response(request)
+
+        validator = GPT56SolRequirementValidator(
+            "test-key",
+            client=httpx.Client(transport=httpx.MockTransport(handler)),
+            max_retries=1,
+            retry_backoff=0,
+        )
+
+        result = validator.validate("Return an answer.", "answer")
+
+        self.assertTrue(result.correct)
+        self.assertEqual(attempts, 2)
+
+    def test_validator_reports_gateway_response_after_retries(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                502,
+                text="upstream temporarily unavailable",
+                headers={"content-type": "text/plain"},
+                request=request,
+            )
+
+        validator = GPT56SolRequirementValidator(
+            "test-key",
+            client=httpx.Client(transport=httpx.MockTransport(handler)),
+            max_retries=1,
+            retry_backoff=0,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "HTTP 502.*upstream temporarily unavailable"):
+            validator.validate("Return an answer.", "answer")
 
     def test_gpt_verdict_controls_professional_experience_kind(self) -> None:
         class AlwaysCorrectValidator:

@@ -10,14 +10,16 @@ from train.four_agent_private_train import (
     AGENT_NAMES,
     VotingPrediction,
     build_four_local_qwen_agents,
-    normalize_vision_answer,
+    extract_visual_answer_text,
+    normalize_infographicvqa_official_answer,
     run_four_agent_voting_on_test,
 )
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_DATASET_DIR = PROJECT_ROOT / "data" / "infographicsvqa"
-DEFAULT_OUTPUT = PROJECT_ROOT / "train" / "four_agent_lora_infographicsvqa_test_report.json"
+DEFAULT_OUTPUT = PROJECT_ROOT / "train" / "four_agent_lora_infographicsvqa_validation_report.json"
+DEFAULT_LORA_OUTPUT_DIR = PROJECT_ROOT / "data" / "lora_adapters_qwen2_5_vl_7b"
 
 
 class SchedulerModel:
@@ -36,15 +38,21 @@ class SchedulerModel:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Select three of four visual agents, let each inspect the image, then let the "
+            "Select three of six visual agents, let each inspect the image, then let the "
             "scheduler aggregate their recognized content into the final answer."
         )
     )
     parser.add_argument("--dataset-dir", type=Path, default=DEFAULT_DATASET_DIR)
-    parser.add_argument("--split", default="test")
+    parser.add_argument(
+        "--split",
+        choices=["validation"],
+        default="validation",
+        help="Labeled local evaluation split. Official test labels are held by the benchmark server.",
+    )
     parser.add_argument("--limit", type=int, default=100)
     parser.add_argument("--model-path", type=Path, default=PROJECT_ROOT / DEFAULT_QWEN_MODEL)
     parser.add_argument("--data-dir", type=Path, default=PROJECT_ROOT / "data")
+    parser.add_argument("--lora-output-dir", type=Path, default=DEFAULT_LORA_OUTPUT_DIR)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--device-map", default="auto")
     parser.add_argument("--torch-dtype", default="float16")
@@ -81,19 +89,23 @@ def print_prediction(prediction: VotingPrediction, total: int) -> None:
     status = "correct" if prediction.correct else "wrong"
     gold_answers = prediction.gold_answers or [prediction.gold_answer]
     normalized_gold_answers = {
-        normalize_vision_answer(answer)
+        normalize_infographicvqa_official_answer(answer)
         for answer in gold_answers
     }
     print(
         f"[{prediction.index + 1}/{total}] {status} | selected={selected} | "
         f"final_answer={prediction.final_answer or '<empty>'} | "
+        f"evaluated_answer={prediction.evaluated_answer or prediction.final_answer or '<empty>'} | "
         f"gold={', '.join(gold_answers) or '<empty>'}",
         flush=True,
     )
     for vote in prediction.votes:
         agent_status = (
             "correct"
-            if normalize_vision_answer(vote.predicted_answer) in normalized_gold_answers
+            if normalize_infographicvqa_official_answer(
+                extract_visual_answer_text(vote.raw_prediction)
+            )
+            in normalized_gold_answers
             else "wrong"
         )
         print(
@@ -120,7 +132,7 @@ def main() -> None:
         if global_library.is_file()
         else []
     )
-    lora_output_dir = args.data_dir / "lora_adapters"
+    lora_output_dir = args.lora_output_dir
     for agent_name in AGENT_NAMES:
         adapter_config = lora_output_dir / agent_name / "adapter" / "adapter_config.json"
         if not adapter_config.is_file():
@@ -163,6 +175,7 @@ def main() -> None:
         server_training_tag_records=tag_records,
         prior_global_evaluation_records=global_records,
         enable_server_cache=False,
+        official_infographicvqa_metrics=True,
     )
     for prediction in report.predictions:
         if len(prediction.selected_agents) != 3:
