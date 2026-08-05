@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import re
@@ -21,6 +22,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from baseline.qwen_gsm8k import STANDARD_TEST_LIMIT, extract_numeric_answer, normalize_answer
 from b_magent.datasets import GSM8KSample, VisionQASample, load_project_dataset
+from b_magent.library import EvolutionLibrary
 from b_magent.local_qwen import (
     DEFAULT_QWEN_MODEL,
     LocalQwenAgentModel,
@@ -204,9 +206,8 @@ class BMagentTrainingReport:
     curated_success_records: dict[str, int]
     error_reflection_records: dict[str, int]
     evaluation_records: dict[str, int]
-    validation_total: int = 0
-    validation_accuracy: float | None = None
-    validation_agent_accuracy: dict[str, float] = field(default_factory=dict)
+    reserved_total: int = 0
+    reserved_data_path: str = ""
     lora_enabled: bool = False
     lora_updates: dict[str, int] = field(default_factory=dict)
 
@@ -226,18 +227,17 @@ def run_b_magent_training_entry(
     on_round_end: Callable[[int, int, BMagentTrainingRound], None] | None = None,
     start_round: int = 0,
     preserve_private_datasets: bool = False,
-    validation_size: int | None = None,
-    validation_ratio: float = 0.3,
-    validation_evaluator: Callable[[list[GSM8KSample]], tuple[float, dict[str, float]]] | None = None,
+    reserved_size: int | None = None,
+    reserved_ratio: float = 0.3,
 ) -> BMagentTrainingReport:
     if rounds is not None and rounds <= 0:
         raise ValueError("rounds must be positive when explicitly set")
     if private_batch_size <= 0:
         raise ValueError("private_batch_size must be positive")
-    if validation_size is not None and validation_size < 0:
-        raise ValueError("validation_size must not be negative")
-    if not 0.0 <= validation_ratio < 1.0:
-        raise ValueError("validation_ratio must be between 0 (inclusive) and 1")
+    if reserved_size is not None and reserved_size < 0:
+        raise ValueError("reserved_size must not be negative")
+    if not 0.0 <= reserved_ratio < 1.0:
+        raise ValueError("reserved_ratio must be between 0 (inclusive) and 1")
 
     dataset = load_project_dataset(dataset_dir)
     all_train_samples = dataset.load("train")
@@ -261,19 +261,27 @@ def run_b_magent_training_entry(
                 f"{len(AGENT_NAMES)} agents with {STANDARD_PRIVATE_TRAIN_SIZE} samples each; "
                 f"found {len(all_train_samples)}"
             )
-        validation_samples = []
+        reserved_samples = []
         train_samples = all_train_samples[:required_samples]
     else:
         shuffled_samples = list(all_train_samples)
         random.Random(random_seed if random_seed is not None else 13).shuffle(shuffled_samples)
-        requested_validation = (
-            validation_size
-            if validation_size is not None
-            else round(len(shuffled_samples) * validation_ratio)
+        requested_reserved = (
+            reserved_size
+            if reserved_size is not None
+            else round(len(shuffled_samples) * reserved_ratio)
         )
-        held_out = min(requested_validation, max(0, len(shuffled_samples) - 1))
-        validation_samples = shuffled_samples[:held_out]
-        train_samples = shuffled_samples[held_out:]
+        reserved_count = min(requested_reserved, max(0, len(shuffled_samples) - 1))
+        reserved_samples = shuffled_samples[:reserved_count]
+        train_samples = shuffled_samples[reserved_count:]
+
+    reserved_data_path = data_dir / "reserved_train_data.jsonl"
+    reserved_data_path.parent.mkdir(parents=True, exist_ok=True)
+    reserved_data_path.write_text(
+        "\n".join(sample.to_training_text() for sample in reserved_samples)
+        + ("\n" if reserved_samples else ""),
+        encoding="utf-8",
+    )
 
     if start_round < 0:
         raise ValueError("start_round must not be negative")
@@ -347,11 +355,6 @@ def run_b_magent_training_entry(
         if on_round_end is not None:
             on_round_end(index + 1, effective_rounds, round_report)
 
-    validation_accuracy = None
-    validation_agent_accuracy: dict[str, float] = {}
-    if validation_samples and validation_evaluator is not None:
-        validation_accuracy, validation_agent_accuracy = validation_evaluator(validation_samples)
-
     return BMagentTrainingReport(
         dataset_dir=str(dataset_dir),
         data_dir=str(data_dir),
@@ -384,9 +387,8 @@ def run_b_magent_training_entry(
             agent.name: len(agent.evaluation_library.all_records()) - evaluation_before[agent.name]
             for agent in agents
         },
-        validation_total=len(validation_samples),
-        validation_accuracy=validation_accuracy,
-        validation_agent_accuracy=validation_agent_accuracy,
+        reserved_total=len(reserved_samples),
+        reserved_data_path=str(reserved_data_path),
         lora_enabled=lora_manager is not None,
         lora_updates={
             agent.name: sum(
@@ -432,7 +434,77 @@ def load_training_progress(progress_file: Path) -> int:
     return max(0, int(payload.get("completed_rounds", 0)))
 
 
-def save_training_progress(progress_file: Path, completed_rounds: int, total_rounds: int) -> None:
+def build_training_manifest(args: argparse.Namespace) -> dict[str, object]:
+    train_files = sorted(args.dataset_dir.rglob("train.jsonl"))
+    if not train_files:
+        raise ValueError(f"cannot fingerprint training data under {args.dataset_dir}")
+    digest = hashlib.sha256()
+    for train_file in train_files:
+        digest.update(str(train_file.relative_to(args.dataset_dir)).encode("utf-8"))
+        with train_file.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    return {
+        "version": 1,
+        "dataset_dir": str(args.dataset_dir.resolve()),
+        "train_sha256": digest.hexdigest(),
+        "seed": args.seed if args.seed is not None else 13,
+        "reserved_size": args.reserved_size,
+        "reserved_ratio": args.reserved_ratio,
+        "private_batch_size": args.private_batch_size,
+        "model_path": str(Path(args.model_path).resolve()),
+        "lora_enabled": args.enable_lora,
+        "lora_output_dir": str(args.lora_output_dir.resolve()),
+        "lora_threshold": args.lora_threshold,
+        "lora_max_seq_length": args.lora_max_seq_length,
+        "lora_train_batch_size": args.lora_train_batch_size,
+        "lora_gradient_accumulation_steps": args.lora_gradient_accumulation_steps,
+        "lora_epochs": args.lora_epochs,
+        "lora_learning_rate": args.lora_learning_rate,
+        "lora_min_evaluation_score": args.lora_min_evaluation_score,
+        "lora_replay_examples": args.lora_replay_examples,
+        "allow_uncorrect_lora_labels": args.allow_uncorrect_lora_labels,
+    }
+
+
+def validate_resume_manifest(progress_file: Path, current_manifest: dict[str, object]) -> None:
+    if not progress_file.exists():
+        raise ValueError(
+            "cannot safely resume: training_progress.json is missing; "
+            "start a fresh run or restore its progress file"
+        )
+    payload = json.loads(progress_file.read_text(encoding="utf-8"))
+    saved_manifest = payload.get("training_manifest")
+    if not isinstance(saved_manifest, dict):
+        raise ValueError(
+            "cannot safely resume legacy training state without a training manifest; "
+            "start a fresh run"
+        )
+    # Optimizer tuning changes how subsequent LoRA refreshes are performed but
+    # does not change dataset ownership, ordering, or the training task. Keep
+    # resumes practical after a numerical-stability fix while protecting the
+    # experiment identity fields below.
+    mutable_lora_keys = {
+        "lora_gradient_accumulation_steps",
+        "lora_learning_rate",
+    }
+    changed = sorted(
+        key
+        for key in set(saved_manifest) | set(current_manifest)
+        if key not in mutable_lora_keys and saved_manifest.get(key) != current_manifest.get(key)
+    )
+    if changed:
+        raise ValueError(
+            "cannot resume with changed training configuration: " + ", ".join(changed)
+        )
+
+
+def save_training_progress(
+    progress_file: Path,
+    completed_rounds: int,
+    total_rounds: int,
+    training_manifest: dict[str, object] | None = None,
+) -> None:
     progress_file.parent.mkdir(parents=True, exist_ok=True)
     temporary_file = progress_file.with_suffix(progress_file.suffix + ".tmp")
     temporary_file.write_text(
@@ -441,6 +513,7 @@ def save_training_progress(progress_file: Path, completed_rounds: int, total_rou
                 "completed_rounds": completed_rounds,
                 "total_rounds": total_rounds,
                 "complete": completed_rounds >= total_rounds,
+                "training_manifest": training_manifest,
             },
             ensure_ascii=False,
             indent=2,
@@ -584,7 +657,7 @@ def run_four_agent_voting_on_test(
     split: str = "test",
 ) -> VotingReport:
     dataset = load_project_dataset(dataset_dir)
-    effective_limit = STANDARD_TEST_LIMIT if limit is None else min(limit, STANDARD_TEST_LIMIT)
+    effective_limit = None if limit is None or limit <= 0 else min(limit, STANDARD_TEST_LIMIT)
     test_samples = dataset.load(split, limit=effective_limit)
     if not test_samples:
         raise ValueError(f"no {split} samples found under {dataset_dir}")
@@ -1335,7 +1408,7 @@ def parse_args() -> argparse.Namespace:
         default="b-magent",
         help=(
             "b-magent trains the b_magent agent libraries; placeholder keeps the old "
-            "offline memory baseline; local-qwen-vote runs four local Qwen voters."
+            "offline memory baseline; local-qwen-vote runs six homogeneous local Qwen voters."
         ),
     )
     parser.add_argument(
@@ -1344,7 +1417,12 @@ def parse_args() -> argparse.Namespace:
         default="local-qwen",
         help="Backend for --mode b-magent. local-qwen calls the configured local model; demo is deterministic smoke test logic.",
     )
-    parser.add_argument("--dataset-dir", type=Path, default=Path("data"))
+    parser.add_argument(
+        "--dataset-dir",
+        type=Path,
+        default=Path("data/gsm8k"),
+        help="Dataset directory. Defaults to the project's local data/gsm8k dataset.",
+    )
     parser.add_argument(
         "--rounds",
         type=int,
@@ -1364,7 +1442,7 @@ def parse_args() -> argparse.Namespace:
         "--test-limit",
         type=int,
         default=STANDARD_TEST_LIMIT,
-        help="Evaluation sample count, capped at the first 100 official samples.",
+        help="Evaluation sample count, capped at 100 by default. Pass 0 to evaluate the full official split.",
     )
     parser.add_argument(
         "--eval-split",
@@ -1381,16 +1459,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, default=Path("train/b_magent_training_report.json"))
     parser.add_argument("--seed", type=int, default=None, help="Reserved seed for reproducible b_magent runs.")
     parser.add_argument(
-        "--validation-size",
+        "--reserved-size",
         type=int,
         default=None,
-        help="Exact held-out sample count. When omitted, --validation-ratio is used.",
+        help="Exact number of official training rows reserved for future use. Overrides --reserved-ratio.",
     )
     parser.add_argument(
-        "--validation-ratio",
+        "--reserved-ratio",
         type=float,
         default=0.3,
-        help="Fraction of shuffled training data held out from private training and LoRA updates.",
+        help="Fraction of the official training split reserved and excluded from all current training. Default: 0.3.",
+    )
+    parser.add_argument(
+        "--validation-size", dest="reserved_size", type=int, default=argparse.SUPPRESS, help=argparse.SUPPRESS
+    )
+    parser.add_argument(
+        "--validation-ratio", dest="reserved_ratio", type=float, default=argparse.SUPPRESS, help=argparse.SUPPRESS
     )
     parser.add_argument(
         "--resume",
@@ -1424,9 +1508,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--lora-max-seq-length", type=int, default=1536)
     parser.add_argument("--lora-train-batch-size", type=int, default=4)
-    parser.add_argument("--lora-gradient-accumulation-steps", type=int, default=4)
+    parser.add_argument("--lora-gradient-accumulation-steps", type=int, default=1)
     parser.add_argument("--lora-epochs", type=float, default=2.0)
-    parser.add_argument("--lora-learning-rate", type=float, default=1e-4)
+    parser.add_argument("--lora-learning-rate", type=float, default=2e-5)
     parser.add_argument("--lora-min-evaluation-score", type=float, default=0.85)
     parser.add_argument("--lora-replay-examples", type=int, default=16)
     parser.add_argument(
@@ -1456,6 +1540,13 @@ def build_b_magent_backend(args: argparse.Namespace) -> object | None:
         engine,
         lora_output_dir=args.lora_output_dir if args.enable_lora else None,
     )
+
+
+def preload_b_magent_backend(backend: object | None) -> None:
+    """Fail before destructive reset if the configured local model cannot load."""
+    engine = getattr(backend, "engine", None)
+    if isinstance(engine, LocalQwenEngine):
+        engine.model
 
 
 def build_lora_manager(
@@ -1512,6 +1603,7 @@ def main() -> None:
                 "--dataset infographicsvqa --output-dir data"
             )
         progress_file = PROJECT_ROOT / "data" / "training_progress.json"
+        training_manifest = build_training_manifest(args)
         report_files = (
             args.output,
             progress_file,
@@ -1521,11 +1613,14 @@ def main() -> None:
             PROJECT_ROOT / "train" / "four_agent_lora_voting_100_report.json",
         )
         if args.resume:
+            validate_resume_manifest(progress_file, training_manifest)
             start_round = load_training_progress(progress_file)
             if start_round == 0:
                 start_round = infer_completed_training_rounds(PROJECT_ROOT / "data")
             print(f"从第 {start_round + 1} 轮继续训练（已完成 {start_round} 轮）", flush=True)
         else:
+            backend = build_b_magent_backend(args)
+            preload_b_magent_backend(backend)
             reset_b_magent_training_state(
                 PROJECT_ROOT / "data",
                 lora_output_dir=args.lora_output_dir,
@@ -1533,27 +1628,19 @@ def main() -> None:
                 report_files=report_files,
             )
             start_round = 0
+            save_training_progress(progress_file, 0, args.rounds, training_manifest)
             print("已清空之前的训练存储", flush=True)
         print("开始训练", flush=True)
-        backend = build_b_magent_backend(args)
+        if args.resume:
+            backend = build_b_magent_backend(args)
+            preload_b_magent_backend(backend)
         engine = getattr(backend, "engine", None)
         unload_inference_model = getattr(engine, "unload", None)
 
         def on_round_end(round_index: int, total_rounds: int, round_report: BMagentTrainingRound) -> None:
-            save_training_progress(progress_file, round_index, total_rounds)
+            save_training_progress(progress_file, round_index, total_rounds, training_manifest)
             print_training_round_end(round_index, total_rounds, round_report)
 
-        validation_evaluator = None
-        if isinstance(backend, LocalQwenEvolutionBackend):
-            validation_models = {
-                agent_name: LocalQwenAgentModel(
-                    agent_name,
-                    backend.engine,
-                    lora_output_dir=args.lora_output_dir if args.enable_lora else None,
-                )
-                for agent_name in AGENT_NAMES
-            }
-            validation_evaluator = lambda samples: evaluate_lora_validation(validation_models, samples)
         report = run_b_magent_training_entry(
             dataset_dir=args.dataset_dir,
             data_dir=PROJECT_ROOT / "data",
@@ -1569,18 +1656,16 @@ def main() -> None:
             on_round_end=on_round_end,
             start_round=start_round,
             preserve_private_datasets=args.resume,
-            validation_size=args.validation_size,
-            validation_ratio=args.validation_ratio,
-            validation_evaluator=validation_evaluator,
+            reserved_size=args.reserved_size,
+            reserved_ratio=args.reserved_ratio,
         )
         export_json_report(report, args.output)
         print(f"b_magent agents: {', '.join(report.agents)}")
         print(f"rounds: {report.rounds}")
-        if isinstance(report.validation_accuracy, (int, float)):
-            print(
-                f"validation_accuracy={report.validation_accuracy:.4f} "
-                f"on {report.validation_total} held-out samples"
-            )
+        print(
+            f"reserved_train_rows={report.reserved_total} "
+            f"path={report.reserved_data_path}"
+        )
         for agent_name in report.agents:
             professional_count = report.professional_records[agent_name]
             evaluation_count = report.evaluation_records[agent_name]
@@ -1596,11 +1681,25 @@ def main() -> None:
             args.model_path,
             lora_output_dir=args.lora_output_dir,
         )
+        server_data_dir = PROJECT_ROOT / "data" / "qwen_server_agent"
+        server_tag_records = EvolutionLibrary(
+            server_data_dir / "agent_training_tags.jsonl",
+            "agent_training_tags",
+        ).all_records()
+        prior_global_evaluation_records = EvolutionLibrary(
+            server_data_dir / "global_evaluation_library.jsonl",
+            "global_evaluation",
+        ).all_records()
+        shared_engine = next(iter(models.values())).engine
+        server_model = LocalQwenAgentModel("qwen_server_agent", shared_engine)
         voting_report = run_four_agent_voting_on_test(
             args.dataset_dir,
             models,
             limit=args.test_limit,
             on_prediction=print_voting_prediction_detail,
+            server_model=server_model if server_tag_records else None,
+            server_training_tag_records=server_tag_records,
+            prior_global_evaluation_records=prior_global_evaluation_records,
             split=args.eval_split,
         )
         args.output.parent.mkdir(parents=True, exist_ok=True)

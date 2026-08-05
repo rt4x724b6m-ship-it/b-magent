@@ -6,7 +6,7 @@ package agents by default.
 Default mode:
 
 ```bash
-python -m train.four_agent_private_train --dataset-dir data/gsm8k --rounds 3 --model-path models/Qwen2.5-VL-3B-Instruct
+python -m train.four_agent_private_train --dataset-dir data/gsm8k --rounds 3 --model-path models/Qwen2.5-1.5B-Instruct
 ```
 
 This runs six equal `b_magent` agents. They share the same workflow and model
@@ -30,13 +30,16 @@ self-improvements write evaluator-informed success/error reflections rather
 than raw answers.
 
 Before the first round, the prepared training set at `data/gsm8k/train.jsonl`
-is evenly split into `data/qwen_agent_*/private_data.jsonl`. Every row is used
-once; when the total is not divisible by four, earlier agents receive one extra
-row. The training report includes `private_dataset_counts`.
+is shuffled with a fixed seed. By default, 30 percent is reserved for future,
+unspecified use and excluded from all current training and evaluation. It is
+written to `data/reserved_train_data.jsonl`. The remaining 70 percent is evenly
+split into six non-overlapping `data/qwen_agent_*/private_data.jsonl` files. When
+the private total is not divisible by six, earlier agents receive one extra row.
+The training report includes `private_dataset_counts`.
 
 The default CLI run uses 200 training rounds. Use `--rounds 0` to auto-compute
-enough rounds to cover the split private data. Each round has two task agents,
-so 800 private examples with `--private-batch-size 1` becomes 400 rounds.
+enough rounds to cover the split private data. Each round has three task agents
+and the other three agents serve as peer evaluators.
 Increase `--private-batch-size` to consume more private examples per
 participating agent per round without loading the full private split into one
 prompt.
@@ -48,7 +51,7 @@ ends. Use `--disable-lora` when you only want the
 JSONL experience-library loop:
 
 ```bash
-python -m train.four_agent_private_train --dataset-dir data/gsm8k --rounds 200 --model-path models/Qwen2.5-VL-3B-Instruct
+python -m train.four_agent_private_train --dataset-dir data/gsm8k --rounds 200 --model-path models/Qwen2.5-1.5B-Instruct
 ```
 
 Every new training invocation starts from a clean state. Existing agent
@@ -58,12 +61,13 @@ been validated. The deprecated `--resume` flag is accepted for compatibility
 but does not preserve previous training state.
 
 Each round selects three solving agents and uses the remaining three as peer
-evaluators. The default training flow shuffles with a fixed seed and holds out
-30 percent of the training rows for adapter validation. Held-out rows are excluded from private
-agent files, workflow tasks, and LoRA examples. The final report contains the
-six-agent voting accuracy and each agent's validation accuracy. Set
-`--validation-ratio 0` only for smoke tests. The remaining 70 percent is split
-evenly into six non-overlapping private datasets.
+evaluators. The default training flow uses only the official training split and
+reserves 30 percent of those rows for future use. Reserved rows are excluded
+from private agent files, workflow tasks, LoRA examples, and training-time
+evaluation. The remaining 70 percent is split evenly into six non-overlapping
+private datasets. The official test split remains untouched and is used only by
+the final voting evaluation. Use `--reserved-ratio 0` only for smoke tests that
+need all official training rows immediately.
 
 Curated LoRA rows train direct question-to-solution behavior. Drafts, peer
 feedback, and gold annotations are used to select a correct target but are not

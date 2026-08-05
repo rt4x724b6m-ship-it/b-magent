@@ -1,8 +1,8 @@
   # b_magent
 
-`b_magent` 是一个本地六智能体自进化实验系统，支持 GSM8K 数学题以及 MM-Vet、InfographicsVQA 视觉问答训练与评测。
+`b_magent` 是一个本地六智能体自进化实验系统，使用纯文本 Qwen2.5-1.5B-Instruct 处理 GSM8K 数学题。
 
-系统默认使用 4 个同构 Qwen 智能体：
+系统默认使用 6 个同构 Qwen2.5-1.5B-Instruct 智能体：
 
 - `qwen_agent_1`
 - `qwen_agent_2`
@@ -44,52 +44,14 @@ python scripts/check_setup.py
 本地 Qwen 默认模型路径：
 
 ```text
-models/Qwen2.5-VL-3B-Instruct
+models/Qwen2.5-1.5B-Instruct
 ```
 
 该项目按离线本地模型运行，不会自动下载模型。可以通过 `--model-path` 指定其他本地模型目录。
 
 ## 数据
 
-默认数据集已替换为 MM-Vet 和 InfographicsVQA。首次使用时运行：
-
-```bash
-python scripts/prepare_vision_datasets.py --output-dir data
-```
-
-只准备训练所需的InfographicsVQA（推荐先执行）：
-
-```bash
-python scripts/prepare_vision_datasets.py --dataset infographicsvqa --output-dir data
-```
-
-可用 `--limit 10` 先准备小样本。规范化后的目录为 `data/mm-vet/` 和
-`data/infographicsvqa/`，JSONL 每行包含 `image`、`question`和 `answers`。训练入口默认
-`--dataset-dir data`。
-规范化过程保留 InfographicsVQA 官方 `train`、`validation`、`test` 划分。只有官方
-`train` 参与训练，`validation` 用于本地 ANLS 评估。MM-Vet 始终作为评测集，不会
-进入四智能体私有训练数据或 LoRA 经验。
-
-视觉训练固定按官方train原始顺序取前800条：4个智能体依次获得互不重叠的200条。
-默认 `--rounds 0` 会自动运行足够轮次，使每个智能体完整处理自己的200条。验证与
-测试默认只读取对应split的前100条。
-
-InfographicsVQA 本地验证：
-
-```bash
-python -m train.four_agent_private_train \
-  --mode local-qwen-vote \
-  --dataset-dir data/infographicsvqa \
-  --eval-split validation
-```
-
-报告同时包含严格匹配 `accuracy` 和官方风格的 `anls`。对 MM-Vet 运行
-`--eval-split test` 时，还会在报告旁生成可交给 MM-Vet 官方评估器的预测 JSON。
-
-默认模型为轻量视觉语言模型 `models/Qwen2.5-VL-3B-Instruct`。引擎会自动
-读取视觉问答任务中的 `Image:` 本地路径，并向模型同时传入图像和文本。
-
-### 旧 GSM8K 格式（兼容）
+本项目使用纯文本 Qwen2.5-1.5B-Instruct，默认任务是 GSM8K 数学推理。
 
 GSM8K 数据默认放在：
 
@@ -222,7 +184,7 @@ data/qwen_agent_*/private_data.jsonl
 python -m train.four_agent_private_train \
   --mode b-magent \
   --backend local-qwen \
-  --model-path models/Qwen2.5-VL-3B-Instruct \
+  --model-path models/Qwen2.5-1.5B-Instruct \
   --dataset-dir data/gsm8k \
   --rounds 200 \
   --output train/b_magent_training_report.json
@@ -245,16 +207,16 @@ python -m train.four_agent_private_train \
 python -m train.four_agent_private_train \
   --mode b-magent \
   --backend local-qwen \
-  --model-path models/Qwen2.5-VL-3B-Instruct \
+  --model-path models/Qwen2.5-1.5B-Instruct \
   --dataset-dir data/gsm8k \
   --disable-lora
 ```
 
 `run_b_magent_training_entry()` 的完整训练逻辑：
 
-1. 用 `GSM8KDataset.load("train")` 读取训练集
-2. 用 `write_even_agent_private_datasets()` 把训练集平均拆到 4 个智能体的 `private_data.jsonl`
-3. 用 `build_participant_schedule()` 生成每轮两个参与者的排班
+1. 用 `GSM8KDataset.load("train")` 只读取官方训练集，固定种子打乱后默认保留 30% 作为用途待定的保留集
+2. 用 `write_even_agent_private_datasets()` 把剩余 70% 平均拆到 6 个智能体的 `private_data.jsonl`，各私有数据集互不重叠
+3. 用 `build_participant_schedule()` 生成每轮三个参与者的排班，其余三个智能体负责互评
 4. 用 `expand_participant_schedule()` 根据 `--rounds` 扩展排班
 5. 用 `build_default_agents()` 创建智能体并初始化经验库
 6. 每轮用 `format_gsm8k_training_task()` 构造带 gold 信息的训练任务
@@ -272,6 +234,10 @@ python -m train.four_agent_private_train \
 - `--backend demo`：使用确定性 demo 后端，不加载模型
 - `--rounds`：训练轮数，传 `0` 时自动覆盖平均拆分后的私有训练数据
 - `--private-batch-size`：每轮参与者读取多少条私有样本
+- `--reserved-ratio`：从官方训练集中保留且不参与当前训练的比例，默认 `0.3`
+- `--reserved-size`：显式指定保留样本数，设置后优先于 `--reserved-ratio`
+- 保留数据写入 `data/reserved_train_data.jsonl`，当前不用于私有训练、训练任务、LoRA 或评估
+- 官方 `test.jsonl` 仅用于最终测试，不参与上述保留与均分
 - `--enable-lora` / `--disable-lora`：开启或关闭 LoRA
 - `--lora-output-dir`：每个智能体的 LoRA SFT 数据集和 adapter 输出目录，默认 `data/lora_adapters`
 - `--lora-threshold`：每个智能体累计多少条新精选样本后刷新一次 LoRA，默认 `10`；训练结束会刷新不足阈值的剩余样本
@@ -279,7 +245,7 @@ python -m train.four_agent_private_train \
 - `--lora-train-batch-size`：单卡 LoRA batch size，默认 `4`
 - `--lora-gradient-accumulation-steps`：LoRA 梯度累积步数，默认 `1`
 - `--lora-epochs`：每次 LoRA SFT 的 epoch 数，默认 `1.0`
-- `--lora-learning-rate`：LoRA 学习率，默认 `2e-4`
+- `--lora-learning-rate`：LoRA 学习率，默认 `2e-5`
 - `--lora-min-evaluation-score`：接受 LoRA 样本所需的最低评价分数，默认 `0.6`
 - `--allow-uncorrect-lora-labels`：当任务包含 gold answer 时，允许错误的自我改进答案进入 LoRA SFT 数据集
 - `--seed`：传给 b-magent workflow 的随机种子
@@ -374,14 +340,14 @@ data/lora_adapters/qwen_agent_*/adapter/
 
 ## 投票评测逻辑
 
-四智能体投票评测入口同样在 [train/four_agent_private_train.py](/home/cxh/b_magent/train/four_agent_private_train.py)。
+六智能体投票评测入口同样在 [train/four_agent_private_train.py](/home/cxh/第二层-计算/train/four_agent_private_train.py)。
 
 运行：
 
 ```bash
 python -m train.four_agent_private_train \
   --mode local-qwen-vote \
-  --model-path models/Qwen2.5-VL-3B-Instruct \
+  --model-path models/Qwen2.5-1.5B-Instruct \
   --dataset-dir data/gsm8k \
   --test-limit 100 \
   --lora-output-dir data/lora_adapters \
@@ -390,9 +356,9 @@ python -m train.four_agent_private_train \
 
 关键函数：
 
-- `build_four_local_qwen_agents()`：共享一个 `LocalQwenEngine`，构造 4 个 `LocalQwenAgentModel`
+- `build_four_local_qwen_agents()`：为保持兼容性沿用旧函数名；实际共享一个 `LocalQwenEngine`，构造 6 个同构 `LocalQwenAgentModel`
 - `run_four_agent_voting_on_test()`：对 test set 中每道题让 6 个智能体分别回答
-- `majority_vote()`：对 4 个答案做多数投票；平票时保留先出现的答案
+- `majority_vote()`：对 6 个答案做多数投票；平票时保留先出现的答案
 - `format_voting_prediction_detail()`：格式化每道题的投票结果
 
 ## Baseline 逻辑
@@ -492,11 +458,11 @@ python -m train.four_agent_private_train --mode b-magent --backend demo --datase
 3. 再跑本地 Qwen 自进化训练：
 
 ```bash
-python -m train.four_agent_private_train --mode b-magent --backend local-qwen --model-path models/Qwen2.5-VL-3B-Instruct --dataset-dir data/gsm8k --rounds 200
+python -m train.four_agent_private_train --mode b-magent --backend local-qwen --model-path models/Qwen2.5-1.5B-Instruct --dataset-dir data/gsm8k --rounds 200
 ```
 
-4. 最后用训练后的 4 个智能体投票评测：
+4. 最后用训练后的 6 个智能体投票评测：
 
 ```bash
-python -m train.four_agent_private_train --mode local-qwen-vote --model-path models/Qwen2.5-VL-3B-Instruct --dataset-dir data/gsm8k --test-limit 100 --lora-output-dir data/lora_adapters --output train/four_agent_trained_voting_100_report.json
+python -m train.four_agent_private_train --mode local-qwen-vote --model-path models/Qwen2.5-1.5B-Instruct --dataset-dir data/gsm8k --test-limit 100 --lora-output-dir data/lora_adapters --output train/four_agent_trained_voting_100_report.json
 ```

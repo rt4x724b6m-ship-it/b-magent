@@ -39,6 +39,12 @@ class QwenAgent:
 
     def train_private_data(self, task: str, batch_size: int | None = None) -> list[str]:
         private_items = self._load_private_data()
+        task_question = _extract_task_question(task)
+        if task_question:
+            private_items = [
+                item for item in private_items
+                if _extract_private_question(item) != task_question
+            ]
         training_batch = self._next_private_batch(private_items, batch_size)
         reflection = _build_private_training_reflection(self.specialty, training_batch)
         learned_tags = sorted(extract_math_task_tags("\n".join([task, *training_batch])))
@@ -308,6 +314,16 @@ def _unique(items: object) -> list[str]:
         if text and text not in result:
             result.append(text)
     return result
+
+
+def _extract_task_question(task: str) -> str:
+    match = re.search(r"(?m)^Question:\s*(.+?)\s*$", task)
+    return match.group(1).strip() if match else ""
+
+
+def _extract_private_question(item: str) -> str:
+    match = re.search(r"(?:^|\|\s*)question:\s*(.*?)\s*\|", item, re.IGNORECASE)
+    return match.group(1).strip() if match else ""
 
 
 def _extract_gold_final_answer(task: str) -> str | None:

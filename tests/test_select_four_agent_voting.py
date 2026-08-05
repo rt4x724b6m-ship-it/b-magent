@@ -27,6 +27,7 @@ from train.four_agent_private_train import (
     format_voting_prediction_detail,
     print_voting_prediction_detail,
     reset_b_magent_training_state,
+    routed_vote,
     run_four_agent_voting_on_test,
 )
 
@@ -201,6 +202,24 @@ def _load_library_records(path: Path) -> list[LibraryRecord]:
 
 
 class FourAgentVotingTestCase(unittest.TestCase):
+    def test_routed_vote_uses_matching_second_and_third_ranked_answers(self) -> None:
+        votes = [
+            type("Vote", (), {"predicted_answer": "11", "tag_match_score": 0.9})(),
+            type("Vote", (), {"predicted_answer": "42", "tag_match_score": 0.8})(),
+            type("Vote", (), {"predicted_answer": "42", "tag_match_score": 0.7})(),
+        ]
+
+        self.assertEqual(routed_vote(votes), "42")
+
+    def test_routed_vote_uses_top_ranked_answer_when_second_and_third_disagree(self) -> None:
+        votes = [
+            type("Vote", (), {"predicted_answer": "11", "tag_match_score": 0.9})(),
+            type("Vote", (), {"predicted_answer": "42", "tag_match_score": 0.8})(),
+            type("Vote", (), {"predicted_answer": "7", "tag_match_score": 0.7})(),
+        ]
+
+        self.assertEqual(routed_vote(votes), "11")
+
     def test_server_routing_does_not_append_guidance_to_agent_question(self) -> None:
         temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_no_guidance_route_test_"))
         try:
@@ -801,6 +820,28 @@ class FourAgentVotingTestCase(unittest.TestCase):
             self.assertEqual(voting_questions, [f"same-q{i}" for i in range(STANDARD_TEST_LIMIT)])
             for model in voting_models.values():
                 self.assertEqual(model.questions_seen, baseline_questions)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_voting_uses_full_split_when_limit_is_zero(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_full_vote_test_"))
+        try:
+            dataset_dir = temp_dir / "gsm8k"
+            dataset_dir.mkdir()
+            rows = [
+                {"question": f"q{index}", "answer": f"#### {index}"}
+                for index in range(STANDARD_TEST_LIMIT + 1)
+            ]
+            (dataset_dir / "test.jsonl").write_text(
+                "\n".join(json.dumps(row) for row in rows) + "\n",
+                encoding="utf-8",
+            )
+            models = {agent_name: FixedVoteModel([str(index) for index in range(len(rows))]) for agent_name in AGENT_NAMES}
+
+            report = run_four_agent_voting_on_test(dataset_dir, models=models, limit=0)
+
+            self.assertEqual(report.total, len(rows))
+            self.assertEqual(report.correct, len(rows))
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 

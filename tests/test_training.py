@@ -16,12 +16,16 @@ from train.four_agent_private_train import (
     AGENT_NAMES,
     STANDARD_PRIVATE_TRAIN_SIZE,
     build_participant_schedule,
+    build_training_manifest,
     export_report,
     main,
     parse_args,
     run_b_magent_training_entry,
     run_four_agent_private_training,
+    save_training_progress,
+    validate_resume_manifest,
 )
+from b_magent.agent import QwenAgent
 
 
 class ReleasingBackend:
@@ -54,7 +58,101 @@ class NoopLoraManager:
 
 
 class SixAgentPrivateTrainingTestCase(unittest.TestCase):
-    def test_default_split_holds_out_thirty_percent_and_private_sets_do_not_overlap(self) -> None:
+    def test_private_training_excludes_the_current_task_answer(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_private_leak_test_"))
+        try:
+            agent_name = "qwen_agent_1"
+            agent_dir = temp_dir / agent_name
+            agent_dir.mkdir(parents=True)
+            (agent_dir / "private_data.jsonl").write_text(
+                "GSM8K sample | question: same question | reasoning_answer: secret #### 7 | final_answer: 7\n"
+                "GSM8K sample | question: other question | reasoning_answer: safe #### 8 | final_answer: 8\n",
+                encoding="utf-8",
+            )
+            agent = QwenAgent(agent_name, "math", temp_dir)
+
+            batch = agent.train_private_data(
+                "Solve this GSM8K training problem.\nQuestion: same question\nGold final answer: 7",
+                batch_size=1,
+            )
+
+            self.assertEqual(len(batch), 1)
+            self.assertIn("other question", batch[0])
+            self.assertNotIn("secret", batch[0])
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_resume_manifest_rejects_changed_training_data(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_manifest_test_"))
+        try:
+            dataset_dir = temp_dir / "gsm8k"
+            dataset_dir.mkdir()
+            train_file = dataset_dir / "train.jsonl"
+            train_file.write_text('{"question":"q1","answer":"#### 1"}\n', encoding="utf-8")
+            with patch("sys.argv", ["four_agent_private_train.py", "--dataset-dir", str(dataset_dir)]):
+                args = parse_args()
+            progress_file = temp_dir / "training_progress.json"
+            manifest = build_training_manifest(args)
+            save_training_progress(progress_file, 1, 2, manifest)
+            train_file.write_text('{"question":"q2","answer":"#### 2"}\n', encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "train_sha256"):
+                validate_resume_manifest(progress_file, build_training_manifest(args))
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_resume_manifest_allows_lora_optimizer_stability_tuning(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_manifest_lora_test_"))
+        try:
+            dataset_dir = temp_dir / "gsm8k"
+            dataset_dir.mkdir()
+            (dataset_dir / "train.jsonl").write_text('{"question":"q","answer":"#### 1"}\n', encoding="utf-8")
+            with patch("sys.argv", ["four_agent_private_train.py", "--dataset-dir", str(dataset_dir)]):
+                args = parse_args()
+            progress_file = temp_dir / "training_progress.json"
+            manifest = build_training_manifest(args)
+            manifest["lora_gradient_accumulation_steps"] = 4
+            manifest["lora_learning_rate"] = 1e-4
+            save_training_progress(progress_file, 1, 2, manifest)
+
+            validate_resume_manifest(progress_file, build_training_manifest(args))
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_backend_failure_does_not_clear_existing_training_state(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_preload_safety_test_"))
+        try:
+            dataset_dir = temp_dir / "gsm8k"
+            dataset_dir.mkdir()
+            (dataset_dir / "train.jsonl").write_text(
+                '{"question":"q1","answer":"#### 1"}\n',
+                encoding="utf-8",
+            )
+            with (
+                patch(
+                    "sys.argv",
+                    [
+                        "four_agent_private_train.py",
+                        "--mode",
+                        "b-magent",
+                        "--dataset-dir",
+                        str(dataset_dir),
+                    ],
+                ),
+                patch(
+                    "train.four_agent_private_train.build_b_magent_backend",
+                    side_effect=RuntimeError("model load failed"),
+                ),
+                patch("train.four_agent_private_train.reset_b_magent_training_state") as reset,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "model load failed"):
+                    main()
+
+            reset.assert_not_called()
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_default_split_reserves_thirty_percent_and_private_sets_do_not_overlap(self) -> None:
         temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_thirty_percent_split_test_"))
         try:
             dataset_dir = temp_dir / "data" / "gsm8k"
@@ -84,15 +182,18 @@ class SixAgentPrivateTrainingTestCase(unittest.TestCase):
                     .splitlines()
                     if line.strip()
                 )
-            self.assertEqual(report.validation_total, 6)
+            self.assertEqual(report.reserved_total, 6)
             self.assertEqual(report.train_total, 14)
             self.assertEqual(sum(report.private_dataset_counts.values()), 14)
             self.assertEqual(len(private_rows), len(set(private_rows)))
+            reserved_rows = Path(report.reserved_data_path).read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(reserved_rows), 6)
+            self.assertTrue(set(reserved_rows).isdisjoint(private_rows))
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
-    def test_b_magent_holds_validation_samples_out_of_private_training(self) -> None:
-        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_validation_split_test_"))
+    def test_b_magent_keeps_reserved_samples_out_of_private_training(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_reserved_split_test_"))
         try:
             dataset_dir = temp_dir / "data" / "gsm8k"
             dataset_dir.mkdir(parents=True)
@@ -104,18 +205,12 @@ class SixAgentPrivateTrainingTestCase(unittest.TestCase):
                 "\n".join(json.dumps(row) for row in rows) + "\n",
                 encoding="utf-8",
             )
-            observed_validation = []
-
             report = run_b_magent_training_entry(
                 dataset_dir=dataset_dir,
                 data_dir=temp_dir / "data",
                 rounds=1,
                 random_seed=7,
-                validation_size=4,
-                validation_evaluator=lambda samples: (
-                    observed_validation.extend(samples) or 0.5,
-                    {name: 0.25 for name in AGENT_NAMES},
-                ),
+                reserved_size=4,
             )
 
             private_text = "\n".join(
@@ -123,10 +218,10 @@ class SixAgentPrivateTrainingTestCase(unittest.TestCase):
                 for name in AGENT_NAMES
             )
             self.assertEqual(report.train_total, 8)
-            self.assertEqual(report.validation_total, 4)
-            self.assertEqual(report.validation_accuracy, 0.5)
-            self.assertEqual(len(observed_validation), 4)
-            self.assertTrue(all(sample.question not in private_text for sample in observed_validation))
+            self.assertEqual(report.reserved_total, 4)
+            reserved_text = Path(report.reserved_data_path).read_text(encoding="utf-8")
+            self.assertTrue(reserved_text)
+            self.assertTrue(all(f"question: q{i} |" not in private_text for i in range(12) if f"question: q{i} |" in reserved_text))
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -313,7 +408,7 @@ class SixAgentPrivateTrainingTestCase(unittest.TestCase):
                 rounds=1,
                 random_seed=1,
                 backend=None,
-                validation_size=0,
+                reserved_size=0,
             )
 
             self.assertEqual(
@@ -405,7 +500,7 @@ class SixAgentPrivateTrainingTestCase(unittest.TestCase):
                 private_batch_size=1,
                 random_seed=1,
                 backend=None,
-                validation_size=0,
+                reserved_size=0,
             )
 
             self.assertEqual(report.rounds, 4)
@@ -513,12 +608,12 @@ class SixAgentPrivateTrainingTestCase(unittest.TestCase):
         self.assertTrue(args.enable_lora)
         self.assertEqual(args.lora_threshold, 10)
         self.assertEqual(args.lora_train_batch_size, 4)
-        self.assertEqual(args.lora_gradient_accumulation_steps, 4)
+        self.assertEqual(args.lora_gradient_accumulation_steps, 1)
         self.assertEqual(args.lora_epochs, 2.0)
-        self.assertEqual(args.lora_learning_rate, 1e-4)
+        self.assertEqual(args.lora_learning_rate, 2e-5)
         self.assertEqual(args.lora_min_evaluation_score, 0.85)
-        self.assertIsNone(args.validation_size)
-        self.assertEqual(args.validation_ratio, 0.3)
+        self.assertIsNone(args.reserved_size)
+        self.assertEqual(args.reserved_ratio, 0.3)
 
     def test_cli_can_disable_lora(self) -> None:
         with patch("sys.argv", ["four_agent_private_train.py", "--disable-lora"]):
@@ -602,6 +697,7 @@ class SixAgentPrivateTrainingTestCase(unittest.TestCase):
                 ),
                 patch("train.four_agent_private_train.reset_b_magent_training_state") as reset,
                 patch("train.four_agent_private_train.load_training_progress", return_value=12),
+                patch("train.four_agent_private_train.validate_resume_manifest") as validate_manifest,
                 patch("train.four_agent_private_train.run_b_magent_training_entry") as run_training,
                 patch("train.four_agent_private_train.export_json_report"),
             ):
@@ -611,6 +707,7 @@ class SixAgentPrivateTrainingTestCase(unittest.TestCase):
                 main()
 
             reset.assert_not_called()
+            validate_manifest.assert_called_once()
             self.assertEqual(run_training.call_args.kwargs["start_round"], 12)
             self.assertTrue(run_training.call_args.kwargs["preserve_private_datasets"])
         finally:
@@ -640,3 +737,4 @@ class SixAgentPrivateTrainingTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+    build_training_manifest,

@@ -14,6 +14,7 @@ from b_magent.lora import (
     LoraTrainingConfig,
     LoraUpdate,
     build_lora_example,
+    ensure_lora_output_format,
     tokenize_lora_row,
 )
 from b_magent.models import Draft, EvaluationScores, PeerEvaluation, SelfImprovement
@@ -114,6 +115,29 @@ class LoraEvolutionTestCase(unittest.TestCase):
         self.assertNotIn("correctness=0.90", example.input)
         self.assertIn("independently", example.instruction)
         self.assertEqual(example.output, "improved answer")
+
+    def test_normalizes_numeric_targets_to_the_required_final_answer_format(self) -> None:
+        self.assertEqual(
+            ensure_lora_output_format("The result is 66.", "66"),
+            "The result is 66.\n\n#### 66",
+        )
+        self.assertEqual(ensure_lora_output_format("#### 66", "66"), "#### 66")
+
+        draft = Draft("qwen_agent_1", "通用智能体", "draft", [], [], [], [])
+        improvement = SelfImprovement("qwen_agent_1", [], "The result is 66.", [])
+        example = build_lora_example(
+            "Question: q\nGold final answer: 66",
+            draft,
+            [],
+            improvement,
+        )
+        self.assertEqual(example.output, "The result is 66.\n\n#### 66")
+
+    def test_lora_defaults_are_safe_for_small_bf16_training_runs(self) -> None:
+        config = LoraTrainingConfig(base_model_path="model", output_dir=Path("lora"))
+        self.assertEqual(config.gradient_accumulation_steps, 1)
+        self.assertEqual(config.learning_rate, 2e-5)
+        self.assertEqual(config.adam_epsilon, 1e-5)
 
     def test_lora_example_hides_gold_answer_from_training_input(self) -> None:
         draft = Draft(

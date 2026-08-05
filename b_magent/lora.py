@@ -24,8 +24,9 @@ class LoraTrainingConfig:
     min_evaluation_score: float = 0.85
     max_seq_length: int = 1536
     per_device_train_batch_size: int = 4
-    gradient_accumulation_steps: int = 4
-    learning_rate: float = 1e-4
+    gradient_accumulation_steps: int = 1
+    learning_rate: float = 2e-5
+    adam_epsilon: float = 1e-5
     num_train_epochs: float = 2.0
     lora_r: int = 8
     lora_alpha: int = 16
@@ -50,6 +51,8 @@ class LoraTrainingConfig:
             raise ValueError("LoRA train batch size must be positive")
         if self.gradient_accumulation_steps <= 0:
             raise ValueError("LoRA gradient accumulation steps must be positive")
+        if self.adam_epsilon <= 0.0:
+            raise ValueError("LoRA Adam epsilon must be positive")
         if not 0.0 <= self.min_evaluation_score <= 1.0:
             raise ValueError("LoRA evaluation threshold must be between 0 and 1")
         if not 0.0 <= self.lora_dropout < 1.0:
@@ -119,18 +122,23 @@ class PeftSFTLoraTrainer:
         rows = _read_jsonl(dataset_path)
         if not rows:
             raise ValueError(f"LoRA dataset is empty: {dataset_path}")
+        # Older curated datasets may predate the strict GSM8K answer suffix.
+        # Normalize on read as well as on creation so resumed training cannot
+        # keep teaching mutually inconsistent target formats.
+        rows = [{**row, "output": ensure_lora_output_format(row["output"])} for row in rows]
 
         tokenizer = AutoTokenizer.from_pretrained(config.base_model_path, local_files_only=True)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
 
+        use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
         model_config = AutoConfig.from_pretrained(config.base_model_path, local_files_only=True)
         model_loader = AutoModelForCausalLM
         if getattr(model_config, "model_type", "") == "qwen2_5_vl":
             model_loader = transformers.Qwen2_5_VLForConditionalGeneration
         model = model_loader.from_pretrained(
             config.base_model_path,
-            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+            torch_dtype=torch.bfloat16 if use_bf16 else torch.float32,
             local_files_only=True,
         )
         model.config.use_cache = False
@@ -172,7 +180,8 @@ class PeftSFTLoraTrainer:
             logging_steps=1,
             save_strategy="no",
             report_to=[],
-            fp16=torch.cuda.is_available(),
+            bf16=use_bf16,
+            fp16=False,
             label_names=["labels"],
             remove_unused_columns=False,
         )
@@ -180,7 +189,14 @@ class PeftSFTLoraTrainer:
         # Use the real optimizer implementation.  Overriding ``train``/``eval``
         # on an optimizer is incorrect (those methods belong to modules) and
         # previously made this training path silently behave like a no-op.
-        optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
+        trainable_parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
+        if not trainable_parameters:
+            raise RuntimeError("LoRA model has no trainable adapter parameters")
+        optimizer = torch.optim.AdamW(
+            trainable_parameters,
+            lr=config.learning_rate,
+            eps=config.adam_epsilon,
+        )
         trainer = Trainer(
             model=model,
             args=training_args,
@@ -490,7 +506,7 @@ def build_lora_example(
             "a line formatted exactly as #### <numeric_answer>."
         ),
         input=strip_gold_annotations(task),
-        output=improvement.revised_answer,
+        output=ensure_lora_output_format(improvement.revised_answer, extract_gold_final_answer(task)),
     )
 
 
@@ -585,6 +601,18 @@ def tokenize_lora_row(tokenizer: object, row: dict[str, str], max_length: int) -
         "attention_mask": [1] * len(input_ids),
         "labels": [-100] * len(prefix_ids) + list(output_ids),
     }
+
+
+def ensure_lora_output_format(output: str, gold_answer: str | None = None) -> str:
+    """Append one canonical numeric final-answer line when one is available."""
+    response = str(output).strip()
+    answer = normalize_answer(gold_answer) if gold_answer else extract_final_answer(response)
+    if not re.fullmatch(r"-?\d+(?:\.\d+)?", answer):
+        return response
+    marker = f"#### {answer}"
+    if re.search(rf"(?m)^\s*####\s*{re.escape(answer)}\s*$", response) and response.rstrip().endswith(marker):
+        return response
+    return f"{response}\n\n{marker}" if response else marker
 
 
 def append_lora_example(dataset_path: Path, example: LoraSFTExample) -> None:
