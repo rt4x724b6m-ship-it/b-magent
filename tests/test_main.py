@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from main import DEFAULT_LORA_OUTPUT_DIR, load_library_records, parse_args, print_prediction
-from train.four_agent_private_train import AgentVote, VotingPrediction
+from train.six_agent_private_train import AgentVote, VotingPrediction
 
 
 def test_print_prediction_shows_each_agent_result(capsys) -> None:

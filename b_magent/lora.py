@@ -39,8 +39,8 @@ class LoraTrainingConfig:
     weight_decay: float = 0.01
     max_grad_norm: float = 1.0
     num_train_epochs: float = 1.0
-    lora_r: int = 8
-    lora_alpha: int = 16
+    lora_r: int = 16
+    lora_alpha: int = 32
     lora_dropout: float = 0.05
     target_modules: tuple[str, ...] = (
         "q_proj",
@@ -73,6 +73,12 @@ class LoraTrainingConfig:
             raise ValueError("LoRA weight decay must not be negative")
         if self.max_grad_norm <= 0.0:
             raise ValueError("LoRA max gradient norm must be positive")
+        if self.learning_rate <= 0.0:
+            raise ValueError("LoRA learning rate must be positive")
+        if self.num_train_epochs <= 0.0:
+            raise ValueError("LoRA training epochs must be positive")
+        if self.lora_r <= 0 or self.lora_alpha <= 0:
+            raise ValueError("LoRA rank and alpha must be positive")
 
 
 @dataclass(frozen=True)
@@ -509,8 +515,6 @@ def build_lora_example(
     evaluations: list[PeerEvaluation],
     improvement: SelfImprovement,
 ) -> LoraSFTExample:
-    evaluation_report = format_evaluation_report(evaluations)
-    trajectory = format_trajectory(draft)
     verified_output = build_verified_retrieval_output(task)
     image_path = extract_task_image_path(task)
     if image_path:
@@ -520,8 +524,9 @@ def build_lora_example(
             agent_name=draft.agent_name,
             instruction=(
                 f"Act as {draft.specialty}. Apply that specialist evidence-inspection workflow to "
-                "the supplied image. Identify the requested answer type, localize the relevant region, "
-                "and verify labels, legends, axes, units, and nearby text before answering. Preserve exact "
+                "the supplied image. First identify the requested answer type, then inspect the complete "
+                "image and localize the relevant region. Cross-check labels, legends, axes, units, and "
+                "nearby text before answering. Do not infer values that are not visible. Preserve exact "
                 "visible spelling and numeric formatting. Return only the shortest direct answer, without "
                 "JSON, evidence, reasoning, or an answer label."
             ),
@@ -532,15 +537,14 @@ def build_lora_example(
     return LoraSFTExample(
         agent_name=draft.agent_name,
         instruction=(
-            f"Act as {draft.specialty}. Summarize the evidence already retrieved by the server. "
-            "Preserve the user's target and "
-            "hard constraints, remove duplication and conflicts, and produce a concise grounded answer."
+            f"Act as {draft.specialty}. Solve the task from the information supplied in the task. "
+            "Preserve the user's target and hard constraints, use only stated evidence, verify the final "
+            "result, and follow the requested answer format exactly."
         ),
-        input=(
-            f"Task:\n{strip_gold_annotations(task)}\n\n"
-            f"Trajectory:\n{trajectory}\n\n"
-            f"Evaluation Report:\n{evaluation_report}"
-        ),
+        # Draft trajectories and evaluator reports are unavailable at inference.
+        # Excluding them prevents the adapter from learning to depend on noisy,
+        # training-only context rather than the user task and supplied evidence.
+        input=f"Task:\n{strip_gold_annotations(task)}",
         output=verified_output or improvement.revised_answer,
     )
 

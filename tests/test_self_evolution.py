@@ -27,7 +27,7 @@ from b_magent.retrieval_training import (
     is_retrieval_summary_grounded,
     strip_hidden_retrieval_labels,
 )
-from train.four_agent_private_train import format_gsm8k_training_task
+from train.six_agent_private_train import format_gsm8k_training_task
 
 
 class SelfEvolutionLibraryTestCase(unittest.TestCase):

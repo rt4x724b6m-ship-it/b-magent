@@ -1,782 +1,0 @@
-backend: local-qwen
-model: /root/autodl-tmp/user/cxh/第二层-图片识别/models/Qwen2.5-VL-3B-Instruct
-已清空之前的训练存储
-开始训练
-[1/200] 开始四智能体训练: What is the name of the famous person who was thrown with condoms? Keep it brief.
-Using a slow image processor as `use_fast` is unset and a slow processor was saved with this model. `use_fast=True` will be the default behavior in v4.52, even if the model was saved with a slow processor. This will result in minor differences in outputs. You'll still be able to use a slow processor with `use_fast=False`.
-Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  2.58it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  3.03it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  2.95it/s]
-[1/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[2/200] 开始四智能体训练: in which year was the skateboard the longest Answer briefly.
-[2/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[3/200] 开始四智能体训练: what was the name of the skateboard with precision bearings Quick response, please.
-[3/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[4/200] 开始四智能体训练: How many years did it take after 1990 for the new design Short answer required.
-[4/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[5/200] 开始四智能体训练: What was the name of the board introduced in 1964 Concise answer only.
-[5/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[6/200] 开始四智能体训练: what is the colour of all the boards, white or blue? Quick response, please.
-[6/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[7/200] 开始四智能体训练: when was the old school fishtail introduced? Keep it brief.
-[7/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[8/200] 开始四智能体训练: when was nash shark introduced? Answer briefly.
-[8/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[9/200] 开始四智能体训练: how many enemies does the doctor have Short answer required.
-[9/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[10/200] 开始四智能体训练: who is often mistaken for the lock ness monster Concise answer only.
-[10/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[11/200] 开始四智能体训练: who are extremely sensitive to heat Concise answer only.
-[11/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[12/200] 开始四智能体训练: the enemies identified are in a period of how many years Keep it brief.
-[12/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[13/200] 开始四智能体训练: what is the colour of the police box, blue, red? Be succinct.
-[13/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[14/200] 开始四智能体训练: who is holding a helmet in his hand? Quick response, please.
-[14/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[15/200] 开始四智能体训练: where should I eat if I am in Canada Short answer required.
-[15/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[16/200] 开始四智能体训练: where should I eat if I dont have more than $3 Answer briefly.
-[16/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[17/200] 开始四智能体训练: where should I eat if I am not older than 16? Keep it brief.
-[17/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[18/200] 开始四智能体训练: where should I eat if it is before 10:30 AM and I am not a police officer? Give a very brief answer.
-[18/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[19/200] 开始四智能体训练: where should I eat if I dont eat fish Be succinct.
-[19/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[20/200] 开始四智能体训练: Where should I eat if I live in westcoast and it is before 10:00PM Short answer required.
-[20/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[21/200] 开始四智能体训练: How many eating joints have been mentioned here? Answer briefly.
-[21/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[22/200] 开始四智能体训练: Where can I go if I am in a car Quick response, please.
-[22/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[23/200] 开始四智能体训练: LIver is a source of how many of the vitamins shown here? Concise answer only.
-[23/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[24/200] 开始四智能体训练: Which dairy item is a source of vitamin b9? Answer briefly.
-[24/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[25/200] 开始四智能体训练: Which fish/meat item is a source of vitamin k? Write a very short answer.
-[25/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[26/200] 开始四智能体训练: Which fish/meat item is a source of vitamin E? Be succinct.
-[26/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[27/200] 开始四智能体训练: Which fruit is a source of vitamin E? Write a very short answer.
-[27/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[28/200] 开始四智能体训练: Apart from butter which dairy product is a source of vitamin e? Short answer required.
-[28/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[29/200] 开始四智能体训练: Which grain is a source of vitamin b5 and b7? Short answer required.
-[29/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[30/200] 开始四智能体训练: Apart from egg yolks, which dairy item is a source of vitamin D? Give a very brief answer.
-[30/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[31/200] 开始四智能体训练: Which grain item gets you vitamin b2? Quick response, please.
-[31/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[32/200] 开始四智能体训练: Which fruit has vitamin b2? Keep it brief.
-[32/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[33/200] 开始四智能体训练: How many types of oils are listed here? Give a very brief answer.
-[33/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[34/200] 开始四智能体训练: How many meat/fish item are listed here? Be succinct.
-[34/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[35/200] 开始四智能体训练: How long a swallowed gum will stuck in your tummy? Concise answer only.
-[35/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[36/200] 开始四智能体训练: What is the truth of reading under low light? Be succinct.
-[36/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[37/200] 开始四智能体训练: What is the third physical activity mentioned that helps to manage anxiety? Write a very short answer.
-[37/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[38/200] 开始四智能体训练: What item can get delivered to save time? Write a very short answer.
-[38/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[39/200] 开始四智能体训练: Which item should you discard if you stop using? Answer briefly.
-[39/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[40/200] 开始四智能体训练: How many tips are mentioned under the subheading FOOD? Short answer required.
-[40/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[41/200] 开始四智能体训练: Which type of sweet is tough to be paired with wine? Be succinct.
-[41/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[42/200] 开始四智能体训练: Under what type of wine does Pinot Noir fall? Write a very short answer.
-[42/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[43/200] 开始四智能体训练: What is the colour of the sweater icon shown - green or red? Give a very brief answer.
-[43/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[44/200] 开始四智能体训练: What is the most common booth size? Short answer required.
-[44/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[45/200] 开始四智能体训练: Where is the Northeastern university located as per the map? Give a very brief answer.
-[45/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[46/200] 开始四智能体训练: Where did Daniel Tewfik manage inventory? Quick response, please.
-[46/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[47/200] 开始四智能体训练: Which is the letter written on the belt of Madonna? Quick response, please.
-[47/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[48/200] 开始四智能体训练: In which year Madonnas Disco 1 was released? Give a very brief answer.
-[48/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[49/200] 开始四智能体训练: What percent of the National GDP is not Direct GDP? Be succinct.
-[49/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[50/200] 开始四智能体训练: What is the 2nd benefit of mobile engagement Keep it brief.
-[50/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[51/200] 开始四智能体训练: What is the 3rd benefit of mobile engagement Give a very brief answer.
-[51/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[52/200] 开始四智能体训练: What is the 4th benefit of mobile engagament Concise answer only.
-[52/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[53/200] 开始四智能体训练: What helps target different segments with ease Be succinct.
-[53/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[54/200] 开始四智能体训练: What will replace desktop computers outside of the workplace Concise answer only.
-[54/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[55/200] 开始四智能体训练: How many people are not disabled in Australia considering five people? Keep it brief.
-[55/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[56/200] 开始四智能体训练: What is the chance of disability for senior citizens? Concise answer only.
-[56/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[57/200] 开始四智能体训练: Which category posses more percent of disability, male or female? Keep it brief.
-[57/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[58/200] 开始四智能体训练: What is the percentage of DYSLEXIA for Australians? Short answer required.
-[58/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[59/200] 开始四智能体训练: What is the mental health condition percentage of Australians? Write a very short answer.
-[59/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[60/200] 开始四智能体训练: For Australians percentage of Dyslexia or Mental health condition is more? Answer briefly.
-[60/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[61/200] 开始四智能体训练: Out of six how many Australians are not affected with hearing loss? Quick response, please.
-[61/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[62/200] 开始四智能体训练: How many out of five where fined for speeding in Victoria ? Write a very short answer.
-[62/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[63/200] 开始四智能体训练: How many fines are issued in Victoria each day? Keep it brief.
-[63/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[64/200] 开始四智能体训练: What is the color of the car shown in the info graphic- yellow, orange, red or green? Be succinct.
-[64/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[65/200] 开始四智能体训练: How many persons with Dollar symbol are depicted in the info graphic? Be succinct.
-[65/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[66/200] 开始四智能体训练: How many person images are shown in grey color? Quick response, please.
-[66/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[67/200] 开始四智能体训练: How many election issues were reported by ABC? Quick response, please.
-[67/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[68/200] 开始四智能体训练: Which was the second last topic of the election issues? Quick response, please.
-[68/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[69/200] 开始四智能体训练: How many regions are shown in the map? Answer briefly.
-[69/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[70/200] 开始四智能体训练: How many camels are shown in the info graphic? Short answer required.
-[70/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[71/200] 开始四智能体训练: What is the major reason for the wide usage of mobile phones? Short answer required.
-[71/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[72/200] 开始四智能体训练: How many different types of usage of Internet is depicted in the info graphic? Write a very short answer.
-[72/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[73/200] 开始四智能体训练: In which color Facebook logo is shown- black, white, red, blue? Quick response, please.
-[73/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[74/200] 开始四智能体训练: What is the text written inside the Facebook logo? Answer briefly.
-[74/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[75/200] 开始四智能体训练: How many myths are listed in the info graphic? Quick response, please.
-[75/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[76/200] 开始四智能体训练: What percent of Millennials does not own a smartphone? Give a very brief answer.
-[76/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[77/200] 开始四智能体训练: How many millennial's chose not to live in metro capital cities? Concise answer only.
-[77/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[78/200] 开始四智能体训练: What percentage of millennial's have not participated in the volunteer work? Write a very short answer.
-[78/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[79/200] 开始四智能体训练: What percentage of millennial's does not use smartphone to connect with others? Keep it brief.
-[79/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[80/200] 开始四智能体训练: what do you do if you know what kind of beer you want Give a very brief answer.
-[80/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[81/200] 开始四智能体训练: what happens if you have not done this three or more times in the last month? Short answer required.
-[81/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[82/200] 开始四智能体训练: what does it mean that these rules no longer apply to you? Quick response, please.
-[82/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[83/200] 开始四智能体训练: how many taps are shown Short answer required.
-[83/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[84/200] 开始四智能体训练: how many beer glasses are shown Be succinct.
-[84/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[85/200] 开始四智能体训练: how many yes are there in the image Quick response, please.
-[85/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[86/200] 开始四智能体训练: who killed 2.5 million Give a very brief answer.
-[86/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[87/200] 开始四智能体训练: how many did Adolf Hitler kill? Keep it brief.
-[87/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[88/200] 开始四智能体训练: Which country was Hideki Tojo from Give a very brief answer.
-[88/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[89/200] 开始四智能体训练: which country had the second largest killing Quick response, please.
-[89/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[90/200] 开始四智能体训练: Which year range did Pol Pot belong to Give a very brief answer.
-[90/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[91/200] 开始四智能体训练: In how many years did Mao Zedong kill 78 million Answer briefly.
-[91/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[92/200] 开始四智能体训练: what is the colour of blood droplets, red or green Concise answer only.
-[92/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[93/200] 开始四智能体训练: how many dictators have worn caps Answer briefly.
-[93/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[94/200] 开始四智能体训练: How much land was destroyed by fire in Northern Siberia? Give a very brief answer.
-[94/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[95/200] 开始四智能体训练: Which fire incident happened in California? Quick response, please.
-[95/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[96/200] 开始四智能体训练: In which country was 11,300,000 Acres of land destroyed by fires? Give a very brief answer.
-[96/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[97/200] 开始四智能体训练: How many females are affected by diabetes Keep it brief.
-[97/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[98/200] 开始四智能体训练: what could lead to kidney failure Concise answer only.
-[98/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[99/200] 开始四智能体训练: what could lead to blindness or stroke Keep it brief.
-Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 41.85it/s]
-/root/miniconda3/envs/cxh/lib/python3.12/site-packages/networkx/utils/backends.py:102: RuntimeWarning: networkx backend defined more than once: nx_loopback
-  backends = _get_backends("networkx.backends")
-  0%|          | 0/50 [00:00<?, ?it/s]Traceback (most recent call last):
-  File "/root/autodl-tmp/user/cxh/第二层-图片识别/train/train.py", line 1968, in <module>
-    main()
-  File "/root/autodl-tmp/user/cxh/第二层-图片识别/train/train.py", line 1890, in main
-    report = run_b_magent_training_entry(
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/autodl-tmp/user/cxh/第二层-图片识别/train/train.py", line 321, in run_b_magent_training_entry
-    lora_updates = lora_manager.update_from_round(
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/autodl-tmp/user/cxh/第二层-图片识别/b_magent/lora.py", line 274, in update_from_round
-    updates.append(self.train_agent_on_curated_dataset(draft.agent_name))
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/autodl-tmp/user/cxh/第二层-图片识别/b_magent/lora.py", line 353, in train_agent_on_curated_dataset
-    self.trainer.train(agent_name, dataset_path, adapter_path, training_config)
-  File "/root/autodl-tmp/user/cxh/第二层-图片识别/b_magent/lora.py", line 203, in train
-    trainer.train()
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/transformers/trainer.py", line 2245, in train
-    return inner_training_loop(
-           ^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/transformers/trainer.py", line 2560, in _inner_training_loop
-    tr_loss_step = self.training_step(model, inputs, num_items_in_batch)
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/transformers/trainer.py", line 3736, in training_step
-    loss = self.compute_loss(model, inputs, num_items_in_batch=num_items_in_batch)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/transformers/trainer.py", line 3801, in compute_loss
-    outputs = model(**inputs)
-              ^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
-    return self._call_impl(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
-    return forward_call(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/accelerate/utils/operations.py", line 943, in forward
-    return model_forward(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/accelerate/utils/operations.py", line 931, in __call__
-    return convert_to_fp32(self.model_forward(*args, **kwargs))
-                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/amp/autocast_mode.py", line 44, in decorate_autocast
-    return func(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/peft/peft_model.py", line 1577, in forward
-    return self.base_model(
-           ^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
-    return self._call_impl(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
-    return forward_call(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/peft/tuners/tuners_utils.py", line 188, in forward
-    return self.model.forward(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/transformers/models/qwen2_5_vl/modeling_qwen2_5_vl.py", line 1825, in forward
-    outputs = self.model(
-              ^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
-    return self._call_impl(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
-    return forward_call(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/transformers/models/qwen2_5_vl/modeling_qwen2_5_vl.py", line 1171, in forward
-    layer_outputs = decoder_layer(
-                    ^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
-    return self._call_impl(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
-    return forward_call(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/transformers/models/qwen2_5_vl/modeling_qwen2_5_vl.py", line 1048, in forward
-    hidden_states = self.mlp(hidden_states)
-                    ^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
-    return self._call_impl(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
-    return forward_call(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/transformers/models/qwen2_5_vl/modeling_qwen2_5_vl.py", line 603, in forward
-    down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
-                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
-    return self._call_impl(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
-    return forward_call(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/peft/tuners/lora/layer.py", line 556, in forward
-    result = result + lora_B(lora_A(dropout(x))) * scaling
-                                    ^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
-    return self._call_impl(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
-    return forward_call(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/nn/modules/dropout.py", line 70, in forward
-    return F.dropout(input, self.p, self.training, self.inplace)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/nn/functional.py", line 1422, in dropout
-    _VF.dropout_(input, p, training) if inplace else _VF.dropout(input, p, training)
-                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 54.00 MiB. GPU 0 has a total capacity of 31.36 GiB of which 23.69 MiB is free. Including non-PyTorch memory, this process has 31.33 GiB memory in use. Of the allocated memory 30.26 GiB is allocated by PyTorch, and 460.35 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
-  0%|          | 0/50 [00:01<?, ?it/s]
-backend: local-qwen
-model: /root/autodl-tmp/user/cxh/第二层-图片识别/models/Qwen2.5-VL-3B-Instruct
-保留已有训练成果，从第 100 轮继续
-开始训练
-[100/200] 开始四智能体训练: how many are monthly ice users Answer briefly.
-Using a slow image processor as `use_fast` is unset and a slow processor was saved with this model. `use_fast=True` will be the default behavior in v4.52, even if the model was saved with a slow processor. This will result in minor differences in outputs. You'll still be able to use a slow processor with `use_fast=False`.
-Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  2.50it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  2.94it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  2.86it/s]
-Traceback (most recent call last):
-  File "/root/autodl-tmp/user/cxh/第二层-图片识别/b_magent/answer_validation.py", line 108, in validate
-    payload = response.json()
-              ^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/httpx/_models.py", line 832, in json
-    return jsonlib.loads(self.content, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/json/__init__.py", line 346, in loads
-    return _default_decoder.decode(s)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/json/decoder.py", line 337, in decode
-    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
-               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/json/decoder.py", line 355, in raw_decode
-    raise JSONDecodeError("Expecting value", s, err.value) from None
-json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
-
-The above exception was the direct cause of the following exception:
-
-Traceback (most recent call last):
-  File "/root/autodl-tmp/user/cxh/第二层-图片识别/train/train.py", line 1994, in <module>
-    main()
-  File "/root/autodl-tmp/user/cxh/第二层-图片识别/train/train.py", line 1916, in main
-    report = run_b_magent_training_entry(
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/autodl-tmp/user/cxh/第二层-图片识别/train/train.py", line 324, in run_b_magent_training_entry
-    report = workflow.run(task, participant_names=participant_names)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/autodl-tmp/user/cxh/第二层-图片识别/b_magent/workflow.py", line 97, in run
-    self_improvements.append(participant.self_improve(task, draft, reviews_for_agent))
-                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/autodl-tmp/user/cxh/第二层-图片识别/b_magent/agent.py", line 173, in self_improve
-    validation = self.answer_validator.validate(task, revised_answer)
-                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/autodl-tmp/user/cxh/第二层-图片识别/b_magent/answer_validation.py", line 112, in validate
-    raise RuntimeError("GPT-5.6 Sol answer validation failed; training was stopped") from exc
-RuntimeError: GPT-5.6 Sol answer validation failed; training was stopped
-backend: local-qwen
-model: /root/autodl-tmp/user/cxh/第二层-图片识别/models/Qwen2.5-VL-3B-Instruct
-保留已有训练成果，从第 100 轮继续
-开始训练
-[100/200] 开始四智能体训练: how many are monthly ice users Answer briefly.
-Using a slow image processor as `use_fast` is unset and a slow processor was saved with this model. `use_fast=True` will be the default behavior in v4.52, even if the model was saved with a slow processor. This will result in minor differences in outputs. You'll still be able to use a slow processor with `use_fast=False`.
-Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  2.73it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  3.31it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  3.21it/s]
-Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 42.55it/s]
-/root/miniconda3/envs/cxh/lib/python3.12/site-packages/networkx/utils/backends.py:102: RuntimeWarning: networkx backend defined more than once: nx_loopback
-  backends = _get_backends("networkx.backends")
-  0%|          | 0/12 [00:00<?, ?it/s]/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/utils/checkpoint.py:85: UserWarning: None of the inputs have requires_grad=True. Gradients will be None
-  warnings.warn(
-Traceback (most recent call last):
-  File "/root/autodl-tmp/user/cxh/第二层-图片识别/train/train.py", line 1994, in <module>
-    main()
-  File "/root/autodl-tmp/user/cxh/第二层-图片识别/train/train.py", line 1916, in main
-    report = run_b_magent_training_entry(
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/autodl-tmp/user/cxh/第二层-图片识别/train/train.py", line 328, in run_b_magent_training_entry
-    lora_updates = lora_manager.update_from_round(
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/autodl-tmp/user/cxh/第二层-图片识别/b_magent/lora.py", line 284, in update_from_round
-    updates.append(self.train_agent_on_curated_dataset(draft.agent_name))
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/autodl-tmp/user/cxh/第二层-图片识别/b_magent/lora.py", line 363, in train_agent_on_curated_dataset
-    self.trainer.train(agent_name, dataset_path, adapter_path, training_config)
-  File "/root/autodl-tmp/user/cxh/第二层-图片识别/b_magent/lora.py", line 212, in train
-    trainer.train()
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/transformers/trainer.py", line 2245, in train
-    return inner_training_loop(
-           ^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/transformers/trainer.py", line 2560, in _inner_training_loop
-    tr_loss_step = self.training_step(model, inputs, num_items_in_batch)
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/transformers/trainer.py", line 3736, in training_step
-    loss = self.compute_loss(model, inputs, num_items_in_batch=num_items_in_batch)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/transformers/trainer.py", line 3801, in compute_loss
-    outputs = model(**inputs)
-              ^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
-    return self._call_impl(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
-    return forward_call(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/accelerate/utils/operations.py", line 943, in forward
-    return model_forward(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/accelerate/utils/operations.py", line 931, in __call__
-    return convert_to_fp32(self.model_forward(*args, **kwargs))
-                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/amp/autocast_mode.py", line 44, in decorate_autocast
-    return func(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/peft/peft_model.py", line 1577, in forward
-    return self.base_model(
-           ^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
-    return self._call_impl(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
-    return forward_call(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/peft/tuners/tuners_utils.py", line 188, in forward
-    return self.model.forward(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/transformers/models/qwen2_5_vl/modeling_qwen2_5_vl.py", line 1761, in forward
-    raise ValueError(
-ValueError: Image features and image tokens do not match: tokens: 1009, features 2280
-  0%|          | 0/12 [00:03<?, ?it/s]
-backend: local-qwen
-model: /root/autodl-tmp/user/cxh/第二层-图片识别/models/Qwen2.5-VL-3B-Instruct
-保留已有训练成果，从第 101 轮继续
-开始训练
-[101/200] 开始四智能体训练: what is written in the arrow Be succinct.
-Using a slow image processor as `use_fast` is unset and a slow processor was saved with this model. `use_fast=True` will be the default behavior in v4.52, even if the model was saved with a slow processor. This will result in minor differences in outputs. You'll still be able to use a slow processor with `use_fast=False`.
-Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  2.59it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  3.05it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  2.97it/s]
-Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 42.62it/s]
-/root/miniconda3/envs/cxh/lib/python3.12/site-packages/networkx/utils/backends.py:102: RuntimeWarning: networkx backend defined more than once: nx_loopback
-  backends = _get_backends("networkx.backends")
-  0%|          | 0/12 [00:00<?, ?it/s]/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/utils/checkpoint.py:85: UserWarning: None of the inputs have requires_grad=True. Gradients will be None
-  warnings.warn(
-Traceback (most recent call last):
-  File "/root/autodl-tmp/user/cxh/第二层-图片识别/train/train.py", line 2007, in <module>
-    main()
-  File "/root/autodl-tmp/user/cxh/第二层-图片识别/train/train.py", line 1929, in main
-    report = run_b_magent_training_entry(
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/autodl-tmp/user/cxh/第二层-图片识别/train/train.py", line 328, in run_b_magent_training_entry
-    lora_updates = lora_manager.update_from_round(
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/autodl-tmp/user/cxh/第二层-图片识别/b_magent/lora.py", line 284, in update_from_round
-    updates.append(self.train_agent_on_curated_dataset(draft.agent_name))
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/autodl-tmp/user/cxh/第二层-图片识别/b_magent/lora.py", line 363, in train_agent_on_curated_dataset
-    self.trainer.train(agent_name, dataset_path, adapter_path, training_config)
-  File "/root/autodl-tmp/user/cxh/第二层-图片识别/b_magent/lora.py", line 212, in train
-    trainer.train()
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/transformers/trainer.py", line 2245, in train
-    return inner_training_loop(
-           ^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/transformers/trainer.py", line 2560, in _inner_training_loop
-    tr_loss_step = self.training_step(model, inputs, num_items_in_batch)
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/transformers/trainer.py", line 3736, in training_step
-    loss = self.compute_loss(model, inputs, num_items_in_batch=num_items_in_batch)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/transformers/trainer.py", line 3801, in compute_loss
-    outputs = model(**inputs)
-              ^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
-    return self._call_impl(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
-    return forward_call(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/accelerate/utils/operations.py", line 943, in forward
-    return model_forward(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/accelerate/utils/operations.py", line 931, in __call__
-    return convert_to_fp32(self.model_forward(*args, **kwargs))
-                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/amp/autocast_mode.py", line 44, in decorate_autocast
-    return func(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/peft/peft_model.py", line 1577, in forward
-    return self.base_model(
-           ^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
-    return self._call_impl(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
-    return forward_call(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/peft/tuners/tuners_utils.py", line 188, in forward
-    return self.model.forward(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/miniconda3/envs/cxh/lib/python3.12/site-packages/transformers/models/qwen2_5_vl/modeling_qwen2_5_vl.py", line 1761, in forward
-    raise ValueError(
-ValueError: Image features and image tokens do not match: tokens: 2033, features 2322
-  0%|          | 0/12 [00:03<?, ?it/s]
-backend: local-qwen
-model: /root/autodl-tmp/user/cxh/第二层-图片识别/models/Qwen2.5-VL-3B-Instruct
-保留已有训练成果，从第 102 轮继续
-开始训练
-[102/200] 开始四智能体训练: what is the value of aviation projects Give a very brief answer.
-Using a slow image processor as `use_fast` is unset and a slow processor was saved with this model. `use_fast=True` will be the default behavior in v4.52, even if the model was saved with a slow processor. This will result in minor differences in outputs. You'll still be able to use a slow processor with `use_fast=False`.
-Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  2.53it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  2.96it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  2.89it/s]
-Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 41.89it/s]
-/root/miniconda3/envs/cxh/lib/python3.12/site-packages/networkx/utils/backends.py:102: RuntimeWarning: networkx backend defined more than once: nx_loopback
-  backends = _get_backends("networkx.backends")
-  0%|          | 0/12 [00:00<?, ?it/s]/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/utils/checkpoint.py:85: UserWarning: None of the inputs have requires_grad=True. Gradients will be None
-  warnings.warn(
-  8%|▊         | 1/12 [00:04<00:52,  4.79s/it]                                              {'loss': 0.9689, 'grad_norm': 2.8612780570983887, 'learning_rate': 5e-05, 'epoch': 0.08}
-  8%|▊         | 1/12 [00:04<00:52,  4.79s/it] 17%|█▋        | 2/12 [00:09<00:46,  4.68s/it]                                              {'loss': 1.151, 'grad_norm': 3.7008683681488037, 'learning_rate': 4.5833333333333334e-05, 'epoch': 0.16}
- 17%|█▋        | 2/12 [00:09<00:46,  4.68s/it] 25%|██▌       | 3/12 [00:13<00:40,  4.53s/it]                                              {'loss': 0.6293, 'grad_norm': 2.5344364643096924, 'learning_rate': 4.166666666666667e-05, 'epoch': 0.24}
- 25%|██▌       | 3/12 [00:13<00:40,  4.53s/it] 33%|███▎      | 4/12 [00:18<00:35,  4.49s/it]                                              {'loss': 1.1945, 'grad_norm': 5.399079322814941, 'learning_rate': 3.7500000000000003e-05, 'epoch': 0.31}
- 33%|███▎      | 4/12 [00:18<00:35,  4.49s/it] 42%|████▏     | 5/12 [00:21<00:28,  4.10s/it]                                              {'loss': 0.6708, 'grad_norm': 2.8020832538604736, 'learning_rate': 3.3333333333333335e-05, 'epoch': 0.39}
- 42%|████▏     | 5/12 [00:21<00:28,  4.10s/it] 50%|█████     | 6/12 [00:24<00:21,  3.54s/it]                                              {'loss': 1.2261, 'grad_norm': 5.868634223937988, 'learning_rate': 2.916666666666667e-05, 'epoch': 0.47}
- 50%|█████     | 6/12 [00:24<00:21,  3.54s/it] 58%|█████▊    | 7/12 [00:28<00:19,  3.91s/it]                                              {'loss': 0.966, 'grad_norm': 4.53277587890625, 'learning_rate': 2.5e-05, 'epoch': 0.55}
- 58%|█████▊    | 7/12 [00:28<00:19,  3.91s/it] 67%|██████▋   | 8/12 [00:32<00:15,  3.87s/it]                                              {'loss': 0.9874, 'grad_norm': 3.8129003047943115, 'learning_rate': 2.0833333333333336e-05, 'epoch': 0.63}
- 67%|██████▋   | 8/12 [00:32<00:15,  3.87s/it] 75%|███████▌  | 9/12 [00:36<00:11,  3.79s/it]                                              {'loss': 1.1563, 'grad_norm': 3.6855647563934326, 'learning_rate': 1.6666666666666667e-05, 'epoch': 0.71}
- 75%|███████▌  | 9/12 [00:36<00:11,  3.79s/it] 83%|████████▎ | 10/12 [00:38<00:06,  3.43s/it]                                               {'loss': 0.6037, 'grad_norm': 4.871500492095947, 'learning_rate': 1.25e-05, 'epoch': 0.78}
- 83%|████████▎ | 10/12 [00:38<00:06,  3.43s/it] 92%|█████████▏| 11/12 [00:41<00:03,  3.30s/it]                                               {'loss': 0.7747, 'grad_norm': 4.323609828948975, 'learning_rate': 8.333333333333334e-06, 'epoch': 0.86}
- 92%|█████████▏| 11/12 [00:41<00:03,  3.30s/it]100%|██████████| 12/12 [00:44<00:00,  3.24s/it]                                               {'loss': 0.7059, 'grad_norm': 4.489473342895508, 'learning_rate': 4.166666666666667e-06, 'epoch': 0.94}
-100%|██████████| 12/12 [00:44<00:00,  3.24s/it]                                               {'train_runtime': 44.8409, 'train_samples_per_second': 1.137, 'train_steps_per_second': 0.268, 'train_loss': 0.9195484419663748, 'epoch': 0.94}
-100%|██████████| 12/12 [00:44<00:00,  3.24s/it]100%|██████████| 12/12 [00:44<00:00,  3.74s/it]
-Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 42.91it/s]
-  0%|          | 0/12 [00:00<?, ?it/s]/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/utils/checkpoint.py:85: UserWarning: None of the inputs have requires_grad=True. Gradients will be None
-  warnings.warn(
-  8%|▊         | 1/12 [00:04<00:47,  4.29s/it]                                              {'loss': 1.5368, 'grad_norm': 2.1490349769592285, 'learning_rate': 5e-05, 'epoch': 0.08}
-  8%|▊         | 1/12 [00:04<00:47,  4.29s/it] 17%|█▋        | 2/12 [00:07<00:39,  3.90s/it]                                              {'loss': 1.3413, 'grad_norm': 2.5911448001861572, 'learning_rate': 4.5833333333333334e-05, 'epoch': 0.16}
- 17%|█▋        | 2/12 [00:07<00:39,  3.90s/it] 25%|██▌       | 3/12 [00:11<00:32,  3.60s/it]                                              {'loss': 1.135, 'grad_norm': 3.2944107055664062, 'learning_rate': 4.166666666666667e-05, 'epoch': 0.24}
- 25%|██▌       | 3/12 [00:11<00:32,  3.60s/it] 33%|███▎      | 4/12 [00:13<00:25,  3.13s/it]                                              {'loss': 1.7578, 'grad_norm': 4.271792888641357, 'learning_rate': 3.7500000000000003e-05, 'epoch': 0.32}
- 33%|███▎      | 4/12 [00:13<00:25,  3.13s/it] 42%|████▏     | 5/12 [00:18<00:26,  3.85s/it]                                              {'loss': 1.2129, 'grad_norm': 3.857633352279663, 'learning_rate': 3.3333333333333335e-05, 'epoch': 0.4}
- 42%|████▏     | 5/12 [00:18<00:26,  3.85s/it] 50%|█████     | 6/12 [00:23<00:25,  4.19s/it]                                              {'loss': 1.299, 'grad_norm': 5.165365219116211, 'learning_rate': 2.916666666666667e-05, 'epoch': 0.48}
- 50%|█████     | 6/12 [00:23<00:25,  4.19s/it] 58%|█████▊    | 7/12 [00:26<00:19,  3.84s/it]                                              {'loss': 1.2835, 'grad_norm': 3.372941255569458, 'learning_rate': 2.5e-05, 'epoch': 0.56}
- 58%|█████▊    | 7/12 [00:26<00:19,  3.84s/it] 67%|██████▋   | 8/12 [00:30<00:15,  3.96s/it]                                              {'loss': 1.013, 'grad_norm': 4.549306869506836, 'learning_rate': 2.0833333333333336e-05, 'epoch': 0.64}
- 67%|██████▋   | 8/12 [00:30<00:15,  3.96s/it] 75%|███████▌  | 9/12 [00:35<00:12,  4.08s/it]                                              {'loss': 0.9709, 'grad_norm': 4.450379848480225, 'learning_rate': 1.6666666666666667e-05, 'epoch': 0.72}
- 75%|███████▌  | 9/12 [00:35<00:12,  4.08s/it] 83%|████████▎ | 10/12 [00:38<00:07,  3.76s/it]                                               {'loss': 0.5456, 'grad_norm': 3.0194945335388184, 'learning_rate': 1.25e-05, 'epoch': 0.8}
- 83%|████████▎ | 10/12 [00:38<00:07,  3.76s/it] 92%|█████████▏| 11/12 [00:41<00:03,  3.49s/it]                                               {'loss': 1.0328, 'grad_norm': 4.619030475616455, 'learning_rate': 8.333333333333334e-06, 'epoch': 0.88}
- 92%|█████████▏| 11/12 [00:41<00:03,  3.49s/it]100%|██████████| 12/12 [00:43<00:00,  3.29s/it]                                               {'loss': 0.6211, 'grad_norm': 3.5391595363616943, 'learning_rate': 4.166666666666667e-06, 'epoch': 0.96}
-100%|██████████| 12/12 [00:43<00:00,  3.29s/it]                                               {'train_runtime': 43.9811, 'train_samples_per_second': 1.137, 'train_steps_per_second': 0.273, 'train_loss': 1.1458131770292919, 'epoch': 0.96}
-100%|██████████| 12/12 [00:43<00:00,  3.29s/it]100%|██████████| 12/12 [00:43<00:00,  3.66s/it]
-[102/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[103/200] 开始四智能体训练: what is the value of projects in pipeline Answer briefly.
-Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 38.80it/s]
-  0%|          | 0/13 [00:00<?, ?it/s]/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/utils/checkpoint.py:85: UserWarning: None of the inputs have requires_grad=True. Gradients will be None
-  warnings.warn(
-  8%|▊         | 1/13 [00:04<00:55,  4.66s/it]                                              {'loss': 1.2445, 'grad_norm': 3.7473182678222656, 'learning_rate': 5e-05, 'epoch': 0.08}
-  8%|▊         | 1/13 [00:04<00:55,  4.66s/it] 15%|█▌        | 2/13 [00:08<00:43,  3.97s/it]                                              {'loss': 1.4942, 'grad_norm': 5.114726543426514, 'learning_rate': 4.615384615384616e-05, 'epoch': 0.15}
- 15%|█▌        | 2/13 [00:08<00:43,  3.97s/it] 23%|██▎       | 3/13 [00:11<00:37,  3.75s/it]                                              {'loss': 1.3685, 'grad_norm': 4.2729926109313965, 'learning_rate': 4.230769230769231e-05, 'epoch': 0.23}
- 23%|██▎       | 3/13 [00:11<00:37,  3.75s/it] 31%|███       | 4/13 [00:14<00:32,  3.58s/it]                                              {'loss': 1.2121, 'grad_norm': 4.08389949798584, 'learning_rate': 3.846153846153846e-05, 'epoch': 0.31}
- 31%|███       | 4/13 [00:14<00:32,  3.58s/it] 38%|███▊      | 5/13 [00:19<00:32,  4.04s/it]                                              {'loss': 1.0719, 'grad_norm': 4.089318752288818, 'learning_rate': 3.461538461538462e-05, 'epoch': 0.38}
- 38%|███▊      | 5/13 [00:19<00:32,  4.04s/it] 46%|████▌     | 6/13 [00:23<00:27,  3.94s/it]                                              {'loss': 1.4549, 'grad_norm': 3.9206788539886475, 'learning_rate': 3.0769230769230774e-05, 'epoch': 0.46}
- 46%|████▌     | 6/13 [00:23<00:27,  3.94s/it] 54%|█████▍    | 7/13 [00:27<00:23,  3.95s/it]                                              {'loss': 1.1835, 'grad_norm': 5.841705322265625, 'learning_rate': 2.6923076923076923e-05, 'epoch': 0.54}
- 54%|█████▍    | 7/13 [00:27<00:23,  3.95s/it] 62%|██████▏   | 8/13 [00:32<00:20,  4.15s/it]                                              {'loss': 1.3608, 'grad_norm': 4.8907151222229, 'learning_rate': 2.307692307692308e-05, 'epoch': 0.62}
- 62%|██████▏   | 8/13 [00:32<00:20,  4.15s/it] 69%|██████▉   | 9/13 [00:35<00:15,  3.86s/it]                                              {'loss': 1.1252, 'grad_norm': 4.762696266174316, 'learning_rate': 1.923076923076923e-05, 'epoch': 0.69}
- 69%|██████▉   | 9/13 [00:35<00:15,  3.86s/it] 77%|███████▋  | 10/13 [00:37<00:09,  3.25s/it]                                               {'loss': 1.1102, 'grad_norm': 4.794595718383789, 'learning_rate': 1.5384615384615387e-05, 'epoch': 0.77}
- 77%|███████▋  | 10/13 [00:37<00:09,  3.25s/it] 85%|████████▍ | 11/13 [00:39<00:05,  2.99s/it]                                               {'loss': 1.1597, 'grad_norm': 5.6715779304504395, 'learning_rate': 1.153846153846154e-05, 'epoch': 0.85}
- 85%|████████▍ | 11/13 [00:39<00:05,  2.99s/it] 92%|█████████▏| 12/13 [00:42<00:02,  2.89s/it]                                               {'loss': 1.0774, 'grad_norm': 3.1374168395996094, 'learning_rate': 7.692307692307694e-06, 'epoch': 0.92}
- 92%|█████████▏| 12/13 [00:42<00:02,  2.89s/it]100%|██████████| 13/13 [00:46<00:00,  3.30s/it]                                               {'loss': 0.9807, 'grad_norm': 5.068216323852539, 'learning_rate': 3.846153846153847e-06, 'epoch': 1.0}
-100%|██████████| 13/13 [00:46<00:00,  3.30s/it]                                               {'train_runtime': 46.5136, 'train_samples_per_second': 1.118, 'train_steps_per_second': 0.279, 'train_loss': 1.2187366760694063, 'epoch': 1.0}
-100%|██████████| 13/13 [00:46<00:00,  3.30s/it]100%|██████████| 13/13 [00:46<00:00,  3.58s/it]
-Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 39.29it/s]
-  0%|          | 0/12 [00:00<?, ?it/s]/root/miniconda3/envs/cxh/lib/python3.12/site-packages/torch/utils/checkpoint.py:85: UserWarning: None of the inputs have requires_grad=True. Gradients will be None
-  warnings.warn(
-  8%|▊         | 1/12 [00:03<00:40,  3.70s/it]                                              {'loss': 1.9493, 'grad_norm': 3.6907713413238525, 'learning_rate': 5e-05, 'epoch': 0.08}
-  8%|▊         | 1/12 [00:03<00:40,  3.70s/it] 17%|█▋        | 2/12 [00:07<00:37,  3.74s/it]                                              {'loss': 0.8479, 'grad_norm': 4.4673871994018555, 'learning_rate': 4.5833333333333334e-05, 'epoch': 0.16}
- 17%|█▋        | 2/12 [00:07<00:37,  3.74s/it] 25%|██▌       | 3/12 [00:10<00:30,  3.41s/it]                                              {'loss': 1.2663, 'grad_norm': 4.0031819343566895, 'learning_rate': 4.166666666666667e-05, 'epoch': 0.24}
- 25%|██▌       | 3/12 [00:10<00:30,  3.41s/it] 33%|███▎      | 4/12 [00:12<00:24,  3.02s/it]                                              {'loss': 1.2874, 'grad_norm': 3.8708534240722656, 'learning_rate': 3.7500000000000003e-05, 'epoch': 0.32}
- 33%|███▎      | 4/12 [00:12<00:24,  3.02s/it] 42%|████▏     | 5/12 [00:18<00:26,  3.80s/it]                                              {'loss': 1.4587, 'grad_norm': 5.652550220489502, 'learning_rate': 3.3333333333333335e-05, 'epoch': 0.4}
- 42%|████▏     | 5/12 [00:18<00:26,  3.80s/it] 50%|█████     | 6/12 [00:23<00:25,  4.18s/it]                                              {'loss': 1.7968, 'grad_norm': 6.547534465789795, 'learning_rate': 2.916666666666667e-05, 'epoch': 0.48}
- 50%|█████     | 6/12 [00:23<00:25,  4.18s/it] 58%|█████▊    | 7/12 [00:26<00:19,  3.84s/it]                                              {'loss': 0.8348, 'grad_norm': 3.3077023029327393, 'learning_rate': 2.5e-05, 'epoch': 0.56}
- 58%|█████▊    | 7/12 [00:26<00:19,  3.84s/it] 67%|██████▋   | 8/12 [00:30<00:15,  3.98s/it]                                              {'loss': 1.1269, 'grad_norm': 4.4178242683410645, 'learning_rate': 2.0833333333333336e-05, 'epoch': 0.64}
- 67%|██████▋   | 8/12 [00:30<00:15,  3.98s/it] 75%|███████▌  | 9/12 [00:34<00:12,  4.13s/it]                                              {'loss': 1.1582, 'grad_norm': 6.595350742340088, 'learning_rate': 1.6666666666666667e-05, 'epoch': 0.72}
- 75%|███████▌  | 9/12 [00:34<00:12,  4.13s/it] 83%|████████▎ | 10/12 [00:38<00:07,  3.88s/it]                                               {'loss': 0.84, 'grad_norm': 5.5101494789123535, 'learning_rate': 1.25e-05, 'epoch': 0.8}
- 83%|████████▎ | 10/12 [00:38<00:07,  3.88s/it] 92%|█████████▏| 11/12 [00:41<00:03,  3.76s/it]                                               {'loss': 0.7517, 'grad_norm': 6.615015983581543, 'learning_rate': 8.333333333333334e-06, 'epoch': 0.88}
- 92%|█████████▏| 11/12 [00:41<00:03,  3.76s/it]100%|██████████| 12/12 [00:44<00:00,  3.36s/it]                                               {'loss': 0.7427, 'grad_norm': 5.554629325866699, 'learning_rate': 4.166666666666667e-06, 'epoch': 0.96}
-100%|██████████| 12/12 [00:44<00:00,  3.36s/it]                                               {'train_runtime': 44.1324, 'train_samples_per_second': 1.133, 'train_steps_per_second': 0.272, 'train_loss': 1.171724945306778, 'epoch': 0.96}
-100%|██████████| 12/12 [00:44<00:00,  3.36s/it]100%|██████████| 12/12 [00:44<00:00,  3.68s/it]
-[103/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[104/200] 开始四智能体训练: where was hottest summer 2.54 above average Concise answer only.
-[104/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[105/200] 开始四智能体训练: where was the summer 3.41 above average Give a very brief answer.
-[105/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[106/200] 开始四智能体训练: which place had the driest January Write a very short answer.
-[106/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[107/200] 开始四智能体训练: what colour is the map of australia, pink or orange Be succinct.
-[107/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[108/200] 开始四智能体训练: where was the summer 1.75 above average Give a very brief answer.
-[108/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[109/200] 开始四智能体训练: When did UK reached 23 million population? Short answer required.
-[109/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[110/200] 开始四智能体训练: Which country reached 23 million by 1850? Keep it brief.
-[110/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[111/200] 开始四智能体训练: When will Australia reach closer to 23 million population? Give a very brief answer.
-[111/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[112/200] 开始四智能体训练: What is equivalent to 23 million population as given in the info graphic? Keep it brief.
-[112/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[113/200] 开始四智能体训练: The country Australia is highlighted in which color- yellow, red, green, white? Short answer required.
-[113/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[114/200] 开始四智能体训练: What is the median country size of Australia? Answer briefly.
-[114/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[115/200] 开始四智能体训练: Compared to 2015 Q4, volume for 2016 Q1 goes - higher or lower? Short answer required.
-[115/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[116/200] 开始四智能体训练: Which authority act as the rule maker as per the flowchart? Keep it brief.
-[116/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[117/200] 开始四智能体训练: Who is responsible for energy laws and market framework? Give a very brief answer.
-[117/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[118/200] 开始四智能体训练: Which authority acts as an adviser to governments? Quick response, please.
-[118/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[119/200] 开始四智能体训练: How many points comes under 'Energy Security Board'? Be succinct.
-[119/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[120/200] 开始四智能体训练: Which is the least visited domestic destination in Western Australia in the year 2014? Write a very short answer.
-[120/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[121/200] 开始四智能体训练: What is the widely used mode of transport for the travellers who visited New South Wales in the year 2014? Concise answe
-[121/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[122/200] 开始四智能体训练: Which is the most visited domestic destination in Australia in the year 2014? Short answer required.
-[122/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[123/200] 开始四智能体训练: Which is the only town in the Australian Capital Territory? Write a very short answer.
-[123/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[124/200] 开始四智能体训练: What percentage of Victoria visitors didn't go to Melbourne? Be succinct.
-[124/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[125/200] 开始四智能体训练: How many states in Australia are mentioned here? Be succinct.
-[125/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[126/200] 开始四智能体训练: What percentage of the visitors to WA didn't go to Perth? Write a very short answer.
-[126/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[127/200] 开始四智能体训练: What is the highest national immunisation coverage rate for children in September 2018? Answer briefly.
-[127/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[128/200] 开始四智能体训练: Which age group of children has the lowest immunisation coverage rate in September 2018? Write a very short answer.
-[128/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[129/200] 开始四智能体训练: What is the lowest immunisation coverage rate for children in September 2018? Keep it brief.
-[129/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[130/200] 开始四智能体训练: Which age group of children has the highest immunisation coverage rate in September 2018? Be succinct.
-[130/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[131/200] 开始四智能体训练: Which brand phone has the highest market share in Australia in the year 2010? Short answer required.
-[131/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[132/200] 开始四智能体训练: Which mobile social networking site contributes to lowest market share in Australia in the year 2010? Be succinct.
-[132/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[133/200] 开始四智能体训练: Which is the least popular online activity on the phones in the year 2010? Be succinct.
-[133/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[134/200] 开始四智能体训练: Which mobile social networking site contributes to highest market share in Australia in the year 2010? Answer briefly.
-[134/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[135/200] 开始四智能体训练: How many seasons are mentioned in the image ? Quick response, please.
-[135/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[136/200] 开始四智能体训练: Which animal is shown in the info graphic of Australia s Wildfires- kangaroo, lion, teddy bear, elephant? Keep it brief.
-[136/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[137/200] 开始四智能体训练: What is the total percentage of people aged between 18 and 49 years? Keep it brief.
-[137/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[138/200] 开始四智能体训练: What is the percentage of senior citizens in the pie chart? Short answer required.
-[138/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[139/200] 开始四智能体训练: Which color shows the percentage of people who fall between the age group 50 and 64, blue, green, orange or yellow? Answ
-[139/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[140/200] 开始四智能体训练: What is total percentage of people falling into both gender ? Concise answer only.
-[140/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[141/200] 开始四智能体训练: What is the total percentage of people aged between 30 to 64 years? Quick response, please.
-[141/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[142/200] 开始四智能体训练: Calculate the total percentage of people aged between 18 and 65+ years? Give a very brief answer.
-[142/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[143/200] 开始四智能体训练: Calculate the total percentage of people aged between 50 and 65+ years? Short answer required.
-[143/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[144/200] 开始四智能体训练: What is the total percentage of people that fall between the age group 18 and 64 years? Write a very short answer.
-[144/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[145/200] 开始四智能体训练: Which color shows the percentage of people falling under the age group 18 and 29 years, green, blue, or yellow? Short an
-[145/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[146/200] 开始四智能体训练: Which color shows the percentage of people who are senior citizens blue, orange, or green? Write a very short answer.
-[146/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[147/200] 开始四智能体训练: What is the total percentage of church-goers and active practisers Concise answer only.
-[147/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[148/200] 开始四智能体训练: in the past 100 years, what has the increase in percentage been of australians not identifying with any religion Concise
-[148/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[149/200] 开始四智能体训练: what is the total percentage of all other religions and religions not defined Quick response, please.
-[149/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[150/200] 开始四智能体训练: what has been the percentage in 2001? Answer briefly.
-[150/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[151/200] 开始四智能体训练: which religion has the most number of followers Answer briefly.
-[151/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[152/200] 开始四智能体训练: How many houses were lit up using power from wind energy, 1.3 million or 3.1 million? Write a very short answer.
-[152/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[153/200] 开始四智能体训练: how many intend to use streaming - 3D spots Short answer required.
-[153/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[154/200] 开始四智能体训练: which are the years mentioned in the image Write a very short answer.
-[154/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[155/200] 开始四智能体训练: how many times is 2018 mentioned in the document Short answer required.
-[155/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[156/200] 开始四智能体训练: how many are not looking at using voice marketing strategies for clients Be succinct.
-[156/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[157/200] 开始四智能体训练: which creative format has been used the least Write a very short answer.
-[157/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[158/200] 开始四智能体训练: How many mining locations are shown in the map ? Concise answer only.
-[158/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[159/200] 开始四智能体训练: How many people work for the Bootu Creek Project? Give a very brief answer.
-[159/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[160/200] 开始四智能体训练: What is written inside the image of a computer? Be succinct.
-[160/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[161/200] 开始四智能体训练: How many creatures are shown in the images? Be succinct.
-[161/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[162/200] 开始四智能体训练: How many deaths have been reported due to Box Jellyfish? Short answer required.
-[162/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[163/200] 开始四智能体训练: Which country shows the highest GDP per Capita in 2007 in terms of carbon productivity? Write a very short answer.
-[163/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[164/200] 开始四智能体训练: Which country shows the lowest GDP per capita in 2007 in terms of carbon productivity ? Write a very short answer.
-[164/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[165/200] 开始四智能体训练: What is energy productivity achieved by Japan in the year 2007? Answer briefly.
-[165/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[166/200] 开始四智能体训练: What was the energy productivity of USA in 1980? Answer briefly.
-[166/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[167/200] 开始四智能体训练: What was the energy productivity of GBR in 2007 ? Concise answer only.
-[167/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[168/200] 开始四智能体训练: Which country shows the least energy productivity in the year 1980? Short answer required.
-[168/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[169/200] 开始四智能体训练: Which country has the lowest energy productivity in 1980 USA, GBR, or JPN ? Give a very brief answer.
-[169/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[170/200] 开始四智能体训练: Which country among GBR, GER, and AUS has the highest energy productivity in 2007? Concise answer only.
-[170/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[171/200] 开始四智能体训练: Which country has second highest value in energy productivity in the year 1980? Give a very brief answer.
-[171/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[172/200] 开始四智能体训练: What is the third lowest value in energy productivity in the year 2007 ? Short answer required.
-[172/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[173/200] 开始四智能体训练: what has been the spend on domestic tourism? Keep it brief.
-[173/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[174/200] 开始四智能体训练: what has been the count of domestic overnight visitors Quick response, please.
-[174/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[175/200] 开始四智能体训练: By how much million is domestic nights more than international nights Keep it brief.
-[175/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[176/200] 开始四智能体训练: in which sector is the spend higher? Be succinct.
-[176/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[177/200] 开始四智能体训练: in which sector is the spend lower? Short answer required.
-[177/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[178/200] 开始四智能体训练: in which year is the report published Give a very brief answer.
-[178/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[179/200] 开始四智能体训练: how many australians want live export phased-out Short answer required.
-[179/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[180/200] 开始四智能体训练: where are most sheep sourced? Concise answer only.
-[180/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[181/200] 开始四智能体训练: how many sheep are shown in the image Give a very brief answer.
-[181/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[182/200] 开始四智能体训练: what percentage of people in south australia want live export phased out? Concise answer only.
-[182/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[183/200] 开始四智能体训练: what percentage of people in western australia want live export phased out? Give a very brief answer.
-[183/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[184/200] 开始四智能体训练: what is the percentage of people in rural / country areas that do not want to end live export Keep it brief.
-[184/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[185/200] 开始四智能体训练: what type of negative practice is being discussed here? Concise answer only.
-[185/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[186/200] 开始四智能体训练: in which colour in the decimal digit shown, red or white? Quick response, please.
-[186/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[187/200] 开始四智能体训练: which island is shown in orange Give a very brief answer.
-[187/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[188/200] 开始四智能体训练: which state comes in between western australia and south australia Keep it brief.
-[188/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[189/200] 开始四智能体训练: which island is to the left of papua Quick response, please.
-[189/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[190/200] 开始四智能体训练: what is the colour of fiji island, red or purple Be succinct.
-[190/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[191/200] 开始四智能体训练: which state in is between norther territory and south australia Quick response, please.
-[191/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[192/200] 开始四智能体训练: which state is above papua Write a very short answer.
-[192/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[193/200] 开始四智能体训练: what is rain and cooler weather always reduce the risk of bushfires Give a very brief answer.
-[193/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[194/200] 开始四智能体训练: what has increased fuel loads Short answer required.
-[194/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[195/200] 开始四智能体训练: what is increasing heatwaves Give a very brief answer.
-[195/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[196/200] 开始四智能体训练: How many WHS/ OHS regulations are listed under the WorkSafe ACT? Keep it brief.
-[196/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[197/200] 开始四智能体训练: How many WHS / OHS are listed for all the Australian States & Territories ? Write a very short answer.
-[197/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[198/200] 开始四智能体训练: Which color represents South Australia on the map green, yellow or blue? Quick response, please.
-[198/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[199/200] 开始四智能体训练: The blue color on the map represents which wine region Tasmania, Western Australia or New South Wales ? Keep it brief.
-[199/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-[200/200] 开始四智能体训练: Which color is used to fill the largest section in the map blue, yellow, or green ? Concise answer only.
-[200/200] 完成: drafts=2 evaluations=4 professional_evolutions=2 evaluation_evolutions=2 global_downlinks=0 global_uploads=0
-b_magent agents: qwen_agent_1, qwen_agent_2, qwen_agent_3, qwen_agent_4
-rounds: 200
-qwen_agent_1: professional_records=147 curated_success_records=1 error_reflection_records=48 evaluation_records=0 lora_updates=1
-qwen_agent_2: professional_records=147 curated_success_records=1 error_reflection_records=48 evaluation_records=0 lora_updates=1
-qwen_agent_3: professional_records=150 curated_success_records=0 error_reflection_records=50 evaluation_records=0 lora_updates=1
-qwen_agent_4: professional_records=150 curated_success_records=2 error_reflection_records=48 evaluation_records=0 lora_updates=1
-report: /root/autodl-tmp/user/cxh/第二层-图片识别/train/b_magent_visual_training_report.json

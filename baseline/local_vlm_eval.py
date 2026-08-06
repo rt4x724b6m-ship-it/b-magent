@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import gc
 import json
+import random
 import re
 import sys
 import time
@@ -99,7 +100,7 @@ def resolve_image_path(dataset_path: Path, image_value: str) -> Path:
     return image_path
 
 
-def load_samples(dataset_path: Path, limit: int | None) -> list[dict[str, Any]]:
+def load_samples(dataset_path: Path, limit: int | None, shuffle_seed: int | None = None) -> list[dict[str, Any]]:
     samples: list[dict[str, Any]] = []
     with dataset_path.open(encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, start=1):
@@ -115,8 +116,10 @@ def load_samples(dataset_path: Path, limit: int | None) -> list[dict[str, Any]]:
                 raise ValueError(f"{dataset_path}:{line_number} has no reference answer")
             row["answers"] = [str(answer) for answer in answers]
             samples.append(row)
-            if limit is not None and len(samples) >= limit:
-                break
+    if shuffle_seed is not None:
+        random.Random(shuffle_seed).shuffle(samples)
+    if limit is not None:
+        samples = samples[:limit]
     return samples
 
 
@@ -125,8 +128,9 @@ def evaluate(
     model: VisionModel,
     model_path: str,
     limit: int | None = DEFAULT_LIMIT,
+    shuffle_seed: int | None = None,
 ) -> EvaluationReport:
-    samples = load_samples(dataset_path, limit)
+    samples = load_samples(dataset_path, limit, shuffle_seed=shuffle_seed)
     predictions: list[Prediction] = []
     started = time.perf_counter()
 

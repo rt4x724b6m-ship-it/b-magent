@@ -20,7 +20,7 @@ from b_magent.datasets import (
 )
 from b_magent.local_qwen import _extract_image_path
 from b_magent.lora import is_improved_answer_correct
-from train.four_agent_private_train import (
+from train.six_agent_private_train import (
     AGENT_NAMES,
     AgentVote,
     UNRESOLVED_VISUAL_ANSWER,

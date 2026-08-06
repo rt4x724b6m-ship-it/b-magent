@@ -13,7 +13,7 @@ add_project_root_to_sys_path()
 
 from baseline.qwen_gsm8k import STANDARD_TEST_LIMIT
 from b_magent.agent import QwenAgent
-from train.four_agent_private_train import (
+from train.six_agent_private_train import (
     AGENT_NAMES,
     DEFAULT_DATASET_DIR,
     STANDARD_PRIVATE_TRAIN_SIZE,

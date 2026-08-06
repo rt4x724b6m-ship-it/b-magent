@@ -48,9 +48,11 @@ from s_server import ServerKeyInformationStore
 
 AGENT_NAMES = tuple(f"qwen_agent_{index}" for index in range(1, 7))
 DEFAULT_DATASET_DIR = PROJECT_ROOT / "data" / "infographicsvqa"
-STANDARD_PRIVATE_TRAIN_SIZE = 200
+STANDARD_PRIVATE_TRAIN_SIZE = 400
 DEFAULT_PRIVATE_BATCH_SIZE = 4
 DEFAULT_TRAINING_LORA_THRESHOLD = 50
+DEFAULT_POST_TRAINING_VALIDATION_LIMIT = 500
+PARTICIPANTS_PER_ROUND = 3
 UNRESOLVED_VISUAL_ANSWER = "unable to determine"
 
 
@@ -234,6 +236,8 @@ class BMagentTrainingReport:
     evaluation_records: dict[str, int]
     lora_enabled: bool = False
     lora_updates: dict[str, int] = field(default_factory=dict)
+    final_lora_updates: list[LoraUpdate] = field(default_factory=list)
+    validation: VotingReport | None = None
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -347,6 +351,14 @@ def run_b_magent_training_entry(
         if on_round_end is not None:
             on_round_end(index + 1, effective_rounds, round_report)
 
+    # Do not leave accepted, quality-gated samples unused merely because the
+    # final round did not reach the next refresh threshold.
+    final_lora_updates = (
+        lora_manager.flush_pending([agent.name for agent in agents])
+        if lora_manager is not None
+        else []
+    )
+
     return BMagentTrainingReport(
         dataset_dir=str(dataset_dir),
         data_dir=str(data_dir),
@@ -386,9 +398,14 @@ def run_b_magent_training_entry(
                 for round_report in training_rounds
                 for update in round_report.lora_updates
                 if update.agent_name == agent.name and update.trained
+            ) + sum(
+                1
+                for update in final_lora_updates
+                if update.agent_name == agent.name and update.trained
             )
             for agent in agents
         },
+        final_lora_updates=final_lora_updates,
     )
 
 
@@ -414,7 +431,7 @@ def infer_completed_training_rounds(data_dir: Path) -> int:
             payload = json.loads(line)
             if "self-evolution" in payload.get("tags", []):
                 completed_improvements += 1
-    return completed_improvements // 2
+    return completed_improvements // PARTICIPANTS_PER_ROUND
 
 
 def load_training_progress(data_dir: Path) -> int:
@@ -558,9 +575,16 @@ def run_six_agent_voting_on_test(
     split: str = "test",
     enable_server_cache: bool = True,
     official_infographicvqa_metrics: bool = False,
+    shuffle_seed: int | None = None,
 ) -> VotingReport:
     dataset = load_project_dataset(dataset_dir)
-    test_samples = dataset.load(split, limit=limit)
+    if shuffle_seed is not None:
+        data_list = dataset.load(split, limit=None)
+        random.seed(shuffle_seed)
+        random.shuffle(data_list)
+        test_samples = data_list[:limit] if limit is not None else data_list
+    else:
+        test_samples = dataset.load(split, limit=limit)
     if not test_samples:
         raise ValueError(f"no test samples found at {dataset_dir / f'{split}.jsonl'}")
     missing_agents = [agent_name for agent_name in agent_names if agent_name not in models]
@@ -699,12 +723,14 @@ def run_six_agent_voting_on_test(
                 if not server_synthesis.strip():
                     server_synthesis = UNRESOLVED_VISUAL_ANSWER
                 synthesized_answer = extract_prediction_answer(server_synthesis, sample)
-            fallback_answer = (
+            routed_answer = (
                 routed_vote(votes)
                 if server_model is not None and tag_index
                 else majority_vote(votes)
             )
-            final_answer = unanimous_answer or synthesized_answer or fallback_answer
+            # The server synthesis supplies additional context, but cannot
+            # override the routing decision made from the selected agents.
+            final_answer = unanimous_answer or routed_answer or synthesized_answer
             if is_visual and not final_answer:
                 final_answer = UNRESOLVED_VISUAL_ANSWER
             gold_answers = list(sample.answers) if is_visual else [sample.final_answer]
@@ -714,15 +740,15 @@ def run_six_agent_voting_on_test(
             if is_visual and official_infographicvqa_metrics:
                 if unanimous_answer and votes:
                     metric_answer = extract_visual_answer_text(votes[0].raw_prediction)
-                elif synthesized_answer:
-                    metric_answer = extract_visual_answer_text(server_synthesis)
-                else:
+                elif routed_answer:
                     source_vote = next(
-                        (vote for vote in votes if vote.predicted_answer == fallback_answer),
+                        (vote for vote in votes if vote.predicted_answer == routed_answer),
                         None,
                     )
                     if source_vote is not None:
                         metric_answer = extract_visual_answer_text(source_vote.raw_prediction)
+                elif synthesized_answer:
+                    metric_answer = extract_visual_answer_text(server_synthesis)
                 metric_answer = metric_answer or final_answer
             sample_anls = (
                 infographicvqa_official_anls(metric_answer, tuple(gold_answers))
@@ -754,13 +780,7 @@ def run_six_agent_voting_on_test(
                 requirements_missed = validation.requirements_missed
                 unsupported_claims = validation.unsupported_claims
             else:
-                if is_visual and official_infographicvqa_metrics:
-                    correct = normalize_infographicvqa_official_answer(metric_answer) in {
-                        normalize_infographicvqa_official_answer(answer)
-                        for answer in gold_answers
-                    }
-                else:
-                    correct = normalize(final_answer) in {normalize(answer) for answer in gold_answers}
+                correct = normalize(final_answer) in {normalize(answer) for answer in gold_answers}
             prediction = VotingPrediction(
                 index=index,
                 question=sample.question,
@@ -1034,18 +1054,34 @@ def unanimous_vote(votes: list[AgentVote], normalize: Callable[[str], str]) -> s
 
 
 def routed_vote(votes: list[AgentVote]) -> str:
-    """Use the most tag-matched agent unless the 2nd and 3rd agree."""
+    """Use majority vote among selected agents, weighted by tag-match scores."""
     votes = [vote for vote in votes if _is_usable_vote_answer(vote.predicted_answer)]
     if not votes:
         return ""
+
+    # Count votes for each answer
+    answer_counts: dict[str, int] = {}
+    for vote in votes:
+        answer_counts[vote.predicted_answer] = answer_counts.get(vote.predicted_answer, 0) + 1
+
+    # If there's a clear majority (>50%), use it
+    majority_threshold = len(votes) / 2
+    for answer, count in answer_counts.items():
+        if count > majority_threshold:
+            return answer
+
+    # Otherwise, use tag-match weighted selection
     ranked_votes = sorted(
         enumerate(votes),
         key=lambda indexed_vote: (indexed_vote[1].tag_match_score, -indexed_vote[0]),
         reverse=True,
     )
     ranked = [vote for _, vote in ranked_votes]
-    if len(ranked) >= 3 and ranked[1].predicted_answer == ranked[2].predicted_answer:
-        return ranked[1].predicted_answer
+
+    # Check if top 2 agents agree (weighted consensus)
+    if len(ranked) >= 2 and ranked[0].predicted_answer == ranked[1].predicted_answer:
+        return ranked[0].predicted_answer
+
     return ranked[0].predicted_answer
 
 
@@ -1557,10 +1593,12 @@ def build_participant_schedule(
     schedule: list[list[str]] = []
     while sum(remaining.values()) > 0:
         active = [agent_name for agent_name, count in remaining.items() if count > 0]
-        selected = rng.sample(active, min(3, len(active)))
-        if len(selected) < 3:
+        selected = rng.sample(active, min(PARTICIPANTS_PER_ROUND, len(active)))
+        if len(selected) < PARTICIPANTS_PER_ROUND:
             inactive = [agent_name for agent_name in AGENT_NAMES if agent_name not in selected]
-            selected.extend(rng.sample(inactive, 3 - len(selected)))
+            selected.extend(
+                rng.sample(inactive, PARTICIPANTS_PER_ROUND - len(selected))
+            )
         schedule.append(selected)
         for agent_name in selected:
             remaining[agent_name] = max(0, remaining[agent_name] - 1)
@@ -1772,6 +1810,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--private-train-size", type=int, default=STANDARD_PRIVATE_TRAIN_SIZE)
     parser.add_argument("--test-limit", type=int, default=STANDARD_TEST_LIMIT)
     parser.add_argument(
+        "--validation-limit",
+        type=int,
+        default=DEFAULT_POST_TRAINING_VALIDATION_LIMIT,
+        help="Number of leading validation-split samples evaluated after b-magent training.",
+    )
+    parser.add_argument(
+        "--skip-post-training-validation",
+        dest="post_training_validation",
+        action="store_false",
+        default=True,
+        help="Skip the bounded validation evaluation after b-magent training.",
+    )
+    parser.add_argument(
         "--local-qwen",
         action="store_true",
         help="Deprecated alias for --mode local-qwen-vote.",
@@ -1811,14 +1862,19 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--lora-max-seq-length", type=int, default=4096)
     parser.add_argument("--lora-train-batch-size", type=int, default=1)
-    parser.add_argument("--lora-gradient-accumulation-steps", type=int, default=1)
-    parser.add_argument("--lora-epochs", type=float, default=1.0)
-    parser.add_argument("--lora-learning-rate", type=float, default=5e-5)
+    parser.add_argument("--lora-gradient-accumulation-steps", type=int, default=4)
+    parser.add_argument("--lora-epochs", type=float, default=2.0)
+    parser.add_argument("--lora-learning-rate", type=float, default=1e-4)
+    parser.add_argument("--lora-warmup-ratio", type=float, default=0.05)
+    parser.add_argument("--lora-weight-decay", type=float, default=0.01)
+    parser.add_argument("--lora-r", type=int, default=16)
+    parser.add_argument("--lora-alpha", type=int, default=32)
+    parser.add_argument("--lora-dropout", type=float, default=0.05)
     parser.add_argument("--lora-min-evaluation-score", type=float, default=0.6)
     parser.add_argument(
         "--lora-min-training-examples",
         type=int,
-        default=16,
+        default=32,
         help="Minimum curated examples required before creating or refreshing an adapter.",
     )
     parser.add_argument(
@@ -1848,6 +1904,8 @@ def parse_args() -> argparse.Namespace:
     args.output = resolve_project_path(args.output)
     args.lora_output_dir = resolve_project_path(args.lora_output_dir)
     args.model_path = str(resolve_project_path(Path(args.model_path)))
+    if args.validation_limit <= 0:
+        raise ValueError("validation_limit must be positive")
     return args
 
 
@@ -1890,6 +1948,11 @@ def build_lora_manager(
         gradient_accumulation_steps=args.lora_gradient_accumulation_steps,
         num_train_epochs=args.lora_epochs,
         learning_rate=args.lora_learning_rate,
+        warmup_ratio=args.lora_warmup_ratio,
+        weight_decay=args.lora_weight_decay,
+        lora_r=args.lora_r,
+        lora_alpha=args.lora_alpha,
+        lora_dropout=args.lora_dropout,
     )
     release_model_memory = getattr(backend, "release_model_memory", None)
     return LoraEvolutionManager(
@@ -1964,6 +2027,38 @@ def main() -> None:
                 else None
             ),
         )
+        if args.post_training_validation:
+            release_model_memory = getattr(backend, "release_model_memory", None)
+            if callable(release_model_memory):
+                release_model_memory()
+            validation_models = build_six_local_qwen_agents(
+                args.model_path,
+                lora_output_dir=args.lora_output_dir,
+                data_dir=PROJECT_ROOT / "data",
+            )
+            validation_split = (
+                "validation"
+                if (args.dataset_dir / "validation.jsonl").is_file()
+                else "test"
+            )
+            report.validation = run_six_agent_voting_on_test(
+                args.dataset_dir,
+                validation_models,
+                limit=args.validation_limit,
+                split=validation_split,
+                official_infographicvqa_metrics=isinstance(project_dataset, VisionQADataset),
+            )
+            validation_anls = (
+                f" anls={report.validation.anls:.4f}"
+                if report.validation.anls is not None
+                else ""
+            )
+            print(
+                f"validation_split={validation_split} validation="
+                f"{report.validation.correct}/{report.validation.total}="
+                f"{report.validation.accuracy:.4f}{validation_anls}",
+                flush=True,
+            )
         export_json_report(report, args.output)
         print(f"b_magent agents: {', '.join(report.agents)}")
         print(f"rounds: {report.rounds}")

@@ -54,3 +54,17 @@ python -m baseline.local_vlm_eval \
 The JSON report includes every prediction, reference answer, per-sample ANLS,
 latency, errors, normalized accuracy, and aggregate ANLS. The default checkpoint
 is loaded with `local_files_only=True`, so the command never downloads a model.
+
+## Validation first 500 samples
+
+Run the standalone base Qwen2.5-VL-7B model on the first 500 labeled validation
+questions and score with ANLS:
+
+```bash
+python -m baseline.qwen_validation_500
+```
+
+The defaults are `models/Qwen2.5-VL-7B-Instruct`,
+`data/infographicsvqa/validation.jsonl`, and
+`baseline/qwen_validation_500_report.json`. Override them with `--model-path`,
+`--dataset`, or `--output`.

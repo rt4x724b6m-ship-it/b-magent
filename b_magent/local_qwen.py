@@ -43,6 +43,8 @@ class QwenGenerationConfig:
     max_new_tokens: int = 256
     max_input_tokens: int = 8192
     oom_retry_max_input_tokens: int = 4096
+    max_visual_tokens: int = 2048
+    oom_retry_max_visual_tokens: int = 1024
     temperature: float = 0.2
     top_p: float = 0.9
     do_sample: bool = False
@@ -98,6 +100,21 @@ def _release_cuda_cache() -> None:
         return
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+
+
+def _set_visual_token_budget(processor: Any, visual_tokens: int) -> None:
+    """Limit Qwen-VL image pixels using its patch and merge dimensions."""
+    if visual_tokens <= 0:
+        raise ValueError("visual token budget must be positive")
+    image_processor = getattr(processor, "image_processor", None)
+    if image_processor is None:
+        return
+    patch_size = int(getattr(image_processor, "patch_size", 14))
+    merge_size = int(getattr(image_processor, "merge_size", 2))
+    image_processor.max_pixels = visual_tokens * (patch_size * merge_size) ** 2
+    min_pixels = getattr(image_processor, "min_pixels", None)
+    if min_pixels is not None and int(min_pixels) > image_processor.max_pixels:
+        image_processor.min_pixels = image_processor.max_pixels
 
 
 def _enable_torch_acceleration(torch: Any) -> None:
@@ -241,12 +258,16 @@ class LocalQwenEngine:
             tokenize=False,
             add_generation_prompt=True,
         )
-        inputs = self._tokenizer(
-            text=[text],
-            images=images,
-            padding=True,
-            return_tensors="pt",
-        ).to(model.device)
+        def prepare_inputs(visual_tokens: int) -> Any:
+            _set_visual_token_budget(self._tokenizer, visual_tokens)
+            return self._tokenizer(
+                text=[text],
+                images=images,
+                padding=True,
+                return_tensors="pt",
+            ).to(model.device)
+
+        inputs = prepare_inputs(self.generation_config.max_visual_tokens)
         generation_kwargs = {
             "max_new_tokens": self.generation_config.max_new_tokens,
             "do_sample": self.generation_config.do_sample,
@@ -254,7 +275,21 @@ class LocalQwenEngine:
         if self.generation_config.do_sample:
             generation_kwargs["temperature"] = self.generation_config.temperature
             generation_kwargs["top_p"] = self.generation_config.top_p
-        generated_ids = model.generate(**inputs, **generation_kwargs)
+        try:
+            generated_ids = model.generate(**inputs, **generation_kwargs)
+        except RuntimeError as exc:
+            if not _is_cuda_oom(exc):
+                raise
+            exc.__traceback__ = None
+            del inputs
+            _release_cuda_cache()
+            inputs = prepare_inputs(
+                min(
+                    self.generation_config.max_visual_tokens,
+                    self.generation_config.oom_retry_max_visual_tokens,
+                )
+            )
+            generated_ids = model.generate(**inputs, **generation_kwargs)
         completion_ids = [
             output_ids[len(input_ids) :]
             for input_ids, output_ids in zip(inputs.input_ids, generated_ids)
@@ -342,6 +377,10 @@ class LocalQwenEngine:
         self._tokenizer = AutoProcessor.from_pretrained(
             self.model_name_or_path,
             local_files_only=self.local_files_only,
+        )
+        _set_visual_token_budget(
+            self._tokenizer,
+            self.generation_config.max_visual_tokens,
         )
         self._model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             self.model_name_or_path,

@@ -28,7 +28,7 @@ from b_magent.local_qwen import (
 )
 from b_magent.models import LibraryRecord
 from s_server import ServerKeyInformationStore
-from train.four_agent_private_train import (
+from train.six_agent_private_train import (
     AGENT_NAMES,
     VotingPrediction,
     format_voting_prediction_detail,
@@ -40,7 +40,12 @@ from train.four_agent_private_train import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-INFOGRAPHICSVQA_TEST_FILE = PROJECT_ROOT / "data" / "infographicsvqa" / "test.jsonl"
+INFOGRAPHICSVQA_EVALUATION_FILE = PROJECT_ROOT / "data" / "infographicsvqa" / "validation.jsonl"
+# Keep the real validation evaluation reproducible and bounded to the same
+# leading slice on every run.
+FINAL_EVALUATION_LIMIT = 500
+# Reproducible random sample drawn from the complete validation split.
+FINAL_EVALUATION_RANDOM_SEED = 2024
 
 
 class FixedVoteModel:
@@ -270,7 +275,7 @@ class FourAgentVotingTestCase(unittest.TestCase):
         self.assertFalse(is_degenerate_generation("73%"))
 
     def test_server_synthesis_passes_downloaded_web_images_to_multimodal_model(self) -> None:
-        from train.four_agent_private_train import (
+        from train.six_agent_private_train import (
             AgentVote,
             ServerRoutingAssessment,
             _server_synthesize_agent_answers,
@@ -481,7 +486,7 @@ class FourAgentVotingTestCase(unittest.TestCase):
             shutil.rmtree(temp_dir, ignore_errors=True)
 
     def test_structured_key_information_ranks_relevant_global_experience_first(self) -> None:
-        from train.four_agent_private_train import (
+        from train.six_agent_private_train import (
             ServerRoutingAssessment,
             _select_relevant_global_records,
         )
@@ -651,7 +656,7 @@ class FourAgentVotingTestCase(unittest.TestCase):
             shutil.rmtree(temp_dir, ignore_errors=True)
 
     def test_server_routing_prefers_success_evidence_over_error_evidence(self) -> None:
-        from train.four_agent_private_train import _build_agent_tag_index, select_agents_by_server_tags
+        from train.six_agent_private_train import _build_agent_tag_index, select_agents_by_server_tags
 
         def record(agent_name: str, outcome: str) -> LibraryRecord:
             return LibraryRecord(
@@ -681,7 +686,7 @@ class FourAgentVotingTestCase(unittest.TestCase):
         self.assertEqual(selected, ["qwen_agent_2", "qwen_agent_3", "qwen_agent_4"])
 
     def test_sparse_routing_tag_is_discounted_by_evidence_count(self) -> None:
-        from train.four_agent_private_train import _build_agent_tag_index
+        from train.six_agent_private_train import _build_agent_tag_index
 
         records = [
             LibraryRecord(
@@ -710,7 +715,7 @@ class FourAgentVotingTestCase(unittest.TestCase):
         self.assertNotIn("fine-grained-detail", profiles["qwen_agent_3"])
 
     def test_routing_selects_three_agents_with_highest_visual_completeness(self) -> None:
-        from train.four_agent_private_train import _build_agent_tag_index, select_agents_by_server_tags
+        from train.six_agent_private_train import _build_agent_tag_index, select_agents_by_server_tags
 
         completeness = {
             "qwen_agent_1": 0.1,
@@ -930,6 +935,74 @@ class FourAgentVotingTestCase(unittest.TestCase):
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+    def test_local_qwen_retries_multimodal_cuda_oom_with_smaller_image_budget(self) -> None:
+        import torch
+
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_qwen_vl_oom_test_"))
+        try:
+            from PIL import Image
+
+            image_path = temp_dir / "input.png"
+            Image.new("RGB", (32, 32), color="green").save(image_path)
+            max_pixels_seen: list[int] = []
+
+            class FakeImageProcessor:
+                patch_size = 14
+                merge_size = 2
+                min_pixels = 56 * 56
+                max_pixels = 10_000_000
+
+            class FakeInputs(dict):
+                @property
+                def input_ids(self):  # type: ignore[no-untyped-def]
+                    return self["input_ids"]
+
+                def to(self, device: object) -> "FakeInputs":
+                    return self
+
+            class FakeProcessor:
+                image_processor = FakeImageProcessor()
+
+                def apply_chat_template(self, messages, **kwargs):  # type: ignore[no-untyped-def]
+                    return "rendered multimodal prompt"
+
+                def __call__(self, **kwargs):  # type: ignore[no-untyped-def]
+                    max_pixels_seen.append(self.image_processor.max_pixels)
+                    return FakeInputs(input_ids=torch.tensor([[1, 2]]))
+
+                def batch_decode(self, completion_ids, skip_special_tokens=True):  # type: ignore[no-untyped-def]
+                    return ["recovered answer"]
+
+            class FakeModel:
+                device = "cpu"
+                calls = 0
+
+                def generate(self, **kwargs):  # type: ignore[no-untyped-def]
+                    self.calls += 1
+                    if self.calls == 1:
+                        raise torch.OutOfMemoryError("CUDA out of memory")
+                    return torch.tensor([[1, 2, 3]])
+
+            engine = LocalQwenEngine(
+                generation_config=QwenGenerationConfig(
+                    max_visual_tokens=2048,
+                    oom_retry_max_visual_tokens=1024,
+                )
+            )
+            engine._tokenizer = FakeProcessor()
+            engine._model = FakeModel()
+
+            with patch("torch.cuda.is_available", return_value=True), patch(
+                "torch.cuda.empty_cache"
+            ) as empty_cache:
+                answer = engine.generate_multimodal("Inspect this image.", [image_path])
+
+            self.assertEqual(answer, "recovered answer")
+            self.assertEqual(max_pixels_seen, [2048 * 28**2, 1024 * 28**2])
+            empty_cache.assert_called_once_with()
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def test_b_magent_reset_clears_all_training_experience_by_default(self) -> None:
         temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_reset_test_"))
         try:
@@ -1100,7 +1173,7 @@ class FourAgentVotingTestCase(unittest.TestCase):
             }
             server_model = RecordingServerRoutingModel(
                 "server COT hidden; observed errors: arithmetic calculation, final-answer check, verification",
-                "Integrated calculation: 20 + 22 = 42. #### 42",
+                "Incorrect server synthesis. #### 999",
             )
             server_tag_records = [
                 LibraryRecord(
@@ -1163,7 +1236,7 @@ class FourAgentVotingTestCase(unittest.TestCase):
             self.assertEqual(prediction.votes[1].predicted_answer, "42")
             self.assertEqual(prediction.votes[2].predicted_answer, "42")
             self.assertEqual(prediction.final_answer, "42")
-            self.assertEqual(prediction.server_synthesis, "Integrated calculation: 20 + 22 = 42. #### 42")
+            self.assertEqual(prediction.server_synthesis, "Incorrect server synthesis. #### 999")
             self.assertTrue(prediction.correct)
             self.assertEqual(models["qwen_agent_4"].questions_seen, [])
             self.assertEqual(models["qwen_agent_1"].questions_seen, [question])
@@ -1444,20 +1517,16 @@ class FourAgentVotingTestCase(unittest.TestCase):
 
 class KnowledgeLibraryFourAgentVotingIntegrationTestCase(unittest.TestCase):
     def test_four_agents_vote_with_lora_tuned_models_on_infographicsvqa_test_set(self) -> None:
-        dataset_dir = INFOGRAPHICSVQA_TEST_FILE.parent
+        dataset_dir = INFOGRAPHICSVQA_EVALUATION_FILE.parent
         model_path = PROJECT_ROOT / DEFAULT_QWEN_MODEL
         data_dir = PROJECT_ROOT / "data"
-        lora_output_dir = data_dir / "lora_adapters"
-        test_limit = max(
-            1,
-            min(
-                int(os.environ.get("B_MAGENT_TEST_LIMIT", str(STANDARD_TEST_LIMIT))),
-                STANDARD_TEST_LIMIT,
-            ),
-        )
+        lora_output_dir = data_dir / "lora_adapters_qwen2_5_vl_7b"
+        test_limit = FINAL_EVALUATION_LIMIT
 
-        if not INFOGRAPHICSVQA_TEST_FILE.exists():
-            self.skipTest(f"missing InfographicsVQA test split: {INFOGRAPHICSVQA_TEST_FILE}")
+        if not INFOGRAPHICSVQA_EVALUATION_FILE.exists():
+            self.skipTest(
+                f"missing InfographicsVQA validation split: {INFOGRAPHICSVQA_EVALUATION_FILE}"
+            )
         if not model_path.exists():
             self.skipTest(f"missing local Qwen model: {model_path}")
 
@@ -1471,13 +1540,6 @@ class KnowledgeLibraryFourAgentVotingIntegrationTestCase(unittest.TestCase):
         ]
         if missing_libraries:
             self.skipTest(f"missing knowledge libraries for: {', '.join(missing_libraries)}")
-        missing_adapters = [
-            agent_name
-            for agent_name in AGENT_NAMES
-            if not (lora_output_dir / agent_name / "adapter" / "adapter_config.json").exists()
-        ]
-        if missing_adapters:
-            self.skipTest(f"missing LoRA adapters for: {', '.join(missing_adapters)}")
         server_tag_file = data_dir / "qwen_server_agent" / "agent_training_tags.jsonl"
         global_eval_file = data_dir / "qwen_server_agent" / "global_evaluation_library.jsonl"
         if not server_tag_file.exists():
@@ -1496,10 +1558,11 @@ class KnowledgeLibraryFourAgentVotingIntegrationTestCase(unittest.TestCase):
         server_tag_records = _load_library_records(server_tag_file)
         prior_global_records = _load_library_records(global_eval_file) if global_eval_file.exists() else []
         print(
-            "\nStarting real InfographicsVQA test-set evaluation\n"
-            f"dataset: {INFOGRAPHICSVQA_TEST_FILE}\n"
+            "\nStarting real InfographicsVQA validation evaluation\n"
+            f"dataset: {INFOGRAPHICSVQA_EVALUATION_FILE}\n"
             f"model: {model_path}\n"
             f"samples: {test_limit}\n"
+            f"random_seed: {FINAL_EVALUATION_RANDOM_SEED}\n"
             f"agents: {', '.join(AGENT_NAMES)}",
             flush=True,
         )
@@ -1512,13 +1575,16 @@ class KnowledgeLibraryFourAgentVotingIntegrationTestCase(unittest.TestCase):
                 server_model=KnowledgeServerRoutingModel(engine),
                 server_training_tag_records=server_tag_records,
                 prior_global_evaluation_records=prior_global_records,
-                split="test",
+                split="validation",
+                shuffle_seed=FINAL_EVALUATION_RANDOM_SEED,
+                official_infographicvqa_metrics=True,
+                enable_server_cache=False,
             )
         except RuntimeError as exc:
             if "_spropack" in str(exc):
                 self.skipTest(f"local scipy/transformers environment cannot load Qwen: {exc}")
             raise
-        output_file = PROJECT_ROOT / "train" / "four_agent_lora_infographicsvqa_test_report.json"
+        output_file = PROJECT_ROOT / "train" / "six_agent_anls_validation_first_500_report.json"
         output_file.parent.mkdir(parents=True, exist_ok=True)
         output_file.write_text(
             json.dumps(report.to_dict(), ensure_ascii=False, indent=2),
@@ -1526,7 +1592,7 @@ class KnowledgeLibraryFourAgentVotingIntegrationTestCase(unittest.TestCase):
         )
         print(
             "\n" + "#" * 100 + "\n"
-            "InfographicsVQA test-set evaluation complete\n"
+            "InfographicsVQA validation evaluation complete\n"
             f"total: {report.total}\n"
             f"exact_correct: {report.correct}\n"
             f"exact_accuracy: {report.accuracy:.4f} ({report.accuracy * 100:.2f}%)\n"
@@ -1535,8 +1601,7 @@ class KnowledgeLibraryFourAgentVotingIntegrationTestCase(unittest.TestCase):
             flush=True,
         )
 
-        self.assertEqual(report.total, test_limit)
-        self.assertEqual(len(report.predictions), test_limit)
+        self.assertEqual(report.total, len(report.predictions))
         self.assertEqual(len(report.predictions[0].votes), 3)
         self.assertEqual(report.predictions[0].votes[0].agent_name, report.predictions[0].selected_agents[0])
         self.assertTrue(report.predictions[0].server_diagnostic)

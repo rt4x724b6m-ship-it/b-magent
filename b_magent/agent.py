@@ -64,19 +64,11 @@ class QwenAgent:
 
     def solve_task(self, task: str, private_training: list[str]) -> Draft:
         visible_task = _strip_gold_annotations(task)
-        professional_records = self.professional_library.search(
-            visible_task,
-            exclude_tags={
-                "error-reflection-experience",
-                "evaluated-experience",
-                "lora-training-metadata",
-            },
-        )
+        professional_memory = self._professional_memory(visible_task)
         evaluation_records = self.evaluation_library.search(
             visible_task,
             exclude_tags={"error-evaluation-experience"},
         )
-        professional_memory = [record.summary for record in professional_records]
         evaluation_alerts = [record.summary for record in evaluation_records]
         answer, thought_trace = self.backend.solve(
             self.name,
@@ -124,17 +116,7 @@ class QwenAgent:
             )
             for evaluation in evaluations
         ]
-        professional_memory = [
-            record.summary
-            for record in self.professional_library.search(
-                visible_task,
-                exclude_tags={
-                    "error-reflection-experience",
-                    "evaluated-experience",
-                    "lora-training-metadata",
-                },
-            )
-        ]
+        professional_memory = self._professional_memory(visible_task)
         evaluation_alerts = [
             record.summary
             for record in self.evaluation_library.search(
@@ -312,6 +294,38 @@ class QwenAgent:
             if samples:
                 return [sample.to_training_text() for sample in samples]
         return []
+
+    def _professional_memory(self, visible_task: str) -> list[str]:
+        """Retrieve successful patterns plus one relevant prior failure as a check."""
+        successes = self.professional_library.search(
+            visible_task,
+            exclude_tags={
+                "error-reflection-experience",
+                "evaluated-experience",
+                "lora-training-metadata",
+            },
+        )
+        error_candidates = self.professional_library.search(
+            visible_task,
+            limit=8,
+            exclude_tags={
+                "curated-success-experience",
+                "evaluated-experience",
+                "private-training",
+                "lora-training-metadata",
+            },
+        )
+        error_checks = [
+            record for record in error_candidates
+            if "error-reflection-experience" in record.tags
+        ][:1]
+        return [
+            *(record.summary for record in successes),
+            *(
+                f"Cautionary check from a prior error (not task evidence): {record.summary}"
+                for record in error_checks
+            ),
+        ]
 
     def _next_private_batch(self, private_items: list[str], batch_size: int | None) -> list[str]:
         if batch_size is None or batch_size <= 0 or batch_size >= len(private_items):

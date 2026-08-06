@@ -182,6 +182,13 @@ def _build_professional_reflection(event: EvolutionInput, suggestions: list[str]
     task_hint = _task_hint(event.task)
     outcome = _outcome_label(event.is_correct)
     basis = _professional_basis(event.is_correct)
+    if event.is_correct is False:
+        return (
+            f"{event.specialty} error reflection for {task_hint}. "
+            f"Failure mode: {top_suggestion}. "
+            f"Correction: apply that check before committing an answer. "
+            "Verification: re-check the requested target, constraints, and final answer against primary evidence."
+        )
     if explicit_reflection:
         return (
             f"{event.specialty} {outcome} {basis} reflection for {task_hint}: "

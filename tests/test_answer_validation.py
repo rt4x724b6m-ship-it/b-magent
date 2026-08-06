@@ -20,7 +20,7 @@ from b_magent.answer_validation import (
 from b_magent.backend import DemoQwenBackend
 from b_magent.models import Draft
 from b_magent.datasets import GSM8KDataset
-from train.four_agent_private_train import AGENT_NAMES, run_four_agent_voting_on_test
+from train.six_agent_private_train import AGENT_NAMES, run_four_agent_voting_on_test
 
 
 class GPT56SolValidationTestCase(unittest.TestCase):

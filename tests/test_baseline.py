@@ -20,7 +20,7 @@ from baseline.qwen_gsm8k import (
 from b_magent.local_qwen import DEFAULT_QWEN_MODEL, LocalQwenAgentModel, NUMERIC_ANSWER_INSTRUCTION
 from b_magent.library import EvolutionLibrary
 from b_magent.models import LibraryRecord
-from train.four_agent_private_train import AGENT_NAMES, build_four_local_qwen_agents
+from train.six_agent_private_train import AGENT_NAMES, build_four_local_qwen_agents
 
 
 class FixedQwenModel:

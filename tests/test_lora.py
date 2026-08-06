@@ -232,10 +232,11 @@ class LoraEvolutionTestCase(unittest.TestCase):
 
         self.assertEqual(example.agent_name, "qwen_agent_1")
         self.assertIn("solve task", example.input)
-        self.assertIn("old answer", example.input)
-        self.assertIn("calculator(1+1)", example.input)
-        self.assertIn("fix final answer", example.input)
-        self.assertIn("correctness=0.90", example.input)
+        self.assertNotIn("old answer", example.input)
+        self.assertNotIn("calculator(1+1)", example.input)
+        self.assertIn("Task:\nsolve task", example.input)
+        self.assertNotIn("fix final answer", example.input)
+        self.assertNotIn("correctness=0.90", example.input)
         self.assertEqual(example.output, "improved answer")
 
     def test_visual_sft_example_uses_image_and_short_gold_answer(self) -> None:
@@ -388,7 +389,7 @@ class LoraEvolutionTestCase(unittest.TestCase):
 
             self.assertTrue(updates[0].trained)
             row = json.loads(manager.dataset_path("qwen_agent_1").read_text(encoding="utf-8").strip())
-            self.assertIn("Summarize the evidence already retrieved by the server", row["instruction"])
+            self.assertIn("Solve the task from the information supplied in the task", row["instruction"])
             self.assertNotIn("Gold reference response", row["input"])
             self.assertIn("Relevant sources: source-1: Hotels", row["output"])
             self.assertIn("Stay at Harbor Hotel for 100.", row["output"])
