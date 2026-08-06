@@ -20,7 +20,7 @@ from baseline.local_vlm_eval import (  # noqa: E402
     build_model,
 )
 from b_magent.datasets import VisionQADataset  # noqa: E402
-from train.four_agent_private_train import (  # noqa: E402
+from train.six_agent_training import (  # noqa: E402
     extract_prediction_answer,
     format_inference_question,
     infographic_anls,

@@ -25,6 +25,7 @@ from baseline.qwen_gsm8k import STANDARD_TEST_LIMIT, extract_numeric_answer, nor
 from b_magent.datasets import (
     GSM8KDataset,
     GSM8KSample,
+    VisionQADataset,
     VisionQASample,
     load_project_dataset,
 )
@@ -500,7 +501,7 @@ def downlink_global_evaluation_experience(
     return downlinks
 
 
-def run_four_agent_private_training(
+def run_six_agent_private_training(
     dataset_dir: Path,
     rounds: int = 3,
     batches_per_round: int = 32,
@@ -565,7 +566,7 @@ def run_four_agent_private_training(
     )
 
 
-def run_four_agent_voting_on_test(
+def run_six_agent_voting_on_test(
     dataset_dir: Path,
     models: dict[str, TrainableQwenModel],
     agent_names: tuple[str, ...] = AGENT_NAMES,
@@ -736,7 +737,7 @@ def run_four_agent_voting_on_test(
             requirements_met: list[str] = []
             requirements_missed: list[str] = []
             unsupported_claims: list[str] = []
-            if answer_validator is not None:
+            if answer_validator is not None and not is_visual:
                 answer_for_validation = server_synthesis or next(
                     (
                         vote.raw_prediction
@@ -816,7 +817,7 @@ def run_four_agent_voting_on_test(
     )
 
 
-def build_four_local_qwen_agents(
+def build_six_local_qwen_agents(
     model_name_or_path: str | Path = DEFAULT_QWEN_MODEL,
     agent_names: tuple[str, ...] = AGENT_NAMES,
     device_map: str = "auto",
@@ -1722,6 +1723,12 @@ def print_voting_prediction_detail(prediction: VotingPrediction, total: int) -> 
     print(format_voting_prediction_detail(prediction, total), flush=True)
 
 
+# Backward-compatible names for older launch commands.
+run_four_agent_private_training = run_six_agent_private_training
+run_four_agent_voting_on_test = run_six_agent_voting_on_test
+build_four_local_qwen_agents = build_six_local_qwen_agents
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Training entry for b_magent agents and benchmark runners.")
     parser.add_argument(
@@ -1730,7 +1737,7 @@ def parse_args() -> argparse.Namespace:
         default="b-magent",
         help=(
             "b-magent trains the b_magent agent libraries; placeholder keeps the old "
-            "offline memory baseline; local-qwen-vote runs four local Qwen voters."
+            "offline memory baseline; local-qwen-vote runs six local Qwen candidates."
         ),
     )
     parser.add_argument(
@@ -1837,10 +1844,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--answer-validator",
         choices=["gpt-5.6-sol", "local"],
-        default="gpt-5.6-sol",
+        default="local",
         help=(
-            "Correctness judge for evolved answers. gpt-5.6-sol requires OPENAI_API_KEY; "
-            "local keeps the deterministic fallback used by offline tests."
+            "Correctness judge for non-visual open-ended answers. InfographicVQA always uses "
+            "its dataset answers locally; gpt-5.6-sol requires OPENAI_API_KEY."
         ),
     )
     args = parser.parse_args()
@@ -1920,7 +1927,8 @@ def main() -> None:
     if mode == "b-magent":
         print(f"backend: {args.backend}", flush=True)
         print(f"model: {args.model_path}", flush=True)
-        if not load_project_dataset(args.dataset_dir).load("train", limit=1):
+        project_dataset = load_project_dataset(args.dataset_dir)
+        if not project_dataset.load("train", limit=1):
             raise ValueError(
                 f"no training samples found at {args.dataset_dir / 'train.jsonl'}; "
                 "training state was not cleared"
@@ -1939,7 +1947,7 @@ def main() -> None:
                     PROJECT_ROOT / "data" / "latest_report.json",
                     PROJECT_ROOT / "outputs" / "latest_report.json",
                     PROJECT_ROOT / "outputs" / "demo_report.json",
-                    PROJECT_ROOT / "train" / "four_agent_lora_voting_100_report.json",
+                    PROJECT_ROOT / "train" / "six_agent_lora_voting_100_report.json",
                 ),
             )
             print("已清空之前的训练存储", flush=True)
@@ -1961,6 +1969,7 @@ def main() -> None:
             answer_validator=(
                 build_answer_validator_from_env()
                 if args.answer_validator == "gpt-5.6-sol"
+                and not isinstance(project_dataset, VisionQADataset)
                 else None
             ),
         )
@@ -1982,12 +1991,13 @@ def main() -> None:
                 f"lora_updates={report.lora_updates.get(agent_name, 0)}"
             )
     elif mode == "local-qwen-vote":
-        models = build_four_local_qwen_agents(
+        project_dataset = load_project_dataset(args.dataset_dir)
+        models = build_six_local_qwen_agents(
             args.model_path,
             lora_output_dir=args.lora_output_dir,
             data_dir=PROJECT_ROOT / "data",
         )
-        voting_report = run_four_agent_voting_on_test(
+        voting_report = run_six_agent_voting_on_test(
             args.dataset_dir,
             models,
             limit=args.test_limit,
@@ -1995,6 +2005,7 @@ def main() -> None:
             answer_validator=(
                 build_answer_validator_from_env()
                 if args.answer_validator == "gpt-5.6-sol"
+                and not isinstance(project_dataset, VisionQADataset)
                 else None
             ),
         )
@@ -2011,7 +2022,7 @@ def main() -> None:
             f"{voting_report.accuracy:.4f} ({accuracy_percent:.2f}%)"
         )
     elif mode == "placeholder":
-        report = run_four_agent_private_training(
+        report = run_six_agent_private_training(
             dataset_dir=args.dataset_dir,
             rounds=args.rounds if args.rounds > 0 else 3,
             batches_per_round=args.batches_per_round,

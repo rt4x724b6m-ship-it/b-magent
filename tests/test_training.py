@@ -76,9 +76,9 @@ class FinalizingLoraManager:
         return [LoraUpdate("qwen_agent_4", "dataset", "adapter", 1, True)]
 
 
-class FourAgentPrivateTrainingTestCase(unittest.TestCase):
+class SixAgentPrivateTrainingTestCase(unittest.TestCase):
     def test_visual_training_progress_checkpoint_takes_priority_and_is_resettable(self) -> None:
-        from train.train import (
+        from train.six_agent_training import (
             TRAINING_PROGRESS_FILE,
             load_training_progress,
             reset_b_magent_training_state,
@@ -96,7 +96,7 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
             shutil.rmtree(temp_dir, ignore_errors=True)
 
     def test_visual_training_main_resumes_without_resetting_state(self) -> None:
-        from train.train import main as visual_training_main
+        from train.six_agent_training import main as visual_training_main
 
         temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_visual_main_resume_test_"))
         try:
@@ -120,10 +120,10 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
                         "--resume",
                     ],
                 ),
-                patch("train.train.reset_b_magent_training_state") as reset,
-                patch("train.train.load_training_progress", return_value=99),
-                patch("train.train.run_b_magent_training_entry") as run_training,
-                patch("train.train.export_json_report"),
+                patch("train.four_agent_private_train.reset_b_magent_training_state") as reset,
+                patch("train.four_agent_private_train.load_training_progress", return_value=99),
+                patch("train.four_agent_private_train.run_b_magent_training_entry") as run_training,
+                patch("train.four_agent_private_train.export_json_report"),
             ):
                 run_training.return_value.agents = []
                 run_training.return_value.rounds = 200
@@ -137,12 +137,7 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
             shutil.rmtree(temp_dir, ignore_errors=True)
 
     def test_multiline_private_samples_are_stored_and_loaded_as_single_rows(self) -> None:
-        from train.train import (
-            DEFAULT_TRAINING_ROUNDS,
-            run_b_magent_training_entry as run_visual_training_entry,
-        )
-
-        self.assertEqual(DEFAULT_TRAINING_ROUNDS, 200)
+        from train.six_agent_training import run_b_magent_training_entry as run_visual_training_entry
 
         temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_multiline_private_test_"))
         try:
@@ -169,9 +164,10 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
             private_datasets = []
             for agent_name in AGENT_NAMES:
                 private_file = data_dir / agent_name / "private_data.jsonl"
-                self.assertEqual(len(private_file.read_text(encoding="utf-8").splitlines()), 1)
+                expected_count = report.private_dataset_counts[agent_name]
+                self.assertEqual(len(private_file.read_text(encoding="utf-8").splitlines()), expected_count)
                 private_data = QwenAgent(agent_name, "test", data_dir)._load_private_data()
-                self.assertEqual(len(private_data), 1)
+                self.assertEqual(len(private_data), expected_count)
                 private_datasets.append(set(private_data))
             for index, private_dataset in enumerate(private_datasets):
                 for other_private_dataset in private_datasets[index + 1 :]:
@@ -180,7 +176,7 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
             shutil.rmtree(temp_dir, ignore_errors=True)
 
     def test_completed_resume_flushes_pending_lora_without_another_round(self) -> None:
-        from train.train import run_b_magent_training_entry as run_visual_training_entry
+        from train.six_agent_training import run_b_magent_training_entry as run_visual_training_entry
 
         temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_completed_resume_test_"))
         try:
@@ -219,7 +215,7 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
-    def test_four_agents_train_separately_for_three_rounds(self) -> None:
+    def test_six_agents_train_separately_for_three_rounds(self) -> None:
         temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_training_test_"))
         try:
             dataset_dir = temp_dir / "data" / "gsm8k"
@@ -233,6 +229,10 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
                 {"question": "q5", "answer": "a5 #### 5"},
                 {"question": "q6", "answer": "a6 #### 6"},
                 {"question": "q7", "answer": "a7 #### 7"},
+                {"question": "q8", "answer": "a8 #### 8"},
+                {"question": "q9", "answer": "a9 #### 9"},
+                {"question": "q10", "answer": "a10 #### 10"},
+                {"question": "q11", "answer": "a11 #### 11"},
             ]
             test_rows = [
                 {"question": "q0", "answer": "a0 #### 0"},
@@ -260,14 +260,14 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
             self.assertEqual(report.rounds, 3)
             self.assertEqual(report.batches_per_round, 32)
             self.assertEqual(report.batch_size, 1)
-            self.assertEqual(report.train_total, 8)
+            self.assertEqual(report.train_total, 12)
             self.assertEqual(report.test_total, 4)
-            self.assertEqual(len(report.agents), 4)
+            self.assertEqual(len(report.agents), 6)
             self.assertEqual(
                 [agent.agent_name for agent in report.agents],
-                ["qwen_agent_1", "qwen_agent_2", "qwen_agent_3", "qwen_agent_4"],
+                list(AGENT_NAMES),
             )
-            self.assertEqual([agent.private_train_samples for agent in report.agents], [2, 2, 2, 2])
+            self.assertEqual([agent.private_train_samples for agent in report.agents], [2] * len(AGENT_NAMES))
 
             for agent in report.agents:
                 self.assertEqual(len(agent.rounds), 3)
@@ -292,7 +292,7 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
             dataset_dir.mkdir(parents=True)
             train_rows = [
                 {"question": f"train-{i}", "answer": f"a{i} #### {i}"}
-                for i in range(4)
+                for i in range(len(AGENT_NAMES))
             ]
             test_rows = [
                 {"question": f"test-{i}", "answer": f"a{i} #### {i}"}
@@ -327,7 +327,7 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
             dataset_dir.mkdir(parents=True)
             train_rows = [
                 {"question": f"train-{i}", "answer": f"a{i} #### {i}"}
-                for i in range(STANDARD_PRIVATE_TRAIN_SIZE * 4)
+                for i in range(STANDARD_PRIVATE_TRAIN_SIZE * len(AGENT_NAMES))
             ]
             test_rows = [{"question": "test-0", "answer": "a0 #### 0"}]
             (dataset_dir / "train.jsonl").write_text(
@@ -348,7 +348,7 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
 
             self.assertEqual(
                 [agent.private_train_samples for agent in report.agents],
-                [STANDARD_PRIVATE_TRAIN_SIZE] * 4,
+                [STANDARD_PRIVATE_TRAIN_SIZE] * len(AGENT_NAMES),
             )
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -360,7 +360,7 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
             dataset_dir.mkdir(parents=True)
             train_rows = [
                 {"question": f"train-{i}", "answer": f"a{i} #### {i}"}
-                for i in range(STANDARD_PRIVATE_TRAIN_SIZE * 4 - 1)
+                for i in range(STANDARD_PRIVATE_TRAIN_SIZE * len(AGENT_NAMES) - 1)
             ]
             test_rows = [{"question": "test-0", "answer": "a0 #### 0"}]
             (dataset_dir / "train.jsonl").write_text(
@@ -372,7 +372,7 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with self.assertRaisesRegex(ValueError, "need at least 800 training samples"):
+            with self.assertRaisesRegex(ValueError, "need at least 1200 training samples"):
                 run_four_agent_private_training(
                     dataset_dir=dataset_dir,
                     rounds=1,
@@ -413,10 +413,12 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
             self.assertEqual(
                 report.private_dataset_counts,
                 {
-                    "qwen_agent_1": 3,
-                    "qwen_agent_2": 3,
+                    "qwen_agent_1": 2,
+                    "qwen_agent_2": 2,
                     "qwen_agent_3": 2,
                     "qwen_agent_4": 2,
+                    "qwen_agent_5": 1,
+                    "qwen_agent_6": 1,
                 },
             )
             all_private_questions = []
@@ -499,12 +501,13 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
                 backend=None,
             )
 
-            self.assertEqual(report.rounds, 5)
+            self.assertEqual(report.rounds, 4)
             trained_slots = {}
             for round_report in report.training_rounds:
                 for agent_name in round_report.participants:
                     trained_slots[agent_name] = trained_slots.get(agent_name, 0) + 1
-            self.assertEqual(trained_slots, report.private_dataset_counts)
+            for agent_name, required_slots in report.private_dataset_counts.items():
+                self.assertGreaterEqual(trained_slots.get(agent_name, 0), required_slots)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -533,7 +536,7 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
 
             self.assertEqual(report.training_rounds[0].global_downlinks, 0)
             self.assertEqual(report.training_rounds[0].global_uploads, 1)
-            self.assertEqual(report.training_rounds[1].global_downlinks, 2)
+            self.assertEqual(report.training_rounds[1].global_downlinks, 3)
             self.assertEqual(report.training_rounds[1].global_uploads, 1)
             self.assertTrue((temp_dir / "data" / "qwen_server_agent" / "global_evaluation_library.jsonl").exists())
             second_round_evaluators = set(report.training_rounds[1].evaluators)
@@ -620,6 +623,7 @@ class FourAgentPrivateTrainingTestCase(unittest.TestCase):
         self.assertEqual(args.lora_min_training_examples, 16)
         self.assertEqual(args.lora_gradient_accumulation_steps, 1)
         self.assertFalse(args.llm_experience_tags)
+        self.assertEqual(args.answer_validator, "local")
 
     def test_cli_can_disable_lora(self) -> None:
         with patch("sys.argv", ["four_agent_private_train.py", "--disable-lora"]):

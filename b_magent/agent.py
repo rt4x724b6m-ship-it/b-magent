@@ -171,7 +171,8 @@ class QwenAgent:
                 "Reflection: reviewed evaluator feedback and converted concrete suggestions "
                 "into an improved answer."
             )
-        if self.answer_validator is not None:
+        is_visual_task = "Image:" in task
+        if self.answer_validator is not None and not is_visual_task:
             validation = self.answer_validator.validate(task, revised_answer)
             is_correct = validation.correct
             peer_scores.append(

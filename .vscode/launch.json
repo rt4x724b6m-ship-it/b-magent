@@ -2,11 +2,11 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Train b-magent (local Qwen, 200 rounds)",
+            "name": "Train six visual agents (local Qwen, 200 rounds)",
             "type": "debugpy",
             "request": "launch",
             "python": "/home/cxh/.conda/envs/b-magent-complete/bin/python",
-            "module": "train.four_agent_private_train",
+            "module": "train.six_agent_training",
             "cwd": "${workspaceFolder}",
             "console": "integratedTerminal",
             "env": {
@@ -16,10 +16,10 @@
             "args": [
                 "--mode", "b-magent",
                 "--backend", "local-qwen",
-                "--model-path", "${workspaceFolder}/models/Qwen2.5-VL-3B-Instruct",
-                "--dataset-dir", "${workspaceFolder}/data/gsm8k",
+                "--model-path", "${workspaceFolder}/models/Qwen2.5-VL-7B-Instruct",
+                "--dataset-dir", "${workspaceFolder}/data/infographicsvqa",
                 "--rounds", "200",
-                "--output", "${workspaceFolder}/train/b_magent_training_report.json"
+                "--output", "${workspaceFolder}/train/six_agent_training_report.json"
             ]
         },
         {

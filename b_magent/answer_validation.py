@@ -143,7 +143,7 @@ def build_answer_validator_from_env() -> GPT56SolRequirementValidator:
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError(
-            "OPENAI_API_KEY is required because --answer-validator defaults to gpt-5.6-sol"
+            "OPENAI_API_KEY is required when --answer-validator gpt-5.6-sol is selected"
         )
     return GPT56SolRequirementValidator(
         api_key,

@@ -6,19 +6,19 @@ from pathlib import Path
 
 from b_magent.local_qwen import DEFAULT_QWEN_MODEL, LocalQwenEngine
 from b_magent.models import LibraryRecord
-from train.four_agent_private_train import (
+from train.six_agent_training import (
     AGENT_NAMES,
     VotingPrediction,
-    build_four_local_qwen_agents,
+    build_six_local_qwen_agents,
     extract_visual_answer_text,
     normalize_infographicvqa_official_answer,
-    run_four_agent_voting_on_test,
+    run_six_agent_voting_on_test,
 )
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_DATASET_DIR = PROJECT_ROOT / "data" / "infographicsvqa"
-DEFAULT_OUTPUT = PROJECT_ROOT / "train" / "four_agent_lora_infographicsvqa_validation_report.json"
+DEFAULT_OUTPUT = PROJECT_ROOT / "train" / "six_agent_lora_infographicsvqa_validation_report.json"
 DEFAULT_LORA_OUTPUT_DIR = PROJECT_ROOT / "data" / "lora_adapters_qwen2_5_vl_7b"
 
 
@@ -143,7 +143,7 @@ def main() -> None:
         professional_library = args.data_dir / agent_name / "professional_library.jsonl"
         load_library_records(professional_library)
 
-    models = build_four_local_qwen_agents(
+    models = build_six_local_qwen_agents(
         model_name_or_path=args.model_path,
         agent_names=AGENT_NAMES,
         device_map=args.device_map,
@@ -165,7 +165,7 @@ def main() -> None:
         "recognizers per image: 3",
         flush=True,
     )
-    report = run_four_agent_voting_on_test(
+    report = run_six_agent_voting_on_test(
         dataset_dir=args.dataset_dir,
         models=models,
         limit=max(1, args.limit),

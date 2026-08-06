@@ -16,7 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from b_magent.local_qwen import LocalQwenEngine, QwenGenerationConfig
-from train.four_agent_private_train import infographic_anls, normalize_vision_answer
+from train.six_agent_training import infographic_anls, normalize_vision_answer
 
 
 DEFAULT_MODEL_PATH = PROJECT_ROOT / "models" / "Qwen2.5-VL-7B-Instruct"

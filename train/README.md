@@ -1,78 +1,41 @@
-# b_magent training entry
+# 六智能体训练入口
 
-`four_agent_private_train.py` is now the training entry for the `b_magent`
-package agents by default.
+正式训练入口是 `train/six_agent_training.py`。系统固定创建六个视觉智能体，每轮选择三个参与解题，另外三个负责互评。
 
-Default mode:
-
-```bash
-python -m train.four_agent_private_train --dataset-dir data/gsm8k --rounds 3 --model-path models/Qwen2.5-VL-7B-Instruct
-```
-
-This runs four equal `b_magent` agents. They share the same workflow and model
-interface, but each agent writes only to its own professional evolution library
-and evaluation evolution library:
-
-- `qwen_agent_1`
-- `qwen_agent_2`
-- `qwen_agent_3`
-- `qwen_agent_4`
-
-For each round it converts one GSM8K training sample into a task, runs the
-multi-agent self-evolution workflow, and writes professional/evaluation memory
-records under `data/<agent_name>/`.
-
-The professional library stores reflection-style professional experience:
-private data is abstracted into reusable solving reflections, and accepted
-self-improvements write evaluator-informed success/error reflections rather
-than raw answers.
-
-Before the first round, the prepared training set at `data/gsm8k/train.jsonl`
-is evenly split into `data/qwen_agent_*/private_data.jsonl`. Every row is used
-once; when the total is not divisible by four, earlier agents receive one extra
-row. The training report includes `private_dataset_counts`.
-
-The default CLI run uses 200 training rounds. Use `--rounds 0` to auto-compute
-enough rounds to cover the split private data. Each round has two task agents,
-so 800 private examples with `--private-batch-size 1` becomes 400 rounds.
-Increase `--private-batch-size` to consume more private examples per
-participating agent per round without loading the full private split into one
-prompt.
-
-LoRA self-evolution is enabled by default. Accepted examples are accumulated
-in each agent's curated SFT dataset and refresh LoRA in batches controlled by
-`--lora-threshold` (default 10); final partial batches are flushed when training
-ends. Use `--disable-lora` when you only want the
-JSONL experience-library loop:
+## InfographicVQA 训练
 
 ```bash
-python -m train.four_agent_private_train --dataset-dir data/gsm8k --rounds 200 --model-path models/Qwen2.5-VL-7B-Instruct
+python -m train.six_agent_training \
+  --mode b-magent \
+  --backend local-qwen \
+  --dataset-dir data/infographicsvqa \
+  --model-path models/Qwen2.5-VL-7B-Instruct \
+  --rounds 200 \
+  --output train/six_agent_training_report.json
 ```
 
-Every new training invocation starts from a clean state. Existing agent
-professional/evaluation libraries, server records, private-data splits, LoRA
-adapters, and generated reports are deleted after the training dataset has
-been validated. The deprecated `--resume` flag is accepted for compatibility
-but does not preserve previous training state.
-
-By default `--mode b-magent` uses `--backend local-qwen`, so each solve and
-evaluation step calls the configured Qwen model. For a fast logic-only smoke
-test that does not load a model, pass `--backend demo`.
-
-Default output:
-
-```text
-train/b_magent_training_report.json
-```
-
-The old four-agent placeholder runner is still available:
+续训必须使用 `--resume`：
 
 ```bash
-python -m train.four_agent_private_train --mode placeholder --dataset-dir data/gsm8k --output train/four_agent_training_report.json
+python -m train.six_agent_training \
+  --mode b-magent \
+  --backend local-qwen \
+  --dataset-dir data/infographicsvqa \
+  --model-path models/Qwen2.5-VL-7B-Instruct \
+  --rounds 400 \
+  --resume
 ```
 
-The local-Qwen voting runner is also still available:
+## 离线逻辑测试
 
 ```bash
-python -m train.four_agent_private_train --mode local-qwen-vote --dataset-dir data/gsm8k --test-limit 1 --output train/four_agent_qwen_voting_report.json
+python -m train.six_agent_training \
+  --mode b-magent \
+  --backend demo \
+  --dataset-dir data/infographicsvqa \
+  --rounds 1 \
+  --disable-lora \
+  --answer-validator local
 ```
+
+`four_agent_private_train.py` 仅作为旧命令兼容模块保留。它与正式入口加载同一套六智能体实现，不存在四智能体运行模式。

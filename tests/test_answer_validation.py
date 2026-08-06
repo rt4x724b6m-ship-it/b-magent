@@ -83,14 +83,16 @@ class GPT56SolValidationTestCase(unittest.TestCase):
 
         temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_semantic_test_correctness_test_"))
         try:
-            (temp_dir / "test.jsonl").write_text(
+            dataset_dir = temp_dir / "gsm8k"
+            dataset_dir.mkdir()
+            (dataset_dir / "test.jsonl").write_text(
                 json.dumps({"question": "Return any valid option.", "answer": "#### 99"}) + "\n",
                 encoding="utf-8",
             )
             validator = CompliantValidator()
 
             report = run_four_agent_voting_on_test(
-                temp_dir,
+                dataset_dir,
                 models={name: FixedModel() for name in AGENT_NAMES},
                 answer_validator=validator,
             )
@@ -228,6 +230,42 @@ class GPT56SolValidationTestCase(unittest.TestCase):
 
             improvement = agent.self_improve(
                 "Task: Produce any plan satisfying the stated requirements.",
+                draft,
+                [],
+            )
+
+            self.assertTrue(improvement.is_correct)
+            self.assertIn("curated-success-experience", improvement.professional_updates[0].tags)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_visual_reflection_uses_dataset_gold_without_calling_validator(self) -> None:
+        class FailingValidator:
+            def validate(self, task: str, answer: str) -> AnswerValidationResult:
+                raise AssertionError("visual answers must not call the API validator")
+
+        temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_visual_local_validation_test_"))
+        try:
+            agent = QwenAgent(
+                "qwen_agent_1",
+                "visual-agent",
+                temp_dir,
+                backend=object(),
+                answer_validator=FailingValidator(),
+            )
+            draft = Draft(
+                agent_name=agent.name,
+                specialty=agent.specialty,
+                answer="Bike",
+                thought_trace=[],
+                private_training_used=[],
+                professional_memory_used=[],
+                evaluation_alerts_used=[],
+            )
+
+            improvement = agent.self_improve(
+                "Image: /tmp/example.png\nQuestion: What vehicle is shown?\n"
+                "Gold final answer: bike | bicycle",
                 draft,
                 [],
             )
