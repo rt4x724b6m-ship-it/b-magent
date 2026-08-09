@@ -14,7 +14,11 @@ add_project_root_to_sys_path()
 from baseline.qwen_gsm8k import STANDARD_TEST_LIMIT
 from train.four_agent_private_train import (
     AGENT_NAMES,
+    DEFAULT_TRAINING_ROUNDS,
     STANDARD_PRIVATE_TRAIN_SIZE,
+    TRAINING_EVALUATION_LIMIT,
+    TrainingEvaluation,
+    TrainingEvaluationHistory,
     build_participant_schedule,
     build_training_manifest,
     export_report,
@@ -601,7 +605,7 @@ class SixAgentPrivateTrainingTestCase(unittest.TestCase):
         with patch("sys.argv", ["four_agent_private_train.py"]):
             args = parse_args()
 
-        self.assertEqual(args.rounds, 0)
+        self.assertEqual(args.rounds, DEFAULT_TRAINING_ROUNDS)
         self.assertTrue(args.dataset_dir.is_absolute())
         self.assertTrue(args.output.is_absolute())
         self.assertTrue(args.lora_output_dir.is_absolute())
@@ -613,7 +617,22 @@ class SixAgentPrivateTrainingTestCase(unittest.TestCase):
         self.assertEqual(args.lora_learning_rate, 2e-5)
         self.assertEqual(args.lora_min_evaluation_score, 0.85)
         self.assertIsNone(args.reserved_size)
-        self.assertEqual(args.reserved_ratio, 0.3)
+        self.assertEqual(args.reserved_ratio, 0.0)
+        self.assertEqual(args.eval_interval, 100)
+        self.assertEqual(args.eval_seed, 2024)
+        self.assertEqual(args.training_eval_limit, TRAINING_EVALUATION_LIMIT)
+
+    def test_training_evaluation_history_selects_earliest_best_round(self) -> None:
+        history = TrainingEvaluationHistory(
+            evaluations=[
+                TrainingEvaluation(100, 100, 70, 0.7, "round_100.json"),
+                TrainingEvaluation(200, 100, 80, 0.8, "round_200.json"),
+                TrainingEvaluation(300, 100, 80, 0.8, "round_300.json"),
+            ]
+        )
+
+        self.assertIsNotNone(history.best)
+        self.assertEqual(history.best.round_index, 200)
 
     def test_cli_can_disable_lora(self) -> None:
         with patch("sys.argv", ["four_agent_private_train.py", "--disable-lora"]):

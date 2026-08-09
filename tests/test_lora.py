@@ -169,7 +169,7 @@ class LoraEvolutionTestCase(unittest.TestCase):
             trainer = FakeLoraTrainer()
             manager = LoraEvolutionManager(
                 LoraTrainingConfig(
-                    base_model_path="models/Qwen2.5-1.5B-Instruct",
+                    base_model_path="models/gemma-3-4b-it",
                     output_dir=Path(temp) / "lora",
                     threshold=1,
                 ),
@@ -209,7 +209,7 @@ class LoraEvolutionTestCase(unittest.TestCase):
             trainer = FakeLoraTrainer()
             manager = LoraEvolutionManager(
                 LoraTrainingConfig(
-                    base_model_path="models/Qwen2.5-1.5B-Instruct",
+                    base_model_path="models/gemma-3-4b-it",
                     output_dir=Path(temp) / "lora",
                     threshold=1,
                 ),
@@ -249,7 +249,7 @@ class LoraEvolutionTestCase(unittest.TestCase):
             trainer = FakeLoraTrainer()
             manager = LoraEvolutionManager(
                 LoraTrainingConfig(
-                    base_model_path="models/Qwen2.5-1.5B-Instruct",
+                    base_model_path="models/gemma-3-4b-it",
                     output_dir=Path(temp) / "lora",
                     threshold=2,
                 ),

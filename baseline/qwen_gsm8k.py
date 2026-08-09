@@ -17,7 +17,7 @@ from b_magent.datasets import GSM8KDataset
 from b_magent.local_qwen import LocalQwenEngine
 
 
-DEFAULT_LOCAL_QWEN_MODEL = PROJECT_ROOT / "models" / "Qwen2.5-1.5B-Instruct"
+DEFAULT_LOCAL_QWEN_MODEL = PROJECT_ROOT / "models" / "gemma-3-4b-it"
 STANDARD_TEST_LIMIT = 100
 
 

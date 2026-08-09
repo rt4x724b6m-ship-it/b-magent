@@ -68,11 +68,17 @@ _STOP_TERMS = {
     "lessons", "question", "gold", "reasoning", "final", "answer", "the", "and", "for",
     "with", "from", "that", "how", "many", "much", "does", "did", "was", "were", "has",
     "have", "his", "her", "their", "into", "after", "before", "each", "what", "when",
+    # travel stop-words (too generic to be useful for retrieval)
+    "plan", "trip", "travel", "please", "help", "create", "spanning", "starting",
+    "departing", "from", "want", "would", "like", "make", "need",
 }
 
 
 def _semantic_terms(text: str) -> set[str]:
+    # Strip gold-label sections so they don't pollute the retrieval index.
+    # Handles: "Gold reasoning:" (multi-line), "Gold final answer:", "Gold plan:"
     visible = re.split(r"\n\s*Gold reasoning:", str(text), maxsplit=1, flags=re.IGNORECASE)[0]
+    visible = re.sub(r"(?m)^Gold (?:final answer|plan|image elements):.*$", "", visible)
     tokens = re.findall(r"[a-zA-Z]+(?:'[a-zA-Z]+)?|\d+(?:\.\d+)?|[\u4e00-\u9fff]{2,}", visible.lower())
     return {token for token in tokens if len(token) >= 2 and token not in _STOP_TERMS}
 

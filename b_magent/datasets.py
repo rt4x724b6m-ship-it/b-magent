@@ -228,9 +228,221 @@ class MultimodalBenchmarkDataset:
         return samples
 
 
-def load_project_dataset(root: Path) -> GSM8KDataset | VisionQADataset | MultimodalBenchmarkDataset:
-    """Load the new combined benchmark, while accepting legacy GSM8K paths."""
+@dataclass
+class TravelPlannerSample:
+    """One TravelPlanner planning query with its annotated plan."""
+
+    question: str
+    answer: str
+    final_answer: str
+    level: str = ""
+    org: str = ""
+    dest: str = ""
+    days: int = 0
+    # Extended fields present in Agent-STAR-TravelDataset
+    people_number: int = 1
+    budget: int = 0
+    local_constraint: dict[str, Any] = field(default_factory=dict)
+    dates: list[str] = field(default_factory=list)
+    visiting_city_number: int = 1
+    sample_id: str = ""
+
+    def to_training_text(self) -> str:
+        payload: dict[str, Any] = {
+            "question": self.question,
+            "answer": self.answer,
+            "level": self.level,
+            "org": self.org,
+            "dest": self.dest,
+            "days": self.days,
+        }
+        if self.people_number != 1:
+            payload["people_number"] = self.people_number
+        if self.budget:
+            payload["budget"] = self.budget
+        if self.local_constraint:
+            payload["local_constraint"] = self.local_constraint
+        if self.dates:
+            payload["dates"] = self.dates
+        if self.visiting_city_number != 1:
+            payload["visiting_city_number"] = self.visiting_city_number
+        if self.sample_id:
+            payload["sample_id"] = self.sample_id
+        return json.dumps(payload, ensure_ascii=False)
+
+
+class TravelPlannerDataset:
+    """Reader for TravelPlanner JSON splits.
+
+    Expected files:
+    - data/TravelPlanner/train_train.json           (45 samples)
+    - data/TravelPlanner/validation_validation.json (180 samples)
+    - data/TravelPlanner/test_test.json             (1000 samples)
+
+    Each row contains at least: query, annotated_plan, level, org, dest, days.
+    """
+
+    SPLIT_FILES: dict[str, str] = {
+        "train": "train_train.json",
+        "validation": "validation_validation.json",
+        "test": "test_test.json",
+    }
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+
+    def exists(self, split: str = "train") -> bool:
+        return self._split_path(split).exists()
+
+    def load(self, split: str = "train", limit: int | None = None) -> list[TravelPlannerSample]:
+        path = self._split_path(split)
+        if not path.exists():
+            return []
+        items = json.loads(path.read_text(encoding="utf-8"))
+        samples: list[TravelPlannerSample] = []
+        for item in items:
+            question = str(item.get("query", "")).strip()
+            # train split has annotated_plan; validation/test use reference_information
+            raw_answer = item.get("annotated_plan") or item.get("reference_information", "")
+            answer = (
+                json.dumps(raw_answer, ensure_ascii=False)
+                if not isinstance(raw_answer, str)
+                else str(raw_answer).strip()
+            )
+            if not question:
+                continue
+            # test split has no reference answer; still include the question for inference
+            if not answer:
+                answer = "(no reference plan)"
+            samples.append(
+                TravelPlannerSample(
+                    question=question,
+                    answer=answer,
+                    final_answer=answer,
+                    level=str(item.get("level", "")),
+                    org=str(item.get("org", "")),
+                    dest=str(item.get("dest", "")),
+                    days=int(item.get("days", 0) or 0),
+                )
+            )
+            if limit is not None and len(samples) >= limit:
+                break
+        return samples
+
+    def _split_path(self, split: str) -> Path:
+        filename = self.SPLIT_FILES.get(split, f"{split}_{split}.json")
+        return self.root / filename
+
+
+class AgentStarTravelDataset:
+    """Reader for Agent-STAR-TravelDataset JSONL splits.
+
+    Expected directory layout::
+
+        <root>/TravelTotal_17K.jsonl          — full synthetic training set
+        <root>/Travel_Easy_1K.jsonl           — easy subset
+        <root>/Travel_Medium_1K.jsonl         — medium subset
+        <root>/Travel_Hard_1K.jsonl           — hard subset
+        <root>/Travel_Mixed_1K_RL.jsonl       — mixed RL subset
+        <root>/TravelPlanner_Val180.jsonl     — validation split (180 samples)
+
+    Each row contains at minimum: org, dest, days, query, level.
+    Optional fields: people_number, budget, local_constraint, date,
+    visiting_city_number, id, data_source.
+    """
+
+    # Map logical split names to candidate file names (first found wins)
+    SPLIT_CANDIDATES: dict[str, list[str]] = {
+        "train": [
+            "TravelTotal_17K.jsonl",
+            "Travel_Mixed_1K_RL.jsonl",
+            "Travel_Easy_1K.jsonl",
+        ],
+        "validation": ["TravelPlanner_Val180.jsonl"],
+        "test": ["TravelPlanner_Val180.jsonl"],
+        "easy": ["Travel_Easy_1K.jsonl"],
+        "medium": ["Travel_Medium_1K.jsonl"],
+        "hard": ["Travel_Hard_1K.jsonl"],
+        "rl": ["Travel_Mixed_1K_RL.jsonl"],
+    }
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+
+    def exists(self, split: str = "train") -> bool:
+        return self._split_path(split) is not None
+
+    def load(self, split: str = "train", limit: int | None = None) -> list[TravelPlannerSample]:
+        path = self._split_path(split)
+        if path is None:
+            return []
+        samples: list[TravelPlannerSample] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            item = json.loads(line)
+            sample = self._normalize(item)
+            if sample is not None:
+                samples.append(sample)
+            if limit is not None and len(samples) >= limit:
+                break
+        return samples
+
+    @staticmethod
+    def _normalize(item: dict[str, Any]) -> TravelPlannerSample | None:
+        question = str(item.get("query", "")).strip()
+        if not question:
+            return None
+        # Synthetic dataset has no gold annotated_plan; use empty placeholder
+        answer = str(item.get("annotated_plan", item.get("reference_information", ""))).strip()
+        if not answer:
+            answer = "(no reference plan)"
+
+        # local_constraint may have None values; keep as-is for the prompt
+        raw_constraint = item.get("local_constraint") or {}
+        local_constraint: dict[str, Any] = (
+            dict(raw_constraint) if isinstance(raw_constraint, dict) else {}
+        )
+
+        dates: list[str] = []
+        raw_dates = item.get("date", [])
+        if isinstance(raw_dates, list):
+            dates = [str(d) for d in raw_dates if d]
+
+        return TravelPlannerSample(
+            question=question,
+            answer=answer,
+            final_answer=answer,
+            level=str(item.get("level", "")),
+            org=str(item.get("org", "")),
+            dest=str(item.get("dest", "")),
+            days=int(item.get("days", 0) or 0),
+            people_number=int(item.get("people_number", 1) or 1),
+            budget=int(item.get("budget", 0) or 0),
+            local_constraint=local_constraint,
+            dates=dates,
+            visiting_city_number=int(item.get("visiting_city_number", 1) or 1),
+            sample_id=str(item.get("id", "")),
+        )
+
+    def _split_path(self, split: str) -> Path | None:
+        for candidate in self.SPLIT_CANDIDATES.get(split, [f"{split}.jsonl"]):
+            path = self.root / candidate
+            if path.exists():
+                return path
+        return None
+
+
+def load_project_dataset(
+    root: Path,
+) -> "GSM8KDataset | VisionQADataset | MultimodalBenchmarkDataset | TravelPlannerDataset | AgentStarTravelDataset":
+    """Load the appropriate dataset for the given directory."""
     normalized_name = root.name.lower()
+    # Agent-STAR synthetic travel dataset (JSONL format)
+    if normalized_name == "agent-star-traveldataset" or (root / "TravelTotal_17K.jsonl").exists():
+        return AgentStarTravelDataset(root)
+    if normalized_name == "travelplanner":
+        return TravelPlannerDataset(root)
     if normalized_name in MultimodalBenchmarkDataset.DATASETS:
         return VisionQADataset(root, normalized_name)
     if normalized_name == "gsm8k" or (root / "train.jsonl").exists():

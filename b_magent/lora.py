@@ -22,7 +22,7 @@ class LoraTrainingConfig:
     threshold: int = DEFAULT_LORA_THRESHOLD
     require_correct_answer: bool = True
     min_evaluation_score: float = 0.85
-    max_seq_length: int = 1536
+    max_seq_length: int = 4096
     per_device_train_batch_size: int = 4
     gradient_accumulation_steps: int = 1
     learning_rate: float = 2e-5
@@ -184,6 +184,12 @@ class PeftSFTLoraTrainer:
             fp16=False,
             label_names=["labels"],
             remove_unused_columns=False,
+            # Reduce activation memory — critical for long travel-plan sequences
+            gradient_checkpointing=True,
+            gradient_checkpointing_kwargs={"use_reentrant": False},
+            # Keep optimizer states in fp32 to avoid NaN but cast params to bf16
+            optim="adamw_torch",
+            dataloader_pin_memory=False,
         )
 
         # Use the real optimizer implementation.  Overriding ``train``/``eval``
@@ -499,6 +505,37 @@ def build_lora_example(
             output=build_visual_supervision_target(task),
             image=image,
         )
+    if _is_travel_task(task):
+        # Extract key constraints from the task string for the SFT instruction
+        budget_match = re.search(r"Budget:\s*\$?([\d,]+)", task)
+        people_match = re.search(r"Travelers:\s*(\d+)", task)
+        days_match = re.search(r"Days:\s*(\d+)", task)
+        constraint_match = re.search(r"Local constraints:\s*(.+)", task)
+        budget_clause = f" Stay within the ${budget_match.group(1)} budget." if budget_match else ""
+        people_clause = f" Plan for {people_match.group(1)} traveler(s)." if people_match else ""
+        days_clause = f" Cover all {days_match.group(1)} days." if days_match else ""
+        constraint_clause = f" Respect constraints: {constraint_match.group(1).strip()}." if constraint_match else ""
+        return LoraSFTExample(
+            agent_name=draft.agent_name,
+            instruction=(
+                "You are a professional travel planner. All judgments must be strictly based on the "
+                "origin, destination, number of days, budget, and constraints provided by the user. "
+                "Never fabricate flight numbers, hotels, restaurants, or attractions that do not exist.\n"
+                "Tasks: ① Generate a day-by-day itinerary for the required number of days. "
+                "② Each day must fill in all six fields: transportation / breakfast / attraction / lunch / dinner / accommodation.\n"
+                f"Constraints: Only use information given in the query. If missing, fill with \"-\"."
+                f"{budget_clause}{people_clause}{days_clause}{constraint_clause}\n"
+                "Quality checks before finalising: "
+                "(a) sum all daily costs — total must not exceed budget; "
+                "(b) verify each constraint is satisfied; "
+                "(c) confirm no fabricated venues or prices; "
+                "(d) check every day has all six required fields.\n"
+                "Output: Return strictly the following JSON array format, no extra text:\n"
+                '[{"days":1,"current_city":"...","transportation":"...","breakfast":"...","attraction":"...","lunch":"...","dinner":"...","accommodation":"..."},...]'
+            ),
+            input=strip_gold_annotations(task),
+            output=_build_travel_supervision_target(task, improvement.revised_answer),
+        )
     return LoraSFTExample(
         agent_name=draft.agent_name,
         instruction=(
@@ -508,6 +545,19 @@ def build_lora_example(
         input=strip_gold_annotations(task),
         output=ensure_lora_output_format(improvement.revised_answer, extract_gold_final_answer(task)),
     )
+
+
+def _is_travel_task(task: str) -> bool:
+    """Return True when the task string comes from TravelPlanner or Agent-STAR travel dataset."""
+    return bool(re.search(r"(?m)^(?:Origin:|Query:|Gold plan:|Destination:|Budget:|Travelers:)", task))
+
+
+def _build_travel_supervision_target(task: str, revised_answer: str) -> str:
+    """Use the gold plan when available; fall back to the agent's revised answer."""
+    gold_match = re.search(r"(?m)^Gold plan:\s*(.+)", task, re.DOTALL)
+    if gold_match:
+        return gold_match.group(1).strip()
+    return str(revised_answer).strip()
 
 
 def extract_task_image_path(task: str) -> str:
@@ -604,8 +654,14 @@ def tokenize_lora_row(tokenizer: object, row: dict[str, str], max_length: int) -
 
 
 def ensure_lora_output_format(output: str, gold_answer: str | None = None) -> str:
-    """Append one canonical numeric final-answer line when one is available."""
+    """Append one canonical numeric final-answer line when one is available.
+
+    Travel-planning outputs are free-text itineraries — skip the #### marker.
+    """
     response = str(output).strip()
+    # Travel tasks produce free-text itineraries; never append a numeric marker.
+    if _is_travel_task(response):
+        return response
     answer = normalize_answer(gold_answer) if gold_answer else extract_final_answer(response)
     if not re.fullmatch(r"-?\d+(?:\.\d+)?", answer):
         return response
@@ -756,18 +812,23 @@ def _answer_equal(left: str, right: str) -> bool:
 
 
 def strip_gold_annotations(task: str) -> str:
+    """Remove all gold-label lines so the model cannot cheat during SFT."""
     lines = []
-    in_gold_reasoning = False
+    in_gold_block = False
     for line in task.splitlines():
-        if re.match(r"\s*Gold image elements:", line):
-            continue
+        # math gold reasoning block (multi-line)
         if re.match(r"\s*Gold reasoning:", line):
-            in_gold_reasoning = True
+            in_gold_block = True
             continue
         if re.match(r"\s*Gold final answer:", line):
-            in_gold_reasoning = False
+            in_gold_block = False
             continue
-        if in_gold_reasoning:
+        if in_gold_block:
+            continue
+        # single-line gold labels (vision + travel)
+        if re.match(r"\s*Gold image elements:", line):
+            continue
+        if re.match(r"\s*Gold plan:", line):
             continue
         lines.append(line)
     return "\n".join(lines).strip()

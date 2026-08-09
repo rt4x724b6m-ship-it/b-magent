@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-MODEL_PATH = PROJECT_ROOT / "models" / "Qwen2.5-1.5B-Instruct"
+MODEL_PATH = PROJECT_ROOT / "models" / "gemma-3-4b-it"
 
 
 def main() -> int:

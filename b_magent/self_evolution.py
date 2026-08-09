@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -182,15 +183,37 @@ def _build_professional_reflection(event: EvolutionInput, suggestions: list[str]
     task_hint = _task_hint(event.task)
     outcome = _outcome_label(event.is_correct)
     basis = _professional_basis(event.is_correct)
+
+    # Detect travel-planning tasks by their header keywords
+    is_travel = bool(re.search(r"(?m)^(?:Origin:|Query:|Destination:|Budget:|Travelers:)", event.task))
+    if is_travel:
+        # Extract concrete constraint values for actionable reflection
+        budget_match = re.search(r"Budget:\s*\$?([\d,]+)", event.task)
+        people_match = re.search(r"Travelers:\s*(\d+)", event.task)
+        days_match = re.search(r"Days:\s*(\d+)", event.task)
+        constraint_match = re.search(r"Local constraints:\s*(.+)", event.task)
+        budget_hint = f" budget=${budget_match.group(1)}" if budget_match else ""
+        people_hint = f" travelers={people_match.group(1)}" if people_match else ""
+        days_hint = f" days={days_match.group(1)}" if days_match else ""
+        constraint_hint = f" constraints: {constraint_match.group(1).strip()}" if constraint_match else ""
+        verification_rule = (
+            f"verify: (1) total cost ≤{budget_hint}; "
+            f"(2) all {days_hint} days have transportation/breakfast/attraction/lunch/dinner/accommodation; "
+            f"(3) no fabricated venues;{people_hint} traveler costs counted; "
+            f"(4){constraint_hint} satisfied"
+        )
+    else:
+        verification_rule = "keep steps explicit and verify the final answer"
+
     if explicit_reflection:
         return (
             f"{event.specialty} {outcome} {basis} reflection for {task_hint}: "
             f"{explicit_reflection} Future solving rule: before finalizing, {top_suggestion}; "
-            "keep steps explicit and verify the final answer."
+            f"{verification_rule}."
         )
     return (
         f"{event.specialty} {outcome} {basis} reflection for {task_hint}: "
-        f"before finalizing, {top_suggestion}; keep steps explicit and verify the final answer."
+        f"before finalizing, {top_suggestion}; {verification_rule}."
     )
 
 
@@ -198,12 +221,21 @@ def _build_evaluation_lesson(event: EvolutionInput, suggestions: list[str]) -> s
     top_check = _shorten(suggestions[0], limit=90) if suggestions else "check correctness, safety, efficiency, and missing evidence"
     task_hint = _task_hint(event.task)
     outcome = _outcome_label(event.is_correct)
+    is_travel = bool(re.search(r"(?m)^(?:Origin:|Query:|Destination:|Budget:|Travelers:)", event.task))
+    if is_travel:
+        improvement_pattern = (
+            f"travel review lesson: prioritize {top_check}; "
+            "always check: (1) budget total ≤ cap, (2) all 6 daily fields present, "
+            "(3) no fabrication, (4) constraints respected, (5) traveler-count costs correct."
+        )
+    else:
+        improvement_pattern = f"review lesson: give concrete fixes tied to scores; prioritize {top_check}."
     return format_structured_evaluation(
         task=task_hint,
         observed_error=f"{event.specialty} evaluator outcome is {outcome}; review may miss {top_check}.",
         evaluation_decision="Evaluate observable answer structure, final-answer consistency, and evidence sufficiency.",
         confidence=_summarize_list(event.evaluation_scores, fallback="No evaluation scores recorded"),
-        improvement_pattern=f"review lesson: give concrete fixes tied to scores; prioritize {top_check}.",
+        improvement_pattern=improvement_pattern,
     )
 
 

@@ -30,16 +30,15 @@ self-improvements write evaluator-informed success/error reflections rather
 than raw answers.
 
 Before the first round, the prepared training set at `data/gsm8k/train.jsonl`
-is shuffled with a fixed seed. By default, 30 percent is reserved for future,
-unspecified use and excluded from all current training and evaluation. It is
-written to `data/reserved_train_data.jsonl`. The remaining 70 percent is evenly
+is shuffled with a fixed seed. By default, the complete official training split
+is used and `data/reserved_train_data.jsonl` is empty. The training rows are evenly
 split into six non-overlapping `data/qwen_agent_*/private_data.jsonl` files. When
 the private total is not divisible by six, earlier agents receive one extra row.
 The training report includes `private_dataset_counts`.
 
-The default CLI run uses 200 training rounds. Use `--rounds 0` to auto-compute
-enough rounds to cover the split private data. Each round has three task agents
-and the other three agents serve as peer evaluators.
+The default training run is capped at 800 rounds. Each round has three task
+agents and the other three agents serve as peer evaluators. Values above 800
+are rejected by the CLI.
 Increase `--private-batch-size` to consume more private examples per
 participating agent per round without loading the full private split into one
 prompt.
@@ -61,13 +60,15 @@ been validated. The deprecated `--resume` flag is accepted for compatibility
 but does not preserve previous training state.
 
 Each round selects three solving agents and uses the remaining three as peer
-evaluators. The default training flow uses only the official training split and
-reserves 30 percent of those rows for future use. Reserved rows are excluded
-from private agent files, workflow tasks, LoRA examples, and training-time
-evaluation. The remaining 70 percent is split evenly into six non-overlapping
-private datasets. The official test split remains untouched and is used only by
-the final voting evaluation. Use `--reserved-ratio 0` only for smoke tests that
-need all official training rows immediately.
+evaluators. The complete official training split is divided into six
+non-overlapping private datasets. The official test split remains untouched.
+After every 100 rounds, current adapters are evaluated through the same voting
+path used by `tests/test_select_four_agent_voting.py`, on a stable 500-row subset
+selected with seed 2024. The checkpoint summary and earliest best round are
+written as `b_magent_training_report_evaluations.json`; detailed reports use
+names such as `b_magent_training_report_round_0100_voting.json`. Pass
+`--eval-interval 0` to disable evaluation, or set `--reserved-ratio` to create
+an explicit training holdout.
 
 Curated LoRA rows train direct question-to-solution behavior. Drafts, peer
 feedback, and gold annotations are used to select a correct target but are not

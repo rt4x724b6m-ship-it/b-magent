@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 import shutil
 import sys
 import tempfile
@@ -24,6 +25,7 @@ from b_magent.local_qwen import (
 from b_magent.models import LibraryRecord
 from train.four_agent_private_train import (
     AGENT_NAMES,
+    TRAINING_EVALUATION_LIMIT,
     format_voting_prediction_detail,
     print_voting_prediction_detail,
     reset_b_magent_training_state,
@@ -906,6 +908,15 @@ class KnowledgeLibraryFourAgentVotingIntegrationTestCase(unittest.TestCase):
         if not server_tag_file.exists():
             self.skipTest(f"missing server agent tag library: {server_tag_file}")
 
+        data_list = [
+            json.loads(line)
+            for line in (dataset_dir / "test.jsonl").read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        random.seed(2024)
+        random.shuffle(data_list)
+        data_list = data_list[:500]
+
         engine = LocalQwenEngine(model_name_or_path=model_path)
         models = {
             agent_name: KnowledgeLibraryVoteModel(
@@ -918,33 +929,577 @@ class KnowledgeLibraryFourAgentVotingIntegrationTestCase(unittest.TestCase):
         }
         server_tag_records = _load_library_records(server_tag_file)
         prior_global_records = _load_library_records(global_eval_file) if global_eval_file.exists() else []
-        try:
-            report = run_four_agent_voting_on_test(
-                dataset_dir=dataset_dir,
-                models=models,
-                limit=STANDARD_TEST_LIMIT,
-                on_prediction=print_voting_prediction_detail,
-                server_model=KnowledgeServerRoutingModel(engine),
-                server_training_tag_records=server_tag_records,
-                prior_global_evaluation_records=prior_global_records,
+        with tempfile.TemporaryDirectory(prefix="b_magent_sampled_gsm8k_") as sampled_data_dir:
+            sampled_dataset_dir = Path(sampled_data_dir)
+            (sampled_dataset_dir / "test.jsonl").write_text(
+                "\n".join(json.dumps(row, ensure_ascii=False) for row in data_list) + "\n",
+                encoding="utf-8",
             )
-        except RuntimeError as exc:
-            if "_spropack" in str(exc):
-                self.skipTest(f"local scipy/transformers environment cannot load Qwen: {exc}")
-            raise
-        output_file = project_root / "train" / "four_agent_lora_voting_100_report.json"
+            try:
+                report = run_four_agent_voting_on_test(
+                    dataset_dir=sampled_dataset_dir,
+                    models=models,
+                    limit=TRAINING_EVALUATION_LIMIT,
+                    on_prediction=print_voting_prediction_detail,
+                    server_model=KnowledgeServerRoutingModel(engine),
+                    server_training_tag_records=server_tag_records,
+                    prior_global_evaluation_records=prior_global_records,
+                )
+            except RuntimeError as exc:
+                if "_spropack" in str(exc):
+                    self.skipTest(f"local scipy/transformers environment cannot load Qwen: {exc}")
+                raise
+        output_file = project_root / "train" / "four_agent_lora_voting_500_report.json"
         output_file.parent.mkdir(parents=True, exist_ok=True)
         output_file.write_text(
             json.dumps(report.to_dict(), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
-        self.assertEqual(report.total, STANDARD_TEST_LIMIT)
-        self.assertEqual(len(report.predictions), STANDARD_TEST_LIMIT)
+        self.assertEqual(report.total, TRAINING_EVALUATION_LIMIT)
+        self.assertEqual(len(report.predictions), TRAINING_EVALUATION_LIMIT)
         self.assertEqual(len(report.predictions[0].votes), 3)
         self.assertEqual(report.predictions[0].votes[0].agent_name, report.predictions[0].selected_agents[0])
         self.assertTrue(report.predictions[0].server_diagnostic)
         self.assertTrue(output_file.exists())
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# TravelPlanner 适配测试
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TravelPlannerTaggingTestCase(unittest.TestCase):
+    """tagging.py — 旅行标签、别名和权重测试。"""
+
+    def setUp(self) -> None:
+        from b_magent.tagging import ROUTING_TAGS, ROUTING_TAG_IMPORTANCE, extract_math_task_tags
+        self.ROUTING_TAGS = ROUTING_TAGS
+        self.ROUTING_TAG_IMPORTANCE = ROUTING_TAG_IMPORTANCE
+        self.extract = extract_math_task_tags
+
+    def test_travel_tags_present_in_routing_tags(self) -> None:
+        expected = {
+            "itinerary-planning", "transportation", "accommodation", "attraction",
+            "restaurant", "budget-constraint", "local-constraint", "multi-city",
+            "multi-day", "route-optimization", "feasibility-check", "commonsense-travel",
+        }
+        missing = expected - set(self.ROUTING_TAGS)
+        self.assertEqual(missing, set(), f"Missing travel tags: {missing}")
+
+    def test_travel_tag_weights_are_higher_than_generic_math_tags(self) -> None:
+        # itinerary-planning should outweigh arithmetic
+        self.assertGreater(
+            self.ROUTING_TAG_IMPORTANCE.get("itinerary-planning", 0),
+            self.ROUTING_TAG_IMPORTANCE.get("arithmetic", 1),
+        )
+        self.assertGreater(
+            self.ROUTING_TAG_IMPORTANCE.get("budget-constraint", 0),
+            self.ROUTING_TAG_IMPORTANCE.get("arithmetic", 1),
+        )
+
+    def test_travel_query_hits_budget_and_commonsense_tags(self) -> None:
+        query = "Plan a 3-day trip from NYC to Chicago with a budget of $1500"
+        tags = self.extract(query)
+        self.assertIn("budget-constraint", tags)
+        self.assertIn("commonsense-travel", tags)
+
+    def test_travel_query_hits_transportation_tag(self) -> None:
+        query = "Book a flight from Boston to Denver, departure at 8am"
+        tags = self.extract(query)
+        self.assertIn("transportation", tags)
+
+    def test_travel_query_hits_accommodation_tag(self) -> None:
+        query = "Find a hotel for 2 nights in San Francisco"
+        tags = self.extract(query)
+        self.assertIn("accommodation", tags)
+
+    def test_travel_query_hits_feasibility_tag(self) -> None:
+        query = "Check if the schedule is feasible given the flight connection time"
+        tags = self.extract(query)
+        self.assertIn("feasibility-check", tags)
+
+    def test_travel_query_hits_itinerary_planning_tag(self) -> None:
+        query = "Create a day-by-day itinerary for my trip"
+        tags = self.extract(query)
+        self.assertIn("itinerary-planning", tags)
+
+    def test_math_tags_still_work_after_travel_tag_additions(self) -> None:
+        # Use explicit arithmetic operators so the equation-based rules fire
+        query = "Janet earns $50 per hour. She works 8*5 hours. How much does she earn?"
+        tags = self.extract(query)
+        self.assertIn("money", tags)
+        self.assertIn("multiplication", tags)
+
+
+class TravelPlannerLoraTestCase(unittest.TestCase):
+    """lora.py — travel SFT 样本构建与 Gold plan 剥离测试。"""
+
+    def setUp(self) -> None:
+        from b_magent.lora import (
+            build_lora_example, strip_gold_annotations, _is_travel_task,
+            _build_travel_supervision_target,
+        )
+        from b_magent.models import Draft, EvaluationScores, PeerEvaluation, SelfImprovement
+        self.build_lora_example = build_lora_example
+        self.strip_gold_annotations = strip_gold_annotations
+        self._is_travel_task = _is_travel_task
+        self._build_travel_supervision_target = _build_travel_supervision_target
+        self.Draft = Draft
+        self.PeerEvaluation = PeerEvaluation
+        self.EvaluationScores = EvaluationScores
+        self.SelfImprovement = SelfImprovement
+
+    def _make_draft(self, agent_name: str = "qwen_agent_1") -> object:
+        return self.Draft(
+            agent_name=agent_name,
+            specialty="通用智能体",
+            answer="Day 1: fly to Chicago",
+            thought_trace=["parse query", "plan transport"],
+            tool_calls=[],
+            private_training_used=[],
+            professional_memory_used=[],
+            evaluation_alerts_used=[],
+        )
+
+    def _make_improvement(self, revised: str = "Day 1: fly. Day 2: museum.") -> object:
+        return self.SelfImprovement(
+            agent_name="qwen_agent_1",
+            applied_suggestions=["add accommodation"],
+            revised_answer=revised,
+            professional_updates=[],
+            reflection="Added accommodation to each day.",
+        )
+
+    def _make_evaluation(self) -> object:
+        return self.PeerEvaluation(
+            evaluator="qwen_agent_2",
+            target="qwen_agent_1",
+            suggestions=["add accommodation"],
+            rationale="Missing accommodation on day 2.",
+            evaluation_memory_used=[],
+            scores=self.EvaluationScores(correctness=0.9, safety=1.0, efficiency=0.8),
+        )
+
+    def test_is_travel_task_detects_origin_header(self) -> None:
+        task = "Origin: NYC  Destination: Chicago  Days: 3\nQuery: Plan my trip"
+        self.assertTrue(self._is_travel_task(task))
+
+    def test_is_travel_task_detects_query_header(self) -> None:
+        task = "Query: Plan a 3-day trip to Seattle"
+        self.assertTrue(self._is_travel_task(task))
+
+    def test_is_travel_task_detects_gold_plan_header(self) -> None:
+        task = "Gold plan: [day1: fly, day2: museum]"
+        self.assertTrue(self._is_travel_task(task))
+
+    def test_is_travel_task_returns_false_for_math(self) -> None:
+        task = "Solve this GSM8K training problem.\nQuestion: How many apples?\nGold final answer: 5"
+        self.assertFalse(self._is_travel_task(task))
+
+    def test_strip_gold_annotations_removes_gold_plan(self) -> None:
+        task = (
+            "Origin: NYC  Destination: Chicago  Days: 3\n"
+            "Query: Plan my trip\n"
+            "Gold plan: [day1: fly, day2: museum, day3: return]"
+        )
+        stripped = self.strip_gold_annotations(task)
+        self.assertNotIn("Gold plan:", stripped)
+        self.assertIn("Query: Plan my trip", stripped)
+
+    def test_strip_gold_annotations_still_removes_gold_reasoning(self) -> None:
+        task = (
+            "Question: How many apples?\n"
+            "Gold reasoning: Janet has 3 apples...\n"
+            "more reasoning\n"
+            "Gold final answer: 3"
+        )
+        stripped = self.strip_gold_annotations(task)
+        self.assertNotIn("Gold reasoning:", stripped)
+        self.assertNotIn("more reasoning", stripped)
+        self.assertNotIn("Gold final answer:", stripped)
+        self.assertIn("Question:", stripped)
+
+    def test_strip_gold_annotations_removes_gold_image_elements(self) -> None:
+        task = "Image: /path/img.png\nQuestion: What color?\nGold image elements: {}"
+        stripped = self.strip_gold_annotations(task)
+        self.assertNotIn("Gold image elements:", stripped)
+
+    def test_build_lora_example_travel_uses_gold_plan_as_output(self) -> None:
+        task = (
+            "Origin: NYC  Destination: Chicago  Days: 2\n"
+            "Query: Plan my trip\n"
+            "Gold plan: Day 1: fly. Day 2: museum."
+        )
+        example = self.build_lora_example(
+            task,
+            self._make_draft(),
+            [self._make_evaluation()],
+            self._make_improvement(),
+        )
+        self.assertIn("travel planning agent", example.instruction.lower())
+        self.assertIn("Day 1: fly", example.output)
+        self.assertNotIn("####", example.output)
+        self.assertEqual(example.image, "")
+
+    def test_build_lora_example_travel_falls_back_to_revised_answer(self) -> None:
+        task = "Origin: NYC  Destination: Chicago  Days: 2\nQuery: Plan my trip"
+        revised = "Day 1: flight. Day 2: sightseeing."
+        example = self.build_lora_example(
+            task,
+            self._make_draft(),
+            [self._make_evaluation()],
+            self._make_improvement(revised=revised),
+        )
+        self.assertEqual(example.output, revised)
+
+    def test_build_lora_example_math_unchanged(self) -> None:
+        task = (
+            "Solve this GSM8K training problem.\n"
+            "Question: How many apples?\n"
+            "Gold reasoning: 3 apples.\n"
+            "Gold final answer: 3"
+        )
+        from b_magent.models import SelfImprovement
+        improvement = SelfImprovement(
+            agent_name="qwen_agent_1",
+            applied_suggestions=[],
+            revised_answer="The answer is 3.\n#### 3",
+            professional_updates=[],
+            reflection="",
+        )
+        example = self.build_lora_example(task, self._make_draft(), [self._make_evaluation()], improvement)
+        self.assertIn("####", example.output)
+        self.assertIn("math problem", example.instruction.lower())
+
+
+class TravelPlannerAgentTestCase(unittest.TestCase):
+    """agent.py — Query: 识别、JSON私有数据提取、Gold plan: 剥离、反思模板测试。"""
+
+    def _extract_task_question(self, task: str) -> str:
+        import importlib, b_magent.agent as m
+        importlib.reload(m)
+        return m._extract_task_question(task)
+
+    def _extract_private_question(self, item: str) -> str:
+        import b_magent.agent as m
+        return m._extract_private_question(item)
+
+    def _strip_gold_annotations(self, task: str) -> str:
+        import b_magent.agent as m
+        return m._strip_gold_annotations(task)
+
+    def _build_private_training_reflection(self, specialty: str, batch: list) -> str:
+        import b_magent.agent as m
+        return m._build_private_training_reflection(specialty, batch)
+
+    def test_extract_task_question_handles_query_field(self) -> None:
+        task = "Origin: NYC  Destination: Chicago  Days: 3\nQuery: Plan a 3-day trip\nGold plan: ..."
+        self.assertEqual(self._extract_task_question(task), "Plan a 3-day trip")
+
+    def test_extract_task_question_still_handles_question_field(self) -> None:
+        task = "Solve this GSM8K problem.\nQuestion: How many apples?\nGold final answer: 3"
+        self.assertEqual(self._extract_task_question(task), "How many apples?")
+
+    def test_extract_private_question_parses_json_travel_sample(self) -> None:
+        sample = json.dumps({
+            "question": "Plan a trip from NYC to Chicago",
+            "answer": "Day 1: fly.",
+            "level": "easy",
+            "org": "NYC",
+            "dest": "Chicago",
+            "days": 3,
+        })
+        result = self._extract_private_question(sample)
+        self.assertEqual(result, "Plan a trip from NYC to Chicago")
+
+    def test_extract_private_question_still_handles_pipe_format(self) -> None:
+        item = "GSM8K sample | question: How many apples? | reasoning_answer: 3 apples | final_answer: 3"
+        result = self._extract_private_question(item)
+        self.assertEqual(result, "How many apples?")
+
+    def test_strip_gold_annotations_removes_gold_plan_in_agent(self) -> None:
+        task = "Origin: NYC\nQuery: Plan trip\nGold plan: [day1: fly]"
+        stripped = self._strip_gold_annotations(task)
+        self.assertNotIn("Gold plan:", stripped)
+        self.assertIn("Query: Plan trip", stripped)
+
+    def test_private_training_reflection_travel_mentions_budget_and_constraints(self) -> None:
+        batch = [json.dumps({
+            "question": "Plan a 3-day trip from NYC to Chicago",
+            "answer": "Day 1: fly.",
+            "level": "easy",
+            "org": "NYC",
+            "dest": "Chicago",
+            "days": 3,
+        })]
+        reflection = self._build_private_training_reflection("通用智能体", batch)
+        self.assertIn("budget feasibility", reflection)
+        self.assertIn("constraint", reflection)
+        self.assertIn("day-by-day", reflection)
+
+    def test_private_training_reflection_math_unchanged(self) -> None:
+        batch = ["GSM8K sample | question: How many apples? | reasoning_answer: 3 apples | final_answer: 3"]
+        reflection = self._build_private_training_reflection("通用智能体", batch)
+        self.assertIn("final-answer format", reflection)
+        self.assertIn("verify calculations", reflection)
+
+    def test_private_training_reflection_empty_batch(self) -> None:
+        reflection = self._build_private_training_reflection("通用智能体", [])
+        self.assertIn("no private sample", reflection)
+
+
+class TravelPlannerLibraryTestCase(unittest.TestCase):
+    """library.py — _semantic_terms 停用词和 gold 剥离测试。"""
+
+    def _semantic_terms(self, text: str) -> set:
+        from b_magent.library import _semantic_terms
+        return _semantic_terms(text)
+
+    def test_gold_plan_content_not_in_terms(self) -> None:
+        task = (
+            "Origin: NYC  Destination: Chicago  Days: 3\n"
+            "Query: Plan a trip\n"
+            "Gold plan: [day1: fly to chicago, stay at marriott hotel]"
+        )
+        terms = self._semantic_terms(task)
+        # gold plan place names should be stripped
+        self.assertNotIn("marriott", terms)
+
+    def test_travel_stop_words_excluded(self) -> None:
+        text = "Please help me plan a trip from NYC to Chicago"
+        terms = self._semantic_terms(text)
+        # generic travel stop-words should be filtered
+        for stop in ("plan", "trip", "please", "help"):
+            self.assertNotIn(stop, terms, f"stop word '{stop}' should be excluded")
+
+    def test_origin_and_destination_retained_as_retrieval_terms(self) -> None:
+        text = "Origin: Seattle  Destination: Portland  Days: 2\nQuery: Book a flight"
+        terms = self._semantic_terms(text)
+        self.assertIn("seattle", terms)
+        self.assertIn("portland", terms)
+
+    def test_gold_final_answer_excluded_from_terms(self) -> None:
+        task = "Question: How many apples?\nGold final answer: 42"
+        terms = self._semantic_terms(task)
+        self.assertNotIn("42", terms)
+
+    def test_math_gold_reasoning_excluded_from_terms(self) -> None:
+        task = "Question: How many apples?\nGold reasoning: Janet has 3 apples plus 2 more.\nGold final answer: 5"
+        terms = self._semantic_terms(task)
+        self.assertNotIn("janet", terms)
+
+
+class TravelPlannerSelfEvolutionTestCase(unittest.TestCase):
+    """self_evolution.py — 旅行/数学任务反思模板分支测试。"""
+
+    def _make_event(self, task: str, is_correct: bool | None = None) -> object:
+        from b_magent.self_evolution import EvolutionInput
+        return EvolutionInput(
+            agent_name="qwen_agent_1",
+            specialty="通用智能体",
+            task=task,
+            answer="some answer",
+            is_correct=is_correct,
+        )
+
+    def _reflect(self, task: str, suggestions: list, is_correct: bool | None = None) -> str:
+        from b_magent.self_evolution import _build_professional_reflection
+        event = self._make_event(task, is_correct)
+        return _build_professional_reflection(event, suggestions)
+
+    def test_travel_reflection_mentions_budget_feasibility(self) -> None:
+        task = "Origin: NYC  Destination: Chicago  Days: 3\nQuery: Plan a 3-day budget trip"
+        reflection = self._reflect(task, ["check budget"])
+        self.assertIn("budget feasibility", reflection)
+
+    def test_travel_reflection_mentions_constraint_satisfaction(self) -> None:
+        task = "Origin: NYC  Destination: Chicago  Days: 3\nQuery: Plan trip with dietary constraints"
+        reflection = self._reflect(task, [])
+        self.assertIn("constraint satisfaction", reflection)
+
+    def test_travel_reflection_does_not_say_verify_final_answer(self) -> None:
+        task = "Origin: NYC  Destination: Chicago  Days: 3\nQuery: Plan my trip"
+        reflection = self._reflect(task, [])
+        self.assertNotIn("verify the final answer", reflection)
+
+    def test_math_reflection_still_mentions_verify_final_answer(self) -> None:
+        task = "Solve this GSM8K problem.\nQuestion: How many apples?\nGold final answer: 5"
+        reflection = self._reflect(task, [])
+        self.assertIn("verify the final answer", reflection)
+
+    def test_travel_reflection_with_correct_outcome_labels_curated(self) -> None:
+        task = "Origin: BOS  Destination: SEA  Days: 4\nQuery: Plan a 4-day trip"
+        reflection = self._reflect(task, [], is_correct=True)
+        self.assertIn("success", reflection)
+        self.assertIn("curated-by-evaluation", reflection)
+
+    def test_travel_reflection_with_wrong_outcome_labels_error(self) -> None:
+        task = "Origin: BOS  Destination: SEA  Days: 4\nQuery: Plan a 4-day trip"
+        reflection = self._reflect(task, [], is_correct=False)
+        self.assertIn("error", reflection)
+        self.assertIn("reflection-from-error", reflection)
+
+
+class TravelPlannerVotingEndToEndTestCase(unittest.TestCase):
+    """四智能体投票在 TravelPlanner 数据上的端到端集成测试。"""
+
+    def setUp(self) -> None:
+        import tempfile
+        self.temp_dir = Path(tempfile.mkdtemp(prefix="b_magent_travel_vote_test_"))
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _write_travel_split(self, name: str, rows: list[dict]) -> Path:
+        split_dir = self.temp_dir / "TravelPlanner"
+        split_dir.mkdir(parents=True, exist_ok=True)
+        path = split_dir / name
+        path.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+        return split_dir
+
+    def test_travel_voting_runs_and_produces_correct_report(self) -> None:
+        from train.four_agent_private_train import run_four_agent_voting_on_test
+
+        rows = [
+            {
+                "query": "Plan a 3-day trip from NYC to Chicago with a budget of $1500.",
+                "annotated_plan": "Day 1: fly to Chicago. Day 2: visit museums. Day 3: return.",
+                "level": "easy",
+                "org": "NYC",
+                "dest": "Chicago",
+                "days": 3,
+                "visiting_city_number": 1,
+                "date": ["2022-03-16", "2022-03-17", "2022-03-18"],
+                "people_number": 1,
+                "local_constraint": {},
+                "budget": 1500,
+            },
+            {
+                "query": "Plan a 2-day trip from Boston to Seattle.",
+                "annotated_plan": "Day 1: fly to Seattle. Day 2: explore and return.",
+                "level": "easy",
+                "org": "Boston",
+                "dest": "Seattle",
+                "days": 2,
+                "visiting_city_number": 1,
+                "date": ["2022-04-01", "2022-04-02"],
+                "people_number": 2,
+                "local_constraint": {},
+                "budget": 1000,
+            },
+        ]
+        dataset_dir = self._write_travel_split("test_test.json", rows)
+
+        # Model that echoes the gold plan back verbatim for correct scoring
+        class TravelEchoModel:
+            def __init__(self, plans: list[str]) -> None:
+                self.plans = plans
+                self.idx = 0
+            def train_batch(self, _batch: object) -> None:
+                return None
+            def generate(self, _question: str) -> str:
+                plan = self.plans[self.idx % len(self.plans)]
+                self.idx += 1
+                return plan
+
+        gold_plans = [r["annotated_plan"] for r in rows]
+        models = {agent_name: TravelEchoModel(gold_plans) for agent_name in AGENT_NAMES}
+
+        report = run_four_agent_voting_on_test(dataset_dir, models=models, split="test")
+
+        self.assertEqual(report.total, 2)
+        self.assertEqual(report.evaluation_split, "test")
+        self.assertEqual(len(report.predictions), 2)
+        # Each prediction should carry the correct question text
+        self.assertIn("NYC to Chicago", report.predictions[0].question)
+        self.assertIn("Boston to Seattle", report.predictions[1].question)
+
+    def test_travel_voting_uses_travel_tags_for_routing(self) -> None:
+        from train.four_agent_private_train import run_four_agent_voting_on_test
+
+        rows = [{
+            "query": "Plan a 3-day trip from NYC to Chicago with a budget of $1500.",
+            "annotated_plan": "Day 1: fly. Day 2: hotel. Day 3: return.",
+            "level": "easy",
+            "org": "NYC",
+            "dest": "Chicago",
+            "days": 3,
+            "visiting_city_number": 1,
+            "date": ["2022-03-16", "2022-03-17", "2022-03-18"],
+            "people_number": 1,
+            "local_constraint": {},
+            "budget": 1500,
+        }]
+        dataset_dir = self._write_travel_split("test_test.json", rows)
+
+        server_model = RecordingServerRoutingModel(
+            json.dumps({
+                "difficulty": "medium",
+                "key_steps": ["select flight", "book hotel", "plan attractions"],
+                "risk_steps": ["check budget constraint"],
+                "capability_tags": ["itinerary-planning", "budget-constraint", "transportation"],
+                "risk_tags": ["feasibility-check"],
+            })
+        )
+        server_tag_records = [
+            LibraryRecord(
+                agent_name=agent_name,
+                library_type="agent_training_tags",
+                source_task="travel planning task",
+                summary="travel training tags",
+                detail="source_library_type=professional",
+                tags=[
+                    agent_name, "agent-training-tags", "professional",
+                    "itinerary-planning", "budget-constraint", "transportation",
+                ],
+            )
+            for agent_name in AGENT_NAMES
+        ]
+
+        class FixedTravelModel:
+            def train_batch(self, batch: object) -> None: return None
+            def generate(self, question: str) -> str: return "Day 1: fly. Day 2: hotel."
+
+        models = {agent_name: FixedTravelModel() for agent_name in AGENT_NAMES}
+
+        report = run_four_agent_voting_on_test(
+            dataset_dir,
+            models=models,
+            split="test",
+            server_model=server_model,
+            server_training_tag_records=server_tag_records,
+        )
+
+        prediction = report.predictions[0]
+        # Server routing diagnostic should contain travel tags
+        self.assertIn("itinerary-planning", prediction.routing_tags)
+        self.assertIn("budget-constraint", prediction.routing_tags)
+        # 3 agents should be selected
+        self.assertEqual(len(prediction.selected_agents), 3)
+
+    def test_travel_strip_gold_plan_in_format_training_task(self) -> None:
+        """format_training_task produces a Gold plan: line that strip_gold_annotations removes."""
+        from b_magent.datasets import TravelPlannerSample
+        from train.four_agent_private_train import format_training_task
+        from b_magent.lora import strip_gold_annotations
+
+        sample = TravelPlannerSample(
+            question="Plan a 3-day trip from NYC to Chicago.",
+            answer="Day 1: fly. Day 2: museum. Day 3: return.",
+            final_answer="Day 1: fly. Day 2: museum. Day 3: return.",
+            level="easy",
+            org="NYC",
+            dest="Chicago",
+            days=3,
+        )
+        task = format_training_task(sample)
+        self.assertIn("Gold plan:", task)
+        self.assertIn("Origin:", task)
+        self.assertIn("Query:", task)
+
+        stripped = strip_gold_annotations(task)
+        self.assertNotIn("Gold plan:", stripped)
+        self.assertIn("Query:", stripped)
 
 
 if __name__ == "__main__":

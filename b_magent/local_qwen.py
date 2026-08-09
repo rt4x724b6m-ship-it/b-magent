@@ -13,7 +13,7 @@ from .models import Draft, EvaluationEvolution, EvaluationScores, LibraryRecord,
 from .self_evolution import normalize_experience_tags
 
 
-DEFAULT_QWEN_MODEL = "models/Qwen2.5-1.5B-Instruct"
+DEFAULT_QWEN_MODEL = "models/gemma-3-4b-it"
 
 NUMERIC_ANSWER_INSTRUCTION = (
     "You are a careful math reasoning assistant. Solve the problem step by step. "
@@ -21,9 +21,42 @@ NUMERIC_ANSWER_INSTRUCTION = (
     "Do not include units, explanations, or full sentences after ####."
 )
 
+TRAVEL_PLANNING_INSTRUCTION = (
+    "You are a professional travel planning agent. Strictly follow every rule below "
+    "when completing TravelPlanner itinerary tasks.\n\n"
+    "INPUT: The user provides target cities, total trip days, budget ceiling, travel dates, "
+    "preferences, transport restrictions, and traveller details.\n\n"
+    "HARD RULES — never violate:\n"
+    "1. No fabrication. Opening hours, ticket prices, travel durations, and fares must come "
+    "from the query or retrieval results only — never guess or invent figures.\n"
+    "2. Budget cap: total trip spend (tickets + meals + transport) must not exceed the given budget.\n"
+    "3. Time validity: never schedule visits outside attraction opening hours; reserve realistic "
+    "travel time for inter-city moves; never place unreachable destinations on the same day.\n"
+    "4. Geographic coherence: keep same-day attractions close together to minimise commuting; "
+    "schedule inter-city travel in the morning or evening slot.\n"
+    "5. Structured output: produce a day-by-day itinerary. Each day must include: "
+    "date · city · morning · afternoon · evening · daily cost · transport notes.\n"
+    "6. Cost transparency: itemise every expense (tickets, meals, fares) with amounts; "
+    "end with total trip cost ≤ given budget.\n\n"
+    "FORBIDDEN: Do not invent prices, hours, or durations. Do not exceed budget. "
+    "Do not schedule closed attractions. Do not use vague phrases such as 'explore the area' "
+    "— name specific venues. Do not omit the total cost summary.\n\n"
+    "Output: Return strictly the following JSON array, no extra text:\n"
+    '[{"days":1,"current_city":"...","transportation":"...","breakfast":"...","attraction":"...","lunch":"...","dinner":"...","accommodation":"..."},...]'
+)
+
+_TRAVEL_TASK_RE = re.compile(r"(?m)^(?:Origin:|Query:|Gold plan:|Destination:)")
+
+
+def _is_travel_prompt(text: str) -> bool:
+    """Return True when the prompt content comes from TravelPlanner."""
+    return bool(_TRAVEL_TASK_RE.search(text))
+
+
 @dataclass(frozen=True)
 class QwenGenerationConfig:
-    max_new_tokens: int = 512
+    # Travel plans produce long JSON arrays; 2048 tokens avoids mid-plan truncation.
+    max_new_tokens: int = 2048
     temperature: float = 0.2
     top_p: float = 0.9
     do_sample: bool = False
@@ -81,6 +114,7 @@ class LocalQwenEngine:
                 return
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+                torch.cuda.synchronize()
 
     def _generate_unlocked(self, prompt: str, adapter_path: str | Path | None = None) -> str:
         self._load()
@@ -88,8 +122,14 @@ class LocalQwenEngine:
         if adapter_path is not None and _is_lora_adapter_ready(Path(adapter_path)):
             model = self._load_adapter_model(Path(adapter_path))
         messages: list[dict[str, Any]] = []
-        if self.system_prompt:
-            messages.append({"role": "system", "content": self.system_prompt})
+        # Auto-select system prompt: travel planning tasks get a dedicated instruction
+        # so the model does not append a numeric #### answer line.
+        if _is_travel_prompt(prompt):
+            active_system_prompt = TRAVEL_PLANNING_INSTRUCTION
+        else:
+            active_system_prompt = self.system_prompt
+        if active_system_prompt:
+            messages.append({"role": "system", "content": active_system_prompt})
         messages.append({"role": "user", "content": prompt})
         text = self._tokenizer.apply_chat_template(
             messages,
@@ -136,18 +176,6 @@ class LocalQwenEngine:
             self._adapter_models[key] = adapter_model
             return adapter_model
 
-    def unload(self) -> None:
-        self._adapter_models.clear()
-        self._model = None
-        self._tokenizer = None
-        gc.collect()
-        try:
-            import torch
-        except ImportError:
-            return
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
     def _resolve_torch_dtype(self) -> Any:
         if self.torch_dtype == "auto":
             return "auto"
@@ -174,10 +202,10 @@ class LocalQwenEngine:
         model_path = Path(self.model_name_or_path)
         if self.local_files_only and not model_path.exists():
             raise RuntimeError(
-                "Local Qwen model directory was not found. "
+                "Local model directory was not found. "
                 f"Expected: {model_path.resolve()}. "
-                "Pass --model-path /path/to/Qwen2.5-1.5B-Instruct or place the model under "
-                "models/Qwen2.5-1.5B-Instruct."
+                "Pass --model-path /path/to/gemma-3-4b-it or place the model under "
+                "models/gemma-3-4b-it."
             )
         try:
             import transformers
@@ -188,7 +216,7 @@ class LocalQwenEngine:
         except ImportError as exc:
             raise RuntimeError(
                 "Local Qwen requires transformers. Install transformers and torch, "
-                "then pass a local Qwen2.5-1.5B-Instruct model path."
+                "then pass a local gemma-3-4b-it model path."
             ) from exc
 
         config = AutoConfig.from_pretrained(
@@ -197,7 +225,7 @@ class LocalQwenEngine:
         )
         if getattr(config, "model_type", "") == "qwen2_5_vl":
             raise RuntimeError(
-                "This project uses the text-only Qwen2.5-1.5B model; a Qwen-VL model path is not supported."
+                "This project uses the text-only gemma-3-4b-it model; a Qwen-VL model path is not supported."
             )
         self._tokenizer = AutoTokenizer.from_pretrained(
             self.model_name_or_path,
@@ -262,16 +290,34 @@ class LocalQwenAgentModel:
 
     def generate_with_server_guidance(self, question: str, server_guidance: str) -> str:
         context = "\n".join(self.training_examples[-4:])
-        prompt = (
-            f"Agent: {self.agent_name}\n"
-            f"Private examples:\n{context or '(none)'}\n\n"
-            f"Question:\n{question}\n\n"
-            "Server evaluation guidance:\n"
-            f"{server_guidance or '(none)'}\n\n"
-            "Answer independently while applying the server's observable risk checks. "
-            "Treat guidance as verification advice, not as a proposed answer.\n\n"
-            f"Output constraint:\n{NUMERIC_ANSWER_INSTRUCTION}"
-        )
+        if _is_travel_prompt(question):
+            prompt = (
+                f"{TRAVEL_PLANNING_INSTRUCTION}\n\n"
+                f"Role: {self.agent_name} (professional travel planning agent)\n"
+                "Tasks: ① Generate a day-by-day itinerary from the query. "
+                "② Each day must fill in all six fields: transportation / breakfast / attraction / lunch / dinner / accommodation.\n"
+                "Constraints: Only use information given in the query. If missing, fill with \"-\". "
+                "Budget and local constraints must all be satisfied. "
+                "Server guidance is for verification only — do not use it as a direct answer.\n\n"
+                "Private examples (for reference only, do not copy verbatim):\n"
+                f"{context or '(none)'}\n\n"
+                "Query:\n"
+                f"{question}\n\n"
+                "Server evaluation guidance:\n"
+                f"{server_guidance or '(none)'}\n\n"
+                "Output: Return strictly the JSON array, no extra text."
+            )
+        else:
+            prompt = (
+                f"Agent: {self.agent_name}\n"
+                f"Private examples:\n{context or '(none)'}\n\n"
+                f"Question:\n{question}\n\n"
+                "Server evaluation guidance:\n"
+                f"{server_guidance or '(none)'}\n\n"
+                "Answer independently while applying the server's observable risk checks. "
+                "Treat guidance as verification advice, not as a proposed answer.\n\n"
+                f"Output constraint:\n{NUMERIC_ANSWER_INSTRUCTION}"
+            )
         adapter_path = self._adapter_path()
         if adapter_path is None:
             return self.engine.generate(prompt)
@@ -304,20 +350,39 @@ class LocalQwenEvolutionBackend:
         professional_memory: list[str],
         evaluation_alerts: list[str],
     ) -> tuple[str, list[str]]:
-        prompt = (
-            f"Agent: {agent_name}\n"
-            f"Agent type: {specialty}\n"
-            "Task:\n"
-            f"{task}\n\n"
-            "Private training examples:\n"
-            f"{_format_context(private_training)}\n\n"
-            "Professional evolution library memories:\n"
-            f"{_format_context(professional_memory)}\n\n"
-            "Evaluation evolution library checks:\n"
-            f"{_format_context(evaluation_alerts)}\n\n"
-            "Solve the text problem carefully, show the necessary reasoning, and end with a line in the "
-            "exact format #### <numeric_answer>."
-        )
+        if _is_travel_prompt(task):
+            prompt = (
+                f"{TRAVEL_PLANNING_INSTRUCTION}\n\n"
+                f"Role: {agent_name} ({specialty})\n"
+                "Tasks: ① Generate a day-by-day itinerary from the query. "
+                "② Each day must fill in all six fields: transportation / breakfast / attraction / lunch / dinner / accommodation.\n"
+                "Constraints: Only use information given in the query. If missing, fill with \"-\". "
+                "Budget and local constraints must all be satisfied.\n\n"
+                "Query:\n"
+                f"{task}\n\n"
+                "Private training examples (for reference only, do not copy verbatim):\n"
+                f"{_format_context(private_training)}\n\n"
+                "Professional evolution library (follow with priority):\n"
+                f"{_format_context(professional_memory)}\n\n"
+                "Evaluation alerts (must avoid):\n"
+                f"{_format_context(evaluation_alerts)}\n\n"
+                "Output: Return strictly the JSON array, no extra text."
+            )
+        else:
+            prompt = (
+                f"Agent: {agent_name}\n"
+                f"Agent type: {specialty}\n"
+                "Task:\n"
+                f"{task}\n\n"
+                "Private training examples:\n"
+                f"{_format_context(private_training)}\n\n"
+                "Professional evolution library memories:\n"
+                f"{_format_context(professional_memory)}\n\n"
+                "Evaluation evolution library checks:\n"
+                f"{_format_context(evaluation_alerts)}\n\n"
+                "Solve the text problem carefully, show the necessary reasoning, and end with a line in the "
+                "exact format #### <numeric_answer>."
+            )
         answer = self.engine.generate(prompt, adapter_path=self._adapter_path(agent_name))
         thought_trace = [
             f"local_qwen_agent={agent_name}",
@@ -334,26 +399,60 @@ class LocalQwenEvolutionBackend:
         task: str,
         evaluation_memory: list[str],
     ) -> PeerEvaluation:
-        prompt = (
-            f"Evaluator agent: {evaluator_name}\n"
-            f"Target agent: {target_draft.agent_name}\n"
-            "Task:\n"
-            f"{task}\n\n"
-            "Target federated answer summary:\n"
-            f"{target_draft.answer}\n\n"
-            "Target trace:\n"
-            f"{_format_context(target_draft.thought_trace)}\n\n"
-            "Private evaluation-library memories:\n"
-            f"{_format_context(evaluation_memory)}\n\n"
-            "Check whether the reasoning, calculations, and final numeric answer are consistent with the task. "
-            "Return 1 to 3 concrete suggestions; if the answer is already correct, suggest only concise verification. "
-            "Score correctness, safety, and efficiency from 0 to 1, where 1 means fully correct/safe/concise, "
-            "0.5 means materially incomplete, and 0 means wrong or unusable. Harmless math answers should "
-            "normally receive safety=1. Return only one valid JSON object with keys suggestions, correctness, "
-            "safety, efficiency, rationale. Do not wrap it in markdown. "
-            "The rationale must use exactly this section order separated by a line containing ↓: "
-            "Task, Observed Error, Evaluation Decision, Confidence, Improvement Pattern."
-        )
+        if _is_travel_prompt(task):
+            # Extract budget/people/constraint summary from the task for the evaluator
+            budget_match = re.search(r"Budget:\s*\$?([\d,]+)", task)
+            people_match = re.search(r"Travelers:\s*(\d+)", task)
+            days_match = re.search(r"Days:\s*(\d+)", task)
+            budget_hint = f"  budget=${budget_match.group(1)}" if budget_match else ""
+            people_hint = f"  travelers={people_match.group(1)}" if people_match else ""
+            days_hint = f"  days={days_match.group(1)}" if days_match else ""
+            prompt = (
+                f"Evaluator agent: {evaluator_name}\n"
+                f"Target agent: {target_draft.agent_name}\n"
+                f"Task constraints:{budget_hint}{people_hint}{days_hint}\n"
+                "Task:\n"
+                f"{task}\n\n"
+                "Target itinerary:\n"
+                f"{target_draft.answer}\n\n"
+                "Private evaluation-library memories:\n"
+                f"{_format_context(evaluation_memory)}\n\n"
+                "Evaluate the itinerary against ALL of the following travel-plan quality checks:\n"
+                "① COMPLETENESS — each day must have: transportation, breakfast, attraction, lunch, dinner, accommodation.\n"
+                "② BUDGET — sum up all daily costs; total must not exceed the stated budget.\n"
+                "③ CONSTRAINT SATISFACTION — check house rules, cuisine preferences, room type, transportation mode.\n"
+                "④ FABRICATION — verify no invented flight numbers, hotels, or restaurants outside query scope.\n"
+                "⑤ GEOGRAPHIC COHERENCE — same-day attractions must be in realistic proximity; inter-city moves need enough transit time.\n"
+                "⑥ TRAVELER COUNT — meal/accommodation costs must account for the stated number of travelers.\n"
+                "Return 1–4 concrete, actionable suggestions addressing whichever checks fail. "
+                "If the itinerary is sound, return only one short verification note.\n"
+                "Score from 0 to 1: correctness=plan correctness vs constraints, "
+                "safety=no fabrication or policy violation, efficiency=coverage and cost optimisation.\n"
+                "Return exactly one JSON object with keys: suggestions, correctness, safety, efficiency, rationale.\n"
+                "Do not wrap in markdown. Rationale sections (separated by ↓): "
+                "Task, Observed Error, Evaluation Decision, Confidence, Improvement Pattern."
+            )
+        else:
+            prompt = (
+                f"Evaluator agent: {evaluator_name}\n"
+                f"Target agent: {target_draft.agent_name}\n"
+                "Task:\n"
+                f"{task}\n\n"
+                "Target federated answer summary:\n"
+                f"{target_draft.answer}\n\n"
+                "Target trace:\n"
+                f"{_format_context(target_draft.thought_trace)}\n\n"
+                "Private evaluation-library memories:\n"
+                f"{_format_context(evaluation_memory)}\n\n"
+                "Check whether the reasoning, calculations, and final numeric answer are consistent with the task. "
+                "Return 1 to 3 concrete suggestions; if the answer is already correct, suggest only concise verification. "
+                "Score correctness, safety, and efficiency from 0 to 1, where 1 means fully correct/safe/concise, "
+                "0.5 means materially incomplete, and 0 means wrong or unusable. Harmless math answers should "
+                "normally receive safety=1. Return only one valid JSON object with keys suggestions, correctness, "
+                "safety, efficiency, rationale. Do not wrap it in markdown. "
+                "The rationale must use exactly this section order separated by a line containing ↓: "
+                "Task, Observed Error, Evaluation Decision, Confidence, Improvement Pattern."
+            )
         raw_response = self.engine.generate(prompt)
         suggestions = _parse_suggestions(raw_response)
         scores = _parse_scores(raw_response)
@@ -386,25 +485,46 @@ class LocalQwenEvolutionBackend:
         professional_memory: list[str],
         evaluation_alerts: list[str],
     ) -> tuple[str, str]:
-        prompt = (
-            f"Agent: {agent_name}\n"
-            f"Agent type: {specialty}\n"
-            "Task:\n"
-            f"{task}\n\n"
-            "Original answer:\n"
-            f"{draft.answer}\n\n"
-            "Public reasoning trace summary:\n"
-            f"{_format_context(draft.thought_trace)}\n\n"
-            "Evaluator feedback to apply:\n"
-            f"{_format_context(suggestions)}\n\n"
-            "Professional evolution library memories:\n"
-            f"{_format_context(professional_memory)}\n\n"
-            "Evaluation evolution library checks:\n"
-            f"{_format_context(evaluation_alerts)}\n\n"
-            "Rewrite the answer from scratch as the ideal final answer. "
-            "Recalculate the problem, apply the feedback concretely, and preserve the required numeric "
-            "final-answer format."
-        )
+        if _is_travel_prompt(task):
+            prompt = (
+                f"{TRAVEL_PLANNING_INSTRUCTION}\n\n"
+                f"Role: {agent_name} ({specialty}, itinerary revision mode)\n"
+                "Tasks: ① Rewrite the full itinerary based on evaluator feedback. "
+                "② Each day must fill in all six fields: transportation / breakfast / attraction / lunch / dinner / accommodation.\n"
+                "Constraints: Only use information given in the query. If missing, fill with \"-\". "
+                "Budget and local constraints must all be satisfied. Apply every piece of evaluator feedback.\n\n"
+                "Query:\n"
+                f"{task}\n\n"
+                "Original itinerary (for reference only, improve thoroughly):\n"
+                f"{draft.answer}\n\n"
+                "Evaluator feedback (apply every item):\n"
+                f"{_format_context(suggestions)}\n\n"
+                "Professional evolution library (follow with priority):\n"
+                f"{_format_context(professional_memory)}\n\n"
+                "Evaluation alerts (must avoid):\n"
+                f"{_format_context(evaluation_alerts)}\n\n"
+                "Output: Return strictly the JSON array, no extra text."
+            )
+        else:
+            prompt = (
+                f"Agent: {agent_name}\n"
+                f"Agent type: {specialty}\n"
+                "Task:\n"
+                f"{task}\n\n"
+                "Original answer:\n"
+                f"{draft.answer}\n\n"
+                "Public reasoning trace summary:\n"
+                f"{_format_context(draft.thought_trace)}\n\n"
+                "Evaluator feedback to apply:\n"
+                f"{_format_context(suggestions)}\n\n"
+                "Professional evolution library memories:\n"
+                f"{_format_context(professional_memory)}\n\n"
+                "Evaluation evolution library checks:\n"
+                f"{_format_context(evaluation_alerts)}\n\n"
+                "Rewrite the answer from scratch as the ideal final answer. "
+                "Recalculate the problem, apply the feedback concretely, and preserve the required numeric "
+                "final-answer format."
+            )
         revised_answer = self.engine.generate(prompt, adapter_path=self._adapter_path(agent_name))
         reflection = (
             "Reflection: regenerated an ideal final answer using evaluator feedback, "
@@ -477,6 +597,25 @@ class LocalQwenEvolutionBackend:
             )
             for record in consensus_evaluation_records
         ]
+        is_travel = _is_travel_prompt(task)
+        if is_travel:
+            domain_instruction = (
+                "This is a travel planning task. In addition to general quality patterns, "
+                "synthesize the following travel-specific lessons:\n"
+                "• Budget violations: which itineraries exceeded the budget and how?\n"
+                "• Constraint gaps: which local constraints (cuisine, house rule, room type, transport) were missed?\n"
+                "• Fabrication patterns: what kinds of invented data appeared most?\n"
+                "• Day-completeness failures: which of the six daily fields (transportation/breakfast/attraction/"
+                "lunch/dinner/accommodation) were most often missing or vague?\n"
+                "• Geographic errors: unrealistic same-day distances or insufficient transit time?\n"
+                "Encode these as actionable review checks future evaluators must apply."
+            )
+        else:
+            domain_instruction = (
+                "Synthesize common failure modes, useful review checks, score/rationale patterns, "
+                "and how future evaluators should inspect federated answer summaries. "
+                "Preserve reusable checks for arithmetic accuracy, reasoning completeness, and final-answer consistency."
+            )
         prompt = (
             f"Server agent: {server_name}\n"
             "Role: aggregate all evaluator-agent review experience for this round into one reusable global lesson.\n"
@@ -490,13 +629,10 @@ class LocalQwenEvolutionBackend:
             f"{_format_context(consensus_experience_context)}\n\n"
             "Evaluator self-evolved evaluation records:\n"
             f"{_format_context(evolution_context)}\n\n"
+            f"{domain_instruction}\n\n"
             "Write one concise global evaluation experience for future rounds using exactly this section order "
             "with a line containing ↓ between sections: Task, Observed Error, Evaluation Decision, Confidence, "
-            "Improvement Pattern. "
-            "Synthesize common failure modes, useful review checks, score/rationale patterns, "
-            "and how future evaluators should inspect federated answer summaries and FoT-style trajectories. "
-            "Preserve reusable checks for arithmetic accuracy, reasoning completeness, and final-answer consistency. "
-            "Do not expose private training data."
+            "Improvement Pattern. Do not expose private training data."
         )
         raw_response = self.engine.generate(prompt)
         return format_structured_evaluation(

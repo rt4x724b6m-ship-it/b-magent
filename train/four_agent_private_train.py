@@ -21,13 +21,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from baseline.qwen_gsm8k import STANDARD_TEST_LIMIT, extract_numeric_answer, normalize_answer
-from b_magent.datasets import GSM8KSample, VisionQASample, load_project_dataset
+from b_magent.datasets import GSM8KSample, TravelPlannerSample, VisionQASample, load_project_dataset
 from b_magent.library import EvolutionLibrary
 from b_magent.local_qwen import (
     DEFAULT_QWEN_MODEL,
     LocalQwenAgentModel,
     LocalQwenEngine,
     LocalQwenEvolutionBackend,
+    NUMERIC_ANSWER_INSTRUCTION,
 )
 from b_magent.lora import DEFAULT_LORA_THRESHOLD, LoraEvolutionManager, LoraTrainingConfig, LoraUpdate
 from b_magent.models import LibraryRecord
@@ -45,6 +46,8 @@ AGENT_NAMES = (
     "qwen_agent_6",
 )
 STANDARD_PRIVATE_TRAIN_SIZE = 200
+DEFAULT_TRAINING_ROUNDS = 800
+TRAINING_EVALUATION_LIMIT = 500
 
 
 class TrainableQwenModel(Protocol):
@@ -83,6 +86,80 @@ class MemoryQwenModel:
     def generate(self, question: str) -> str:
         answer = self.memory.get(question, "0")
         return f"#### {answer}"
+
+
+class KnowledgeLibraryVotingModel:
+    """Voting model used by the knowledge-library integration evaluation."""
+
+    def __init__(
+        self,
+        agent_name: str,
+        engine: LocalQwenEngine,
+        data_dir: Path,
+        lora_output_dir: Path,
+        memory_limit: int = 3,
+    ) -> None:
+        self.agent_name = agent_name
+        self.engine = engine
+        self.lora_output_dir = lora_output_dir
+        self.professional_library = EvolutionLibrary(
+            data_dir / agent_name / "professional_library.jsonl", "professional"
+        )
+        self.evaluation_library = EvolutionLibrary(
+            data_dir / agent_name / "evaluation_library.jsonl", "evaluation"
+        )
+        self.memory_limit = memory_limit
+
+    def train_batch(self, batch: object) -> None:
+        return None
+
+    def generate(self, question: str) -> str:
+        return self.generate_with_server_guidance(question, "")
+
+    def generate_with_server_guidance(self, question: str, server_guidance: str) -> str:
+        professional_records = self.professional_library.search(question, limit=self.memory_limit)
+        evaluation_records = self.evaluation_library.search(question, limit=self.memory_limit)
+        prompt = (
+            f"Agent: {self.agent_name}\n"
+            "Use this agent's self-evolution knowledge libraries as extra context.\n\n"
+            "Professional library memories:\n"
+            f"{format_library_records_for_voting(professional_records)}\n\n"
+            "Evaluation library checks:\n"
+            f"{format_library_records_for_voting(evaluation_records)}\n\n"
+            "Question:\n"
+            f"{question}\n\n"
+            "Server evaluation guidance:\n"
+            f"{server_guidance or '(none)'}\n\n"
+            f"Output constraint:\n{NUMERIC_ANSWER_INSTRUCTION}"
+        )
+        return self.engine.generate(prompt, adapter_path=self.adapter_path)
+
+    @property
+    def adapter_path(self) -> Path:
+        return self.lora_output_dir / self.agent_name / "adapter"
+
+
+class DirectEngineRoutingModel:
+    def __init__(self, engine: LocalQwenEngine) -> None:
+        self.engine = engine
+
+    def generate(self, prompt: str) -> str:
+        return self.engine.generate(prompt)
+
+
+def format_library_records_for_voting(records: list[LibraryRecord]) -> str:
+    if not records:
+        return "(none)"
+    lines = []
+    for index, record in enumerate(records, start=1):
+        summary = " ".join(record.summary.split())
+        detail = " ".join(record.detail.split())
+        if len(detail) > 360:
+            detail = detail[:357] + "..."
+        lines.append(
+            f"{index}. summary={summary}; detail={detail}; tags={', '.join(record.tags)}"
+        )
+    return "\n".join(lines)
 
 
 @dataclass
@@ -179,6 +256,36 @@ class VotingReport:
 
 
 @dataclass
+class TrainingEvaluation:
+    round_index: int
+    total: int
+    correct: int
+    accuracy: float
+    report_path: str
+
+
+@dataclass
+class TrainingEvaluationHistory:
+    evaluations: list[TrainingEvaluation] = field(default_factory=list)
+
+    @property
+    def best(self) -> TrainingEvaluation | None:
+        if not self.evaluations:
+            return None
+        return max(self.evaluations, key=lambda item: (item.accuracy, -item.round_index))
+
+    def to_dict(self) -> dict[str, object]:
+        best = self.best
+        return {
+            "evaluations": [asdict(item) for item in self.evaluations],
+            "best_round": best.round_index if best is not None else None,
+            "best_accuracy": best.accuracy if best is not None else None,
+            "best_correct": best.correct if best is not None else None,
+            "best_total": best.total if best is not None else None,
+        }
+
+
+@dataclass
 class BMagentTrainingRound:
     round_index: int
     task: str
@@ -242,17 +349,22 @@ def run_b_magent_training_entry(
     dataset = load_project_dataset(dataset_dir)
     all_train_samples = dataset.load("train")
     if not all_train_samples:
-        expected_path = (
-            dataset_dir / "infographicsvqa" / "train.jsonl"
-            if dataset_dir.name.lower() not in {"gsm8k", "infographicsvqa"}
-            else dataset_dir / "train.jsonl"
-        )
-        raise ValueError(
-            f"no training samples found at {expected_path}. "
-            "Prepare the official InfographicsVQA train split with: "
-            "python scripts/prepare_vision_datasets.py --dataset infographicsvqa --output-dir data"
-        )
+        normalized = dataset_dir.name.lower()
+        if normalized == "travelplanner":
+            expected_path = dataset_dir / "train_train.json"
+            hint = "Place the TravelPlanner train_train.json into the data/TravelPlanner directory."
+        elif normalized not in {"gsm8k", "infographicsvqa"}:
+            expected_path = dataset_dir / "infographicsvqa" / "train.jsonl"
+            hint = (
+                "Prepare the official InfographicsVQA train split with: "
+                "python scripts/prepare_vision_datasets.py --dataset infographicsvqa --output-dir data"
+            )
+        else:
+            expected_path = dataset_dir / "train.jsonl"
+            hint = "Ensure train.jsonl exists in the dataset directory."
+        raise ValueError(f"no training samples found at {expected_path}. {hint}")
     is_vision_training = isinstance(all_train_samples[0], VisionQASample)
+    is_travel_training = isinstance(all_train_samples[0], TravelPlannerSample)
     if is_vision_training:
         required_samples = len(AGENT_NAMES) * STANDARD_PRIVATE_TRAIN_SIZE
         if len(all_train_samples) < required_samples:
@@ -435,7 +547,15 @@ def load_training_progress(progress_file: Path) -> int:
 
 
 def build_training_manifest(args: argparse.Namespace) -> dict[str, object]:
+    # Support JSONL splits (GSM8K/Vision), JSON splits (TravelPlanner),
+    # and Agent-STAR JSONL (TravelTotal_17K.jsonl).
     train_files = sorted(args.dataset_dir.rglob("train.jsonl"))
+    if not train_files:
+        # TravelPlanner uses train_train.json
+        train_files = sorted(args.dataset_dir.rglob("train_train.json"))
+    if not train_files:
+        # Agent-STAR synthetic travel dataset
+        train_files = sorted(args.dataset_dir.rglob("TravelTotal_17K.jsonl"))
     if not train_files:
         raise ValueError(f"cannot fingerprint training data under {args.dataset_dir}")
     digest = hashlib.sha256()
@@ -452,6 +572,10 @@ def build_training_manifest(args: argparse.Namespace) -> dict[str, object]:
         "reserved_size": args.reserved_size,
         "reserved_ratio": args.reserved_ratio,
         "private_batch_size": args.private_batch_size,
+        "eval_interval": args.eval_interval,
+        "eval_seed": args.eval_seed,
+        "training_eval_limit": args.training_eval_limit,
+        "test_limit": args.test_limit,
         "model_path": str(Path(args.model_path).resolve()),
         "lora_enabled": args.enable_lora,
         "lora_output_dir": str(args.lora_output_dir.resolve()),
@@ -521,6 +645,25 @@ def save_training_progress(
         encoding="utf-8",
     )
     temporary_file.replace(progress_file)
+
+
+def load_training_evaluation_history(path: Path) -> TrainingEvaluationHistory:
+    if not path.exists():
+        return TrainingEvaluationHistory()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return TrainingEvaluationHistory(
+        evaluations=[TrainingEvaluation(**item) for item in payload.get("evaluations", [])]
+    )
+
+
+def save_training_evaluation_history(path: Path, history: TrainingEvaluationHistory) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_file = path.with_suffix(path.suffix + ".tmp")
+    temporary_file.write_text(
+        json.dumps(history.to_dict(), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temporary_file.replace(path)
 
 
 def downlink_global_evaluation_experience(
@@ -655,10 +798,17 @@ def run_four_agent_voting_on_test(
     server_training_tag_records: list[LibraryRecord] | None = None,
     prior_global_evaluation_records: list[LibraryRecord] | None = None,
     split: str = "test",
+    evaluation_seed: int | None = None,
 ) -> VotingReport:
     dataset = load_project_dataset(dataset_dir)
-    effective_limit = None if limit is None or limit <= 0 else min(limit, STANDARD_TEST_LIMIT)
-    test_samples = dataset.load(split, limit=effective_limit)
+    effective_limit = None if limit is None or limit <= 0 else limit
+    if evaluation_seed is None:
+        test_samples = dataset.load(split, limit=effective_limit)
+    else:
+        test_samples = dataset.load(split)
+        random.Random(evaluation_seed).shuffle(test_samples)
+        if effective_limit is not None:
+            test_samples = test_samples[:effective_limit]
     if not test_samples:
         raise ValueError(f"no {split} samples found under {dataset_dir}")
     missing_agents = [agent_name for agent_name in agent_names if agent_name not in models]
@@ -719,7 +869,11 @@ def run_four_agent_voting_on_test(
             ]
             final_answer = routed_vote(votes) if server_model is not None and tag_index else majority_vote(votes)
             normalize_sample_answer = (
-                normalize_vision_answer if isinstance(sample, VisionQASample) else normalize_answer
+                normalize_vision_answer
+                if isinstance(sample, VisionQASample)
+                else normalize_travel_answer
+                if isinstance(sample, TravelPlannerSample)
+                else normalize_answer
             )
             accepted_answers = tuple(
                 normalize_sample_answer(answer)
@@ -1268,7 +1422,48 @@ def _extract_global_source_id(detail: str) -> str:
     return source_id.split(" | ", 1)[0].strip()
 
 
-def format_training_task(sample: GSM8KSample | VisionQASample) -> str:
+def _format_travel_constraints(sample: "TravelPlannerSample") -> str:
+    """Return a formatted constraint line for non-null local_constraint fields."""
+    lc = getattr(sample, "local_constraint", None) or {}
+    parts: list[str] = []
+    if lc.get("house rule"):
+        parts.append(f"house rule: {lc['house rule']}")
+    if lc.get("cuisine"):
+        cuisines = lc["cuisine"] if isinstance(lc["cuisine"], list) else [lc["cuisine"]]
+        parts.append(f"cuisine: {', '.join(str(c) for c in cuisines if c)}")
+    if lc.get("room type"):
+        parts.append(f"room type: {lc['room type']}")
+    if lc.get("transportation"):
+        parts.append(f"transportation: {lc['transportation']}")
+    return (f"Local constraints: {'; '.join(parts)}\n") if parts else ""
+
+
+def format_training_task(sample: GSM8KSample | VisionQASample | TravelPlannerSample) -> str:
+    if isinstance(sample, TravelPlannerSample):
+        constraint_line = _format_travel_constraints(sample)
+        dates = getattr(sample, "dates", []) or []
+        date_info = f"  Dates: {', '.join(dates)}" if dates else ""
+        budget = getattr(sample, "budget", 0) or 0
+        people = getattr(sample, "people_number", 1) or 1
+        cities = getattr(sample, "visiting_city_number", 1) or 1
+        return (
+            "You are a professional travel planner. All judgments must be strictly based on the "
+            "origin, destination, number of days, budget, and constraints provided by the user. "
+            "Never fabricate flight numbers, hotels, restaurants, or attractions that do not exist.\n"
+            f"Tasks: ① Generate a day-by-day itinerary for {sample.days} days visiting "
+            f"{cities} city(ies) for {people} traveler(s). "
+            "② Each day must fill in all six fields: transportation / breakfast / attraction / lunch / dinner / accommodation.\n"
+            f"Constraints: Difficulty={sample.level}. Only use information given in the query. "
+            "If missing, fill with \"-\". Budget and local constraints must all be satisfied.\n"
+            "Output: Return strictly the following JSON array format, preserve reusable planning lessons, no extra text:\n"
+            '[{"days":1,"current_city":"...","transportation":"...","breakfast":"...","attraction":"...","lunch":"...","dinner":"...","accommodation":"..."},...]\n\n'
+            f"Origin: {sample.org}  Destination: {sample.dest}  Days: {sample.days}"
+            f"  Cities: {cities}  Travelers: {people}"
+            f"  Budget: ${budget}{date_info}  Level: {sample.level}\n"
+            f"{constraint_line}"
+            f"Query: {sample.question}\n"
+            f"Gold plan: {sample.answer}"
+        )
     if isinstance(sample, VisionQASample):
         accepted = " | ".join(sample.answers or (sample.final_answer,))
         return (
@@ -1290,7 +1485,31 @@ def format_training_task(sample: GSM8KSample | VisionQASample) -> str:
 format_gsm8k_training_task = format_training_task
 
 
-def format_inference_question(sample: GSM8KSample | VisionQASample) -> str:
+def format_inference_question(sample: GSM8KSample | VisionQASample | TravelPlannerSample) -> str:
+    if isinstance(sample, TravelPlannerSample):
+        constraint_line = _format_travel_constraints(sample)
+        dates = getattr(sample, "dates", []) or []
+        date_info = f"  Dates: {', '.join(dates)}" if dates else ""
+        budget = getattr(sample, "budget", 0) or 0
+        people = getattr(sample, "people_number", 1) or 1
+        cities = getattr(sample, "visiting_city_number", 1) or 1
+        return (
+            "You are a professional travel planner. All judgments must be strictly based on the "
+            "origin, destination, number of days, budget, and constraints provided by the user. "
+            "Never fabricate flight numbers, hotels, restaurants, or attractions that do not exist.\n"
+            f"Tasks: ① Generate a day-by-day itinerary for {sample.days} days visiting "
+            f"{cities} city(ies) for {people} traveler(s). "
+            "② Each day must fill in all six fields: transportation / breakfast / attraction / lunch / dinner / accommodation.\n"
+            "Constraints: Only use information given in the query. "
+            "If missing, fill with \"-\". Budget and local constraints must all be satisfied.\n"
+            "Output: Return strictly the following JSON array format, no extra text:\n"
+            '[{"days":1,"current_city":"...","transportation":"...","breakfast":"...","attraction":"...","lunch":"...","dinner":"...","accommodation":"..."},...]\n\n'
+            f"Origin: {sample.org}  Destination: {sample.dest}  Days: {sample.days}"
+            f"  Cities: {cities}  Travelers: {people}"
+            f"  Budget: ${budget}{date_info}  Level: {sample.level}\n"
+            f"{constraint_line}"
+            f"Query: {sample.question}"
+        )
     if isinstance(sample, VisionQASample):
         return (
             f"Image: {sample.image_path}\nQuestion: {sample.question}\n"
@@ -1299,7 +1518,10 @@ def format_inference_question(sample: GSM8KSample | VisionQASample) -> str:
     return sample.question
 
 
-def extract_prediction_answer(text: str, sample: GSM8KSample | VisionQASample) -> str:
+def extract_prediction_answer(text: str, sample: GSM8KSample | VisionQASample | TravelPlannerSample) -> str:
+    if isinstance(sample, TravelPlannerSample):
+        # Travel plans are free-form text; return the full response for comparison.
+        return normalize_travel_answer(text)
     if not isinstance(sample, VisionQASample):
         return extract_numeric_answer(text)
     try:
@@ -1321,6 +1543,46 @@ def _strip_json_fence(text: str) -> str:
         candidate = candidate.split("\n", 1)[-1]
         candidate = candidate.rsplit("```", 1)[0].strip()
     return candidate
+
+
+def normalize_travel_answer(text: str) -> str:
+    """Normalize a travel plan for comparison.
+
+    Both the model output and the gold annotated_plan are structured as
+    per-day records with transportation/breakfast/attraction/lunch/dinner/
+    accommodation fields.  Extract those fields and produce a canonical
+    lower-cased string so the scorer can do meaningful comparison.
+
+    Falls back to whitespace-normalised full text when parsing fails.
+    """
+    import ast
+
+    def _extract_day_fields(day: dict) -> str:
+        keys = ("transportation", "breakfast", "attraction", "lunch", "dinner", "accommodation")
+        parts = [str(day.get(k, "-")).strip() for k in keys]
+        return "|".join(p.casefold() for p in parts if p and p != "-")
+
+    # Try JSON array first (model output format)
+    candidate = str(text).strip()
+    if candidate.startswith("```"):
+        candidate = candidate.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    try:
+        payload = json.loads(candidate)
+        if isinstance(payload, list) and payload and isinstance(payload[0], dict):
+            return " ".join(_extract_day_fields(d) for d in payload if isinstance(d, dict))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+    # Try Python literal (gold annotated_plan format: [meta_dict, [day1, day2, ...]])
+    try:
+        parsed = ast.literal_eval(candidate)
+        if isinstance(parsed, list) and len(parsed) == 2 and isinstance(parsed[1], list):
+            days = [d for d in parsed[1] if isinstance(d, dict) and d]
+            if days:
+                return " ".join(_extract_day_fields(d) for d in days)
+    except (ValueError, SyntaxError):
+        pass
+    # Fallback: whitespace-normalised full text
+    return " ".join(candidate.casefold().split())
 
 
 def normalize_vision_answer(text: str) -> str:
@@ -1420,14 +1682,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dataset-dir",
         type=Path,
-        default=Path("data/gsm8k"),
-        help="Dataset directory. Defaults to the project's local data/gsm8k dataset.",
+        default=Path("data/Agent-STAR-TravelDataset"),
+        help=(
+            "Dataset directory. "
+            "Defaults to data/Agent-STAR-TravelDataset (Agent-STAR synthetic JSONL). "
+            "Use data/TravelPlanner for the original JSON splits."
+        ),
     )
     parser.add_argument(
         "--rounds",
         type=int,
-        default=0,
-        help="Training rounds. Default 0 auto-covers all 200 private samples per agent.",
+        default=DEFAULT_TRAINING_ROUNDS,
+        help="Training rounds. Default and recommended maximum: 800.",
     )
     parser.add_argument(
         "--private-batch-size",
@@ -1467,8 +1733,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--reserved-ratio",
         type=float,
-        default=0.3,
-        help="Fraction of the official training split reserved and excluded from all current training. Default: 0.3.",
+        default=0.0,
+        help="Fraction of the official training split excluded from training. Default: 0 (use the full training set).",
     )
     parser.add_argument(
         "--validation-size", dest="reserved_size", type=int, default=argparse.SUPPRESS, help=argparse.SUPPRESS
@@ -1480,6 +1746,24 @@ def parse_args() -> argparse.Namespace:
         "--resume",
         action="store_true",
         help="Resume from the last completed round without deleting libraries, datasets, or LoRA state.",
+    )
+    parser.add_argument(
+        "--eval-interval",
+        type=int,
+        default=100,
+        help="Run voting evaluation after every N training rounds. Pass 0 to disable. Default: 100.",
+    )
+    parser.add_argument(
+        "--eval-seed",
+        type=int,
+        default=2024,
+        help="Seed used to select the stable test subset for training-time evaluation.",
+    )
+    parser.add_argument(
+        "--training-eval-limit",
+        type=int,
+        default=TRAINING_EVALUATION_LIMIT,
+        help="Number of fixed-seed test samples used at each training checkpoint. Default: 500.",
     )
     parser.add_argument(
         "--enable-lora",
@@ -1506,8 +1790,8 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_LORA_THRESHOLD,
         help="Number of newly accepted samples accumulated per agent before one LoRA refresh.",
     )
-    parser.add_argument("--lora-max-seq-length", type=int, default=1536)
-    parser.add_argument("--lora-train-batch-size", type=int, default=4)
+    parser.add_argument("--lora-max-seq-length", type=int, default=768)
+    parser.add_argument("--lora-train-batch-size", type=int, default=1)
     parser.add_argument("--lora-gradient-accumulation-steps", type=int, default=1)
     parser.add_argument("--lora-epochs", type=float, default=2.0)
     parser.add_argument("--lora-learning-rate", type=float, default=2e-5)
@@ -1523,6 +1807,12 @@ def parse_args() -> argparse.Namespace:
     args.output = resolve_project_path(args.output)
     args.lora_output_dir = resolve_project_path(args.lora_output_dir)
     args.model_path = str(resolve_project_path(Path(args.model_path)))
+    if args.eval_interval < 0:
+        parser.error("--eval-interval must not be negative")
+    if args.rounds <= 0 or args.rounds > DEFAULT_TRAINING_ROUNDS:
+        parser.error(f"--rounds must be between 1 and {DEFAULT_TRAINING_ROUNDS}")
+    if args.training_eval_limit <= 0:
+        parser.error("--training-eval-limit must be positive")
     return args
 
 
@@ -1594,15 +1884,31 @@ def main() -> None:
         print(f"model: {args.model_path}", flush=True)
         training_dataset = load_project_dataset(args.dataset_dir)
         if not training_dataset.load("train", limit=1):
-            expected_path = args.dataset_dir / "infographicsvqa" / "train.jsonl"
-            if args.dataset_dir.name.lower() in {"gsm8k", "infographicsvqa"}:
+            normalized = args.dataset_dir.name.lower()
+            if normalized in {"agent-star-traveldataset"} or (args.dataset_dir / "TravelTotal_17K.jsonl").exists():
+                expected_path = args.dataset_dir / "TravelTotal_17K.jsonl"
+                hint = (
+                    "Download with: HF_ENDPOINT=https://hf-mirror.com "
+                    "huggingface-cli download xxwu/Agent-STAR-TravelDataset "
+                    "--repo-type dataset --local-dir data/Agent-STAR-TravelDataset"
+                )
+            elif normalized == "travelplanner":
+                expected_path = args.dataset_dir / "train_train.json"
+                hint = "Place train_train.json into the data/TravelPlanner directory."
+            elif normalized in {"gsm8k", "infographicsvqa"}:
                 expected_path = args.dataset_dir / "train.jsonl"
+                hint = "Ensure train.jsonl exists in the dataset directory."
+            else:
+                expected_path = args.dataset_dir / "infographicsvqa" / "train.jsonl"
+                hint = (
+                    "Run: python scripts/prepare_vision_datasets.py "
+                    "--dataset infographicsvqa --output-dir data"
+                )
             raise ValueError(
-                f"no training samples found at {expected_path}; training state was not cleared. "
-                "Run: python scripts/prepare_vision_datasets.py "
-                "--dataset infographicsvqa --output-dir data"
+                f"no training samples found at {expected_path}; training state was not cleared. {hint}"
             )
         progress_file = PROJECT_ROOT / "data" / "training_progress.json"
+        evaluation_history_file = args.output.with_name(f"{args.output.stem}_evaluations.json")
         training_manifest = build_training_manifest(args)
         report_files = (
             args.output,
@@ -1611,6 +1917,8 @@ def main() -> None:
             PROJECT_ROOT / "outputs" / "latest_report.json",
             PROJECT_ROOT / "outputs" / "demo_report.json",
             PROJECT_ROOT / "train" / "four_agent_lora_voting_100_report.json",
+            PROJECT_ROOT / "train" / "four_agent_lora_voting_500_report.json",
+            evaluation_history_file,
         )
         if args.resume:
             validate_resume_manifest(progress_file, training_manifest)
@@ -1618,6 +1926,7 @@ def main() -> None:
             if start_round == 0:
                 start_round = infer_completed_training_rounds(PROJECT_ROOT / "data")
             print(f"从第 {start_round + 1} 轮继续训练（已完成 {start_round} 轮）", flush=True)
+            evaluation_history = load_training_evaluation_history(evaluation_history_file)
         else:
             backend = build_b_magent_backend(args)
             preload_b_magent_backend(backend)
@@ -1628,6 +1937,7 @@ def main() -> None:
                 report_files=report_files,
             )
             start_round = 0
+            evaluation_history = TrainingEvaluationHistory()
             save_training_progress(progress_file, 0, args.rounds, training_manifest)
             print("已清空之前的训练存储", flush=True)
         print("开始训练", flush=True)
@@ -1637,14 +1947,80 @@ def main() -> None:
         engine = getattr(backend, "engine", None)
         unload_inference_model = getattr(engine, "unload", None)
 
+        def evaluate_training_checkpoint(round_index: int) -> None:
+            if args.eval_interval == 0 or round_index % args.eval_interval != 0:
+                return
+            if not isinstance(engine, LocalQwenEngine):
+                print(
+                    f"[{round_index}] 跳过正确率测试: 训练后端没有本地 Qwen 推理引擎",
+                    flush=True,
+                )
+                return
+            models = {
+                agent_name: KnowledgeLibraryVotingModel(
+                    agent_name=agent_name,
+                    engine=engine,
+                    data_dir=PROJECT_ROOT / "data",
+                    lora_output_dir=args.lora_output_dir,
+                )
+                for agent_name in AGENT_NAMES
+            }
+            server_data_dir = PROJECT_ROOT / "data" / "qwen_server_agent"
+            server_tag_records = EvolutionLibrary(
+                server_data_dir / "agent_training_tags.jsonl",
+                "agent_training_tags",
+            ).all_records()
+            prior_global_records = EvolutionLibrary(
+                server_data_dir / "global_evaluation_library.jsonl",
+                "global_evaluation",
+            ).all_records()
+            print(f"[{round_index}] 开始训练期投票正确率测试", flush=True)
+            voting_report = run_four_agent_voting_on_test(
+                dataset_dir=args.dataset_dir,
+                models=models,
+                limit=args.training_eval_limit,
+                on_prediction=print_voting_prediction_detail,
+                server_model=DirectEngineRoutingModel(engine) if server_tag_records else None,
+                server_training_tag_records=server_tag_records,
+                prior_global_evaluation_records=prior_global_records,
+                split=args.eval_split,
+                evaluation_seed=args.eval_seed,
+            )
+            detail_path = args.output.with_name(
+                f"{args.output.stem}_round_{round_index:04d}_voting.json"
+            )
+            export_json_report(voting_report, detail_path)
+            evaluation_history.evaluations = [
+                item for item in evaluation_history.evaluations if item.round_index != round_index
+            ]
+            evaluation_history.evaluations.append(
+                TrainingEvaluation(
+                    round_index=round_index,
+                    total=voting_report.total,
+                    correct=voting_report.correct,
+                    accuracy=voting_report.accuracy,
+                    report_path=str(detail_path),
+                )
+            )
+            evaluation_history.evaluations.sort(key=lambda item: item.round_index)
+            save_training_evaluation_history(evaluation_history_file, evaluation_history)
+            best = evaluation_history.best
+            print(
+                f"[{round_index}] accuracy={voting_report.correct}/{voting_report.total}="
+                f"{voting_report.accuracy:.4f}; best_accuracy={best.accuracy:.4f} "
+                f"best_round={best.round_index}",
+                flush=True,
+            )
+
         def on_round_end(round_index: int, total_rounds: int, round_report: BMagentTrainingRound) -> None:
             save_training_progress(progress_file, round_index, total_rounds, training_manifest)
             print_training_round_end(round_index, total_rounds, round_report)
+            evaluate_training_checkpoint(round_index)
 
         report = run_b_magent_training_entry(
             dataset_dir=args.dataset_dir,
             data_dir=PROJECT_ROOT / "data",
-            rounds=args.rounds if args.rounds > 0 else None,
+            rounds=args.rounds,
             private_batch_size=args.private_batch_size,
             random_seed=args.seed,
             backend=backend,
@@ -1676,6 +2052,14 @@ def main() -> None:
                 f"evaluation_records={evaluation_count} "
                 f"lora_updates={report.lora_updates.get(agent_name, 0)}"
             )
+        best_evaluation = evaluation_history.best
+        if best_evaluation is not None:
+            print(
+                f"最优正确率={best_evaluation.accuracy:.4f} "
+                f"({best_evaluation.correct}/{best_evaluation.total}), "
+                f"最优训练轮数={best_evaluation.round_index}"
+            )
+            print(f"训练期评估记录: {evaluation_history_file}")
     elif mode == "local-qwen-vote":
         models = build_four_local_qwen_agents(
             args.model_path,

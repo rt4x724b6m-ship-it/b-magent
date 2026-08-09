@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import re
 from typing import Any
@@ -317,11 +318,19 @@ def _unique(items: object) -> list[str]:
 
 
 def _extract_task_question(task: str) -> str:
-    match = re.search(r"(?m)^Question:\s*(.+?)\s*$", task)
+    # TravelPlanner uses "Query:", GSM8K/Vision use "Question:"
+    match = re.search(r"(?m)^(?:Query|Question):\s*(.+?)\s*$", task)
     return match.group(1).strip() if match else ""
 
 
 def _extract_private_question(item: str) -> str:
+    # JSON-serialized TravelPlanner private items expose "question" key directly
+    try:
+        payload = json.loads(item)
+        if isinstance(payload, dict) and payload.get("question"):
+            return str(payload["question"]).strip()
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
     match = re.search(r"(?:^|\|\s*)question:\s*(.*?)\s*\|", item, re.IGNORECASE)
     return match.group(1).strip() if match else ""
 
@@ -366,18 +375,22 @@ def _answer_matches_gold(answer: str, gold_text: str) -> bool:
 
 
 def _strip_gold_annotations(task: str) -> str:
+    """Remove gold-label lines from a task so agents cannot see the answer."""
     lines = []
-    in_gold_reasoning = False
+    in_gold_block = False
     for line in task.splitlines():
-        if re.match(r"\s*Gold image elements:", line):
-            continue
         if re.match(r"\s*Gold reasoning:", line):
-            in_gold_reasoning = True
+            in_gold_block = True
             continue
         if re.match(r"\s*Gold final answer:", line):
-            in_gold_reasoning = False
+            in_gold_block = False
             continue
-        if in_gold_reasoning:
+        if in_gold_block:
+            continue
+        # single-line gold labels — vision and travel
+        if re.match(r"\s*Gold image elements:", line):
+            continue
+        if re.match(r"\s*Gold plan:", line):
             continue
         lines.append(line)
     return "\n".join(lines).strip()
@@ -385,7 +398,55 @@ def _strip_gold_annotations(task: str) -> str:
 
 def _build_private_training_reflection(specialty: str, training_batch: list[str]) -> str:
     if not training_batch:
-        return f"{specialty} private-data reflection: no private sample was available; rely on explicit task constraints."
+        return (
+            f"{specialty} private-data reflection: no private sample was available; "
+            "rely on explicit task constraints, budget, and local preferences."
+        )
+    # Detect whether this batch is TravelPlanner / Agent-STAR data (JSON with "question" key)
+    is_travel = False
+    budget_values: list[int] = []
+    people_values: list[int] = []
+    constraint_hints: list[str] = []
+    days_values: list[int] = []
+    try:
+        for raw in training_batch:
+            item = json.loads(raw)
+            if isinstance(item, dict) and "question" in item and "answer" in item:
+                is_travel = True
+                if item.get("budget"):
+                    budget_values.append(int(item["budget"]))
+                if item.get("people_number"):
+                    people_values.append(int(item["people_number"]))
+                if item.get("days"):
+                    days_values.append(int(item["days"]))
+                lc = item.get("local_constraint") or {}
+                if isinstance(lc, dict):
+                    parts = [f"{k}={v}" for k, v in lc.items() if v]
+                    if parts:
+                        constraint_hints.append("; ".join(parts))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+
+    if is_travel:
+        budget_range = ""
+        if budget_values:
+            bmin, bmax = min(budget_values), max(budget_values)
+            budget_range = f" budget range ${bmin}–${bmax}" if bmin != bmax else f" budget ~${bmin}"
+        people_hint = ""
+        if people_values:
+            pmin, pmax = min(people_values), max(people_values)
+            people_hint = f"; {pmin}–{pmax} traveler(s)" if pmin != pmax else f"; {pmin} traveler(s)"
+        days_hint = ""
+        if days_values:
+            dmin, dmax = min(days_values), max(days_values)
+            days_hint = f"; {dmin}–{dmax} day trips" if dmin != dmax else f"; {dmin}-day trips"
+        constraint_summary = f"; constraints seen: {' | '.join(constraint_hints[:3])}" if constraint_hints else ""
+        return (
+            f"{specialty} private-data reflection: extracted {len(training_batch)} travel planning sample(s)"
+            f"{budget_range}{people_hint}{days_hint}{constraint_summary}; "
+            "build a complete day-by-day itinerary (transportation/breakfast/attraction/lunch/dinner/accommodation); "
+            "verify budget feasibility, constraint satisfaction, traveler-count costs, and no fabrication before finalising."
+        )
     return (
         f"{specialty} private-data reflection: extracted {len(training_batch)} private sample(s) into a reusable "
         "solving rule; identify the requested value, preserve the final-answer format, and verify calculations "
